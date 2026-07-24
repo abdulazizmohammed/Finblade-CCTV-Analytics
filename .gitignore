@@ -11,6 +11,7 @@ media/cam1_frame.jpg
 # Regenerated evidence artifacts (keep contact_sheet.jpg + metrics.json as proof)
 evidence/frames/
 evidence/*.jsonl
+evidence/redbox_check.jpg
 
 # Local tooling / logs (bootstrap + install helpers)
 scripts/get-pip.py

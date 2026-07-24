@@ -134,12 +134,19 @@ def annotate(frame, zones, tracks, occupancy):
         cv2.putText(frame, label, (px + 4, py - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, BGR_TEXT, 1)
 
+    restricted_ids = {z.zone_id for z in zones if z.restricted}
     for (tid, x1, y1, x2, y2) in tracks:
         fx, fy = foot_point(x1, y1, x2, y2)
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), BGR_TRACK, 2)
+        # Person standing in a restricted zone -> red box (critical, live state).
+        # Everyone else -> teal track box.
+        in_restricted = zone_of((fx, fy), zones) in restricted_ids
+        box_color = BGR_CRITICAL if in_restricted else BGR_TRACK
+        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)),
+                      box_color, 3 if in_restricted else 2)
         cv2.circle(frame, (int(fx), int(fy)), 4, BGR_FOOT, -1)
-        cv2.putText(frame, f"ID {tid}", (int(x1), int(y1) - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, BGR_TRACK, 1)
+        label = f"ID {tid}  INTRUSION" if in_restricted else f"ID {tid}"
+        cv2.putText(frame, label, (int(x1), int(y1) - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
     return frame
 
 

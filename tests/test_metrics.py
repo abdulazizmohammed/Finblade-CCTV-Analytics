@@ -53,6 +53,14 @@ class TestDwell(unittest.TestCase):
         # Re-entering starts fresh.
         self.assertEqual(d.update(1, "Z1", now=120.0), 0.0)
 
+    def test_drop_removes_track_state(self):
+        d = DwellTracker()
+        d.update(9, "Z1", now=100.0)
+        self.assertIn(9, d._since)
+        d.drop(9)
+        self.assertNotIn(9, d._since)             # freed -> bounded memory
+        self.assertEqual(d.dwell(9, now=200.0), 0.0)
+
 
 class TestFlow(unittest.TestCase):
     def test_inflow_rate_per_min(self):

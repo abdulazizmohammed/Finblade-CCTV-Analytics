@@ -49,6 +49,15 @@ class TestBoundaryDebounce(unittest.TestCase):
         d = BoundaryDebouncer(n=1)
         self.assertEqual(d.update(1, "ZONE-01"), ("ZONE-01", True))
 
+    def test_drop_removes_track_state(self):
+        d = BoundaryDebouncer(n=1)
+        d.update(5, "ZONE-01")
+        self.assertEqual(d.confirmed_zone(5), "ZONE-01")
+        self.assertIn(5, d._state)
+        d.drop(5)
+        self.assertNotIn(5, d._state)             # freed -> bounded memory
+        self.assertIsNone(d.confirmed_zone(5))
+
 
 if __name__ == "__main__":
     unittest.main()

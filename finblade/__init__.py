@@ -17,4 +17,5 @@ __all__ = [
     "events",
     "rules",
     "config",
+    "tracking",
 ]

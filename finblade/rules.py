@@ -214,6 +214,16 @@ class RuleEngine:
     def clear_intrusion(self, person_ref: str, zone_id: str) -> None:
         self._intrusion_active.discard((person_ref, zone_id))
 
+    def drop_person(self, person_ref: str) -> None:
+        """Forget all per-person state when a track leaves the scene.
+
+        Clears the one-shot loiter + intrusion latches for this person across all
+        zones, so (a) the sets do not grow without bound and (b) a genuine future
+        re-entry re-alerts instead of being silently suppressed.
+        """
+        self._loiter_fired = {k for k in self._loiter_fired if k[0] != person_ref}
+        self._intrusion_active = {k for k in self._intrusion_active if k[0] != person_ref}
+
 
 # --- R-08 occupancy report --------------------------------------------------
 class ReportScheduler:

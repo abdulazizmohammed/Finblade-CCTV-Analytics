@@ -25,6 +25,7 @@ class CameraConfig:
     person_class_id: int
     process_fps: int
     imgsz: int
+    track_ttl_seconds: float
     zones: List[Zone]
 
 
@@ -47,5 +48,7 @@ def load_camera_config(path: str) -> CameraConfig:
         person_class_id=int(cfg.get("person_class_id", 0)),
         process_fps=int(cfg.get("process_fps", 12)),
         imgsz=int(cfg.get("imgsz", 640)),
+        # Evict a track's per-track state this many seconds after it was last seen.
+        track_ttl_seconds=float(cfg.get("track_ttl_seconds", 5.0)),
         zones=[zone_from_dict(z) for z in cfg.get("zones", [])],
     )

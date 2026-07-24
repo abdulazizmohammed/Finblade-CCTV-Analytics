@@ -16,10 +16,13 @@ Run (from repo root, once deps + weights exist — see BLOCKERS.md):
 
 import argparse
 import json
+import logging
 import os
 import sys
 import threading
 import time
+
+log = logging.getLogger("finblade.inference")
 
 # --- hard dependency gate: fail loudly, never fake -------------------------
 _MISSING = []
@@ -54,6 +57,7 @@ from finblade.metrics import (                           # noqa: E402
     density_status,
 )
 from finblade.rules import RuleEngine                    # noqa: E402
+from finblade.tracking import TrackReaper                # noqa: E402
 from finblade.zones import zone_of                       # noqa: E402
 
 try:
@@ -230,6 +234,7 @@ def run(config_path, max_seconds=None):
     agg = ZoneStateAggregator(period_s=5.0)
     eng = RuleEngine()
     hasher = PersonRefHasher()
+    reaper = TrackReaper(cfg.track_ttl_seconds)
 
     os.makedirs(BOOKMARKS_DIR, exist_ok=True)
     slug = cfg.camera_id.replace("/", "_")   # namespace evidence per camera
@@ -286,6 +291,7 @@ def run(config_path, max_seconds=None):
             for (x1, y1, x2, y2), tid in zip(xyxy, ids):
                 tid = int(tid)
                 seen_ids.add(tid)
+                reaper.see(tid, vnow)
                 tracks.append((tid, x1, y1, x2, y2))
                 observed = zone_of(foot_point(x1, y1, x2, y2), cfg.zones)
                 confirmed, changed = deb.update(tid, observed)
@@ -322,6 +328,17 @@ def run(config_path, max_seconds=None):
 
         det_counts.append(len(tracks))
         processed += 1
+
+        # Evict per-track state for tracks that left the scene (bounded memory).
+        stale = reaper.reap(vnow)
+        for tid in stale:
+            deb.drop(tid)
+            dwell.drop(tid)
+            eng.drop_person(hasher.ref(tid))
+            prev_zone.pop(tid, None)
+        if stale:
+            log.debug("evicted %d stale track(s); active=%d", len(stale),
+                      reaper.active_count())
 
         # 5s cadence: heartbeat (local record), density events, zone-state, rules
         heartbeat_event = None
@@ -445,6 +462,10 @@ def _serve(port=8080):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=os.environ.get("FB_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
+    )
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/cameras.dev.yaml")
     ap.add_argument("--seconds", type=float, default=None,

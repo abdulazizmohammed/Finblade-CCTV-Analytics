@@ -128,5 +128,32 @@ class TestIntrusion(unittest.TestCase):
             eng.evaluate_intrusion("pr_a", "ZONE-02", restricted=True, now=10.0))
 
 
+class TestDropPerson(unittest.TestCase):
+    def test_clears_state_and_bounds_memory(self):
+        eng = RuleEngine(RuleThresholds(loiter_seconds=30.0))
+        eng.evaluate_intrusion("pr_a", "ZONE-02", restricted=True, now=0.0)
+        eng.evaluate_loiter("pr_a", "ZONE-01", dwell_s=31.0, now=31.0)
+        self.assertTrue(eng._intrusion_active)
+        self.assertTrue(eng._loiter_fired)
+        eng.drop_person("pr_a")
+        self.assertFalse(eng._intrusion_active)   # forgotten -> bounded memory
+        self.assertFalse(eng._loiter_fired)
+
+    def test_drop_lets_reentry_realert(self):
+        eng = RuleEngine()
+        self.assertIsNotNone(eng.evaluate_intrusion("pr_a", "Z", True, now=0.0))
+        self.assertIsNone(eng.evaluate_intrusion("pr_a", "Z", True, now=1.0))  # suppressed
+        eng.drop_person("pr_a")                                                 # track left
+        self.assertIsNotNone(eng.evaluate_intrusion("pr_a", "Z", True, now=2.0))  # re-alerts
+
+    def test_drop_only_targets_named_person(self):
+        eng = RuleEngine()
+        eng.evaluate_intrusion("pr_a", "Z", True, now=0.0)
+        eng.evaluate_intrusion("pr_b", "Z", True, now=0.0)
+        eng.drop_person("pr_a")
+        self.assertIn(("pr_b", "Z"), eng._intrusion_active)
+        self.assertNotIn(("pr_a", "Z"), eng._intrusion_active)
+
+
 if __name__ == "__main__":
     unittest.main()

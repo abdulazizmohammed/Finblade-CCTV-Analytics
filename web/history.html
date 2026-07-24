@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinBlade — History & Logs</title>
+<link rel="stylesheet" href="finblade-theme.css">
+<style>
+body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),transparent 60%),var(--fb-void);min-height:100vh;}
+.eyebrow{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-text-faint);margin:0;}
+.topbar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:10;}
+.brand-logo{height:28px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
+.tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.spacer{flex:1;}
+.wrap{max-width:1240px;margin:0 auto;padding:18px 22px 60px;}
+
+.controls{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;margin:8px 0 18px;}
+.field{display:flex;flex-direction:column;gap:5px;}
+.field label{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.field input,.field select{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:13px;padding:7px 9px;border-radius:var(--fb-r);}
+.field input:focus,.field select:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.seg{display:inline-flex;border:1px solid var(--fb-line-bright);border-radius:var(--fb-r);overflow:hidden;}
+.seg button{background:transparent;border:0;color:var(--fb-text-muted);font-family:var(--fb-font-data);font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:8px 14px;cursor:pointer;}
+.seg button.on{background:var(--fb-teal);color:var(--fb-void);font-weight:600;}
+
+.count{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);margin:0 0 8px;}
+.tablewrap{overflow-x:auto;border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);}
+table{width:100%;border-collapse:collapse;min-width:720px;}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--fb-line);white-space:nowrap;}
+th{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);background:var(--fb-surface);position:sticky;top:0;}
+td{font-size:12.5px;color:var(--fb-text);}
+td.mono{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;color:var(--fb-text-muted);}
+tr.clickable{cursor:pointer;}
+tr.clickable:hover td{background:var(--fb-surface-2);}
+.sev{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:2px;border:1px solid currentColor;}
+.sev.AMBER{color:var(--fb-warning);}
+.sev.RED,.sev.CRITICAL{color:var(--fb-critical);}
+.sev.INFO,.sev.NORMAL{color:var(--fb-ok);}
+.rule{color:var(--fb-restricted);} /* restricted intrusion rows read magenta */
+.thumb{color:var(--fb-teal);text-decoration:none;font-family:var(--fb-font-data);font-size:11px;}
+.thumb:hover{text-decoration:underline;}
+.empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:22px;text-align:center;}
+
+/* frame modal */
+.modal{position:fixed;inset:0;background:rgba(4,10,14,.82);display:none;align-items:center;justify-content:center;padding:24px;z-index:50;}
+.modal.on{display:flex;}
+.modal .box{max-width:min(1000px,92vw);max-height:88vh;background:var(--fb-surface);border:1px solid var(--fb-line-bright);border-radius:var(--fb-r-lg);overflow:hidden;display:flex;flex-direction:column;}
+.modal .box img{max-width:100%;max-height:74vh;object-fit:contain;background:var(--fb-void);}
+.modal .cap{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;font-family:var(--fb-font-data);font-size:12px;color:var(--fb-text-muted);}
+.modal .cap button{background:transparent;border:1px solid var(--fb-line-bright);color:var(--fb-text);font-family:var(--fb-font-data);font-size:11px;padding:5px 10px;border-radius:var(--fb-r);cursor:pointer;}
+:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <img class="brand-logo" src="logo.svg" alt="FinBlade">
+    <span class="tag">History &amp; Logs</span>
+    <span class="spacer"></span>
+    <a class="fb-btn fb-btn--primary" href="dashboard.html">← Live dashboard</a>
+  </div>
+
+  <div class="wrap">
+    <div class="controls">
+      <div class="seg" id="seg">
+        <button data-mode="alerts" class="on">Alerts</button>
+        <button data-mode="events">Movement</button>
+      </div>
+      <div class="field"><label for="from">From date</label><input type="date" id="from"></div>
+      <div class="field"><label for="to">To date</label><input type="date" id="to"></div>
+      <div class="field" id="typeField"><label for="type">Filter</label>
+        <select id="type"><option value="">All</option></select></div>
+      <div class="field"><label for="cam">Camera</label>
+        <select id="cam"><option value="">All cameras</option></select></div>
+      <div class="field"><label>&nbsp;</label><button class="fb-btn" id="refresh">Search</button></div>
+    </div>
+
+    <p class="count" id="count">—</p>
+    <div class="tablewrap"><table>
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+    </table></div>
+  </div>
+
+  <div class="modal" id="modal">
+    <div class="box">
+      <img id="modalImg" alt="saved frame">
+      <div class="cap"><span id="modalCap"></span>
+        <button id="modalClose">Close (Esc)</button></div>
+    </div>
+  </div>
+
+<script>
+const API=`http://${location.hostname}:8000`;
+const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
+let mode='alerts';
+
+const ALERT_TYPES=['R-01','R-02','R-03','R-05','R-06','R-07'];
+const EVENT_TYPES=['ZONE_ENTRY','ZONE_EXIT','ZONE_TRANSITION','DENSITY_UPDATE'];
+
+function iso(ts){ // epoch seconds -> local YYYY-MM-DD HH:MM:SS
+  const d=new Date(ts*1000);
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function dayBounds(){
+  const f=$('from').value, t=$('to').value;
+  const from = f ? new Date(f+'T00:00:00').getTime()/1000 : 0;
+  const to   = t ? new Date(t+'T23:59:59').getTime()/1000 : Date.now()/1000+86400;
+  return {from,to};
+}
+
+function setMode(m){
+  mode=m;
+  for(const b of $('seg').children) b.classList.toggle('on', b.dataset.mode===m);
+  // rebuild the type filter options
+  const sel=$('type'); sel.innerHTML='<option value="">All</option>';
+  (m==='alerts'?ALERT_TYPES:EVENT_TYPES).forEach(v=>{
+    const o=document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o);});
+  load();
+}
+
+async function loadCameras(){
+  try{
+    const {cameras}=await fetch(`${API}/api/v1/cameras`).then(r=>r.json());
+    const sel=$('cam');
+    cameras.forEach(c=>{const o=document.createElement('option');o.value=c.camera_id;o.textContent=c.camera_id;sel.appendChild(o);});
+  }catch(e){}
+}
+
+async function load(){
+  const {from,to}=dayBounds();
+  const cam=$('cam').value, typ=$('type').value;
+  let url, rows;
+  try{
+    if(mode==='alerts'){
+      const q=new URLSearchParams({from,to,limit:1000});
+      if(cam)q.set('camera_id',cam); if(typ)q.set('rule_id',typ);
+      rows=(await fetch(`${API}/api/v1/history/alerts?${q}`).then(r=>r.json())).alerts||[];
+      renderAlerts(rows);
+    }else{
+      const q=new URLSearchParams({from,to,limit:1000});
+      if(cam)q.set('camera_id',cam); if(typ)q.set('event_type',typ);
+      rows=(await fetch(`${API}/api/v1/history/events?${q}`).then(r=>r.json())).events||[];
+      renderEvents(rows);
+    }
+    $('count').textContent=`${rows.length} ${mode==='alerts'?'alerts':'events'} · ${$('from').value||'start'} → ${$('to').value||'now'}`;
+  }catch(e){ $('count').textContent='offline — is the API running on :8000?'; }
+}
+
+function frameCell(fr){
+  return fr ? `<a class="thumb" href="#" data-frame="${esc(fr)}">view frame ▸</a>` : '<span class="mono">—</span>';
+}
+
+function renderAlerts(rows){
+  $('thead').innerHTML='<tr><th>Time</th><th>Rule</th><th>Severity</th><th>Zone</th><th>Camera</th><th>Message</th><th>Ack</th><th>Frame</th></tr>';
+  if(!rows.length){ $('tbody').innerHTML='<tr><td colspan="8"><div class="empty">No alerts in range.</div></td></tr>'; return; }
+  $('tbody').innerHTML=rows.map(a=>{
+    const sev=String(a.severity||'INFO').toUpperCase();
+    const isR06 = a.rule_id==='R-06';
+    return `<tr class="${a.frame?'clickable':''}" ${a.frame?`data-frame="${esc(a.frame)}" data-cap="${esc(a.rule_id+' · '+iso(a.ts))}"`:''}>
+      <td class="mono">${iso(a.ts)}</td>
+      <td class="mono ${isR06?'rule':''}">${esc(a.rule_id)}</td>
+      <td><span class="sev ${sev}">${esc(sev)}</span></td>
+      <td class="mono">${esc(a.zone_id||'—')}</td>
+      <td class="mono">${esc(a.camera_id||'—')}</td>
+      <td>${esc(a.message)}</td>
+      <td class="mono">${esc(a.acknowledged_by||'—')}</td>
+      <td>${frameCell(a.frame)}</td></tr>`;
+  }).join('');
+  wireRows();
+}
+
+function renderEvents(rows){
+  $('thead').innerHTML='<tr><th>Time</th><th>Type</th><th>Movement</th><th>Camera</th><th>Person</th><th>Frame</th></tr>';
+  if(!rows.length){ $('tbody').innerHTML='<tr><td colspan="6"><div class="empty">No events in range.</div></td></tr>'; return; }
+  $('tbody').innerHTML=rows.map(e=>{
+    const move = e.zone_from||e.zone_to
+      ? `${esc(e.zone_from||'·')} → ${esc(e.zone_to||e.zone_id||'·')}` : esc(e.zone_id||'—');
+    return `<tr class="${e.frame?'clickable':''}" ${e.frame?`data-frame="${esc(e.frame)}" data-cap="${esc(e.event_type+' · '+iso(e.ts))}"`:''}>
+      <td class="mono">${iso(e.ts)}</td>
+      <td class="mono">${esc(e.event_type)}</td>
+      <td class="mono">${move}</td>
+      <td class="mono">${esc(e.camera_id||'—')}</td>
+      <td class="mono">${esc(e.person_ref||'—')}</td>
+      <td>${frameCell(e.frame)}</td></tr>`;
+  }).join('');
+  wireRows();
+}
+
+function wireRows(){
+  document.querySelectorAll('[data-frame]').forEach(el=>{
+    el.addEventListener('click', ev=>{
+      ev.preventDefault();
+      const fr=el.getAttribute('data-frame');
+      const cap=(el.closest('tr')?.getAttribute('data-cap'))||fr;
+      openFrame(fr, cap);
+    });
+  });
+}
+function openFrame(fr, cap){
+  $('modalImg').src=`${API}${fr}`;
+  $('modalCap').textContent=cap;
+  $('modal').classList.add('on');
+}
+function closeFrame(){ $('modal').classList.remove('on'); $('modalImg').src=''; }
+$('modalClose').addEventListener('click', closeFrame);
+$('modal').addEventListener('click', e=>{ if(e.target===$('modal')) closeFrame(); });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeFrame(); });
+
+// init: default range = today
+const today=new Date().toISOString().slice(0,10);
+$('from').value=today; $('to').value=today;
+for(const b of $('seg').children) b.addEventListener('click', ()=>setMode(b.dataset.mode));
+$('refresh').addEventListener('click', load);
+$('type').addEventListener('change', load);
+$('cam').addEventListener('change', load);
+loadCameras();
+setMode('alerts');
+</script>
+</body>
+</html>

@@ -21,6 +21,9 @@ class IngestService:
         if not ok:
             return 422, {"accepted": False, "errors": errors}
         self.store.save_event(payload)
+        # Any event from a camera counts as a heartbeat for offline detection.
+        self.store.mark_camera_seen(payload.get("camera_id"), payload.get("timestamp"),
+                                    payload.get("site_id"))
         if self.bus is not None:
             self.bus.publish(payload)
         return 202, {"accepted": True, "event_id": payload.get("event_id")}
@@ -31,7 +34,19 @@ class IngestService:
         if not ok:
             return 422, {"accepted": False, "errors": errors}
         self.store.save_zone_state(payload)
+        # 5s zone-state posts are the camera's primary heartbeat.
+        self.store.mark_camera_seen(payload.get("camera_id"), payload.get("ts"))
         return 202, {"accepted": True, "zone_id": payload["zone_id"]}
+
+    # -- history / logs --
+    def events_history(self, t0, t1, **f):
+        return self.store.list_events(t0, t1, **f)
+
+    def alerts_history(self, t0, t1, **f):
+        return self.store.list_alerts_history(t0, t1, **f)
+
+    def cameras(self):
+        return self.store.list_cameras()
 
     # -- alerts --
     def raise_alert(self, alert: dict) -> str:

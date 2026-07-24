@@ -21,6 +21,14 @@ class Store:
     def latest_zone_states(self) -> List[dict]: raise NotImplementedError
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]: raise NotImplementedError
 
+    # History + camera-liveness (default no-ops so any backend is usable).
+    def mark_camera_seen(self, camera_id: str, ts: float, site_id: str = None) -> None: pass
+    def list_cameras(self) -> List[dict]: return []
+    def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
+                    event_type=None, limit: int = 500) -> List[dict]: return []
+    def list_alerts_history(self, t0: float, t1: float, camera_id=None, rule_id=None,
+                            limit: int = 500) -> List[dict]: return []
+
 
 class InMemoryStore(Store):
     def __init__(self):
@@ -28,6 +36,7 @@ class InMemoryStore(Store):
         self._zone_ts: List[dict] = []
         self._alerts: Dict[str, dict] = {}
         self._alert_seq = 0
+        self._cameras: Dict[str, dict] = {}
 
     def save_event(self, evt: dict) -> None:
         self._events.append(dict(evt))
@@ -46,7 +55,8 @@ class InMemoryStore(Store):
         return alert_id
 
     def list_alerts(self, unacked_only: bool = False) -> List[dict]:
-        vals = list(self._alerts.values())
+        # CLEAR alerts are informational; keep them out of the live/unacked feed.
+        vals = [a for a in self._alerts.values() if a.get("kind", "FIRE") != "CLEAR"]
         if unacked_only:
             vals = [a for a in vals if a.get("acknowledged_by") is None]
         return sorted(vals, key=lambda a: a.get("ts", 0), reverse=True)
@@ -73,6 +83,47 @@ class InMemoryStore(Store):
 
     def event_count(self) -> int:
         return len(self._events)
+
+    def mark_camera_seen(self, camera_id: str, ts: float, site_id: str = None) -> None:
+        if not camera_id:
+            return
+        c = self._cameras.setdefault(camera_id, {"camera_id": camera_id, "site_id": site_id})
+        c["last_seen"] = ts
+        if site_id:
+            c["site_id"] = site_id
+
+    def list_cameras(self) -> List[dict]:
+        return list(self._cameras.values())
+
+    def list_events(self, t0, t1, camera_id=None, zone_id=None, event_type=None, limit=500):
+        out = []
+        for e in self._events:
+            ts = e.get("timestamp", 0)
+            if not (t0 <= ts <= t1):
+                continue
+            if camera_id and e.get("camera_id") != camera_id:
+                continue
+            if event_type and e.get("event_type") != event_type:
+                continue
+            if zone_id and zone_id not in (e.get("zone_id"), e.get("zone_from"), e.get("zone_to")):
+                continue
+            out.append(e)
+        out.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
+        return out[:limit]
+
+    def list_alerts_history(self, t0, t1, camera_id=None, rule_id=None, limit=500):
+        out = []
+        for a in self._alerts.values():
+            ts = a.get("ts", 0)
+            if not (t0 <= ts <= t1):
+                continue
+            if camera_id and a.get("camera_id") != camera_id:
+                continue
+            if rule_id and a.get("rule_id") != rule_id:
+                continue
+            out.append(a)
+        out.sort(key=lambda a: a.get("ts", 0), reverse=True)
+        return out[:limit]
 
 
 class PostgresStore(Store):  # pragma: no cover - requires a live DB (BLOCKERS.md B-3)

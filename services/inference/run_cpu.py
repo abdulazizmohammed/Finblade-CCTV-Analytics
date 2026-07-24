@@ -85,6 +85,11 @@ BGR_TEXT       = (240, 236, 220)  # #dcecf0
 
 EVIDENCE = os.path.join(_REPO_ROOT, "evidence")
 FRAMES_DIR = os.path.join(EVIDENCE, "frames")
+BOOKMARKS_DIR = os.path.join(EVIDENCE, "bookmarks")   # saved frame per event/alert
+
+# Movement events that get a bookmarked frame + are pushed to the history store.
+ZONE_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION}
+POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE}
 
 _latest_jpeg = {"buf": None}
 _lock = threading.Lock()
@@ -201,12 +206,15 @@ def run(config_path, max_seconds=None):
     eng = RuleEngine()
     hasher = PersonRefHasher()
 
-    events_fp = open(os.path.join(EVIDENCE, "events.jsonl"), "w")
-    alerts_fp = open(os.path.join(EVIDENCE, "alerts.jsonl"), "w")
+    os.makedirs(BOOKMARKS_DIR, exist_ok=True)
+    slug = cfg.camera_id.replace("/", "_")   # namespace evidence per camera
+    events_fp = open(os.path.join(EVIDENCE, f"events_{slug}.jsonl"), "w")
+    alerts_fp = open(os.path.join(EVIDENCE, f"alerts_{slug}.jsonl"), "w")
     frame_paths = []
     det_counts = []
     seen_ids = set()
     saved_frames = 0
+    bookmark_seq = 0
     processed = 0
     t_start = time.time()
     last_still = False
@@ -226,22 +234,27 @@ def run(config_path, max_seconds=None):
                 break
 
         if not last_still:
-            cv2.imwrite(os.path.join(_REPO_ROOT, "media", "cam1_frame.jpg"), frame)
+            cv2.imwrite(os.path.join(_REPO_ROOT, "media", f"{slug}_frame.jpg"), frame)
             last_still = True
 
         now = time.time()
         if interval and (now - last_proc) < interval:
             continue
         last_proc = now
-        vnow = now - t_start
+        elapsed = now - t_start   # for run-control (evidence cadence, --seconds)
+        vnow = now                # wall-clock epoch: stamps events/alerts/state
 
         res = model.track(frame, persist=True, classes=[cfg.person_class_id],
                           conf=cfg.conf_threshold, imgsz=cfg.imgsz,
                           tracker="bytetrack.yaml",
                           device=device, verbose=False)[0]
 
+        # --- pass 1: detect -> zone -> occupancy; collect events/alerts ------
         tracks = []
         occupancy = {z.zone_id: 0 for z in cfg.zones}
+        pending_events = []   # ZONE_* + DENSITY_UPDATE dicts
+        pending_alerts = []   # alert dicts (intrusion / loiter / density / capacity)
+        pending_states = []   # 5s zone-state dicts
         if res.boxes is not None and res.boxes.id is not None:
             xyxy = res.boxes.xyxy.cpu().numpy()
             ids = res.boxes.id.cpu().numpy().astype(int)
@@ -257,50 +270,47 @@ def run(config_path, max_seconds=None):
                 if changed:
                     old = prev_zone.get(tid)
                     if old and confirmed:
-                        e = new_event(ZONE_TRANSITION, cfg.camera_id, cfg.site_id, vnow,
-                                      zone_from=old, zone_to=confirmed, person_ref=pr)
+                        pending_events.append(new_event(
+                            ZONE_TRANSITION, cfg.camera_id, cfg.site_id, vnow,
+                            zone_from=old, zone_to=confirmed, person_ref=pr))
                     elif confirmed:
-                        e = new_event(ZONE_ENTRY, cfg.camera_id, cfg.site_id, vnow,
-                                      zone_to=confirmed, person_ref=pr, confidence=0.9)
+                        pending_events.append(new_event(
+                            ZONE_ENTRY, cfg.camera_id, cfg.site_id, vnow,
+                            zone_to=confirmed, person_ref=pr, confidence=0.9))
                         flow.record_entry(confirmed, vnow)
                     else:
-                        e = new_event(ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
-                                      zone_from=old or "NONE", person_ref=pr)
+                        pending_events.append(new_event(
+                            ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
+                            zone_from=old or "NONE", person_ref=pr))
                         if old:
                             flow.record_exit(old, vnow)
-                    events_fp.write(json.dumps(e) + "\n")
                     prev_zone[tid] = confirmed
                 d = dwell.update(tid, confirmed, vnow)
                 zobj = next((z for z in cfg.zones if z.zone_id == confirmed), None)
                 if zobj:
                     intr = eng.evaluate_intrusion(pr, confirmed, zobj.restricted, vnow)
                     if intr:
-                        alerts_fp.write(json.dumps(intr.as_dict()) + "\n")
-                        _post("/api/v1/alerts", intr.as_dict())
+                        pending_alerts.append(intr.as_dict())
                     lo = eng.evaluate_loiter(pr, confirmed, d, vnow)
                     if lo:
-                        alerts_fp.write(json.dumps(lo.as_dict()) + "\n")
-                        _post("/api/v1/alerts", lo.as_dict())
+                        pending_alerts.append(lo.as_dict())
 
         det_counts.append(len(tracks))
         processed += 1
 
-        # heartbeat + density events / rules on 5s cadence
-        eng.camera.heartbeat(cfg.camera_id, vnow)
-        events_fp.write(json.dumps(
-            new_event(CAMERA_HEARTBEAT, cfg.camera_id, cfg.site_id, vnow)) + "\n")
+        # 5s cadence: heartbeat (local record), density events, zone-state, rules
+        heartbeat_event = None
         if agg.due(vnow):
+            eng.camera.heartbeat(cfg.camera_id, vnow)
+            heartbeat_event = new_event(CAMERA_HEARTBEAT, cfg.camera_id, cfg.site_id, vnow)
             for z in cfg.zones:
                 occ = occupancy[z.zone_id]
                 dens = density_per_sqm(occ, z.area_sqm)
                 cap_pct = capacity_pct(occ, z.capacity_max)
-                events_fp.write(json.dumps(
-                    new_event(DENSITY_UPDATE, cfg.camera_id, cfg.site_id, vnow,
-                              zone_id=z.zone_id, occupancy=occ, density=dens)) + "\n")
-                # Live zone-state for the dashboard cards (UC-29).
-                # zone_name/restricted are extra keys (validator ignores them)
-                # that let the dashboard label cards + show intrusion styling.
-                _post("/api/v1/zones/state", {
+                pending_events.append(new_event(
+                    DENSITY_UPDATE, cfg.camera_id, cfg.site_id, vnow,
+                    zone_id=z.zone_id, occupancy=occ, density=dens))
+                pending_states.append({
                     "zone_id": z.zone_id, "camera_id": cfg.camera_id,
                     "zone_name": z.zone_name, "restricted": z.restricted,
                     "occupancy": occ, "density": dens, "capacity_pct": cap_pct,
@@ -309,33 +319,58 @@ def run(config_path, max_seconds=None):
                     "status": density_status(dens), "ts": vnow,
                 })
                 for al in eng.evaluate_zone(z.zone_id, dens, cap_pct, vnow):
-                    alerts_fp.write(json.dumps(al.as_dict()) + "\n")
-                    _post("/api/v1/alerts", al.as_dict())
+                    pending_alerts.append(al.as_dict())
 
-        summary = "  ".join(f"{z.zone_name}={occupancy[z.zone_id]}" for z in cfg.zones)
-        print(f"[{time.strftime('%H:%M:%S')}] tracked={len(tracks)}  {summary}", flush=True)
-
+        # --- annotate once, then bookmark this moment if anything happened ---
         annotated = annotate(frame.copy(), cfg.zones, tracks, occupancy)
         okj, buf = cv2.imencode(".jpg", annotated)
         if okj:
             with _lock:
                 _latest_jpeg["buf"] = buf.tobytes()
 
-        # save an evidence frame ~ every 5s of video
-        if vnow - last_evidence_t >= 5.0:
-            last_evidence_t = vnow
+        frame_ref = None
+        movement = any(ev["event_type"] in ZONE_EVENT_TYPES for ev in pending_events)
+        if pending_alerts or movement:
+            bookmark_seq += 1
+            bname = f"bm_{cfg.camera_id}_{bookmark_seq:05d}.jpg"
+            cv2.imwrite(os.path.join(BOOKMARKS_DIR, bname), annotated)
+            frame_ref = "/bookmarks/" + bname
+
+        # --- pass 2: persist to files + push to API (history + live) ---------
+        for ev in pending_events:
+            if frame_ref and ev["event_type"] in ZONE_EVENT_TYPES:
+                ev["frame"] = frame_ref
+            events_fp.write(json.dumps(ev) + "\n")
+            if ev["event_type"] in POST_EVENT_TYPES:
+                _post("/api/v1/events/ingest", ev)
+        if heartbeat_event:
+            events_fp.write(json.dumps(heartbeat_event) + "\n")
+        for st in pending_states:
+            _post("/api/v1/zones/state", st)
+        for al in pending_alerts:
+            if frame_ref:
+                al["frame"] = frame_ref
+            alerts_fp.write(json.dumps(al) + "\n")
+            _post("/api/v1/alerts", al)
+
+        summary = "  ".join(f"{z.zone_name}={occupancy[z.zone_id]}" for z in cfg.zones)
+        print(f"[{time.strftime('%H:%M:%S')}] tracked={len(tracks)}  {summary}", flush=True)
+
+        # save an evidence frame ~ every 5s of run
+        if elapsed - last_evidence_t >= 5.0:
+            last_evidence_t = elapsed
             saved_frames += 1
-            p = os.path.join(FRAMES_DIR, f"frame_{saved_frames:04d}.jpg")
+            p = os.path.join(FRAMES_DIR, f"frame_{slug}_{saved_frames:04d}.jpg")
             cv2.imwrite(p, annotated)
             frame_paths.append(p)
 
-        if max_seconds and vnow >= max_seconds:
+        if max_seconds and elapsed >= max_seconds:
             break
 
     # finalise evidence
     events_fp.close()
     alerts_fp.close()
-    build_contact_sheet(frame_paths, os.path.join(EVIDENCE, "contact_sheet.jpg"))
+    build_contact_sheet(frame_paths, os.path.join(EVIDENCE, f"contact_{slug}.jpg"))
     elapsed = time.time() - t_start
     metrics = {
         "config": os.path.basename(config_path),
@@ -352,13 +387,13 @@ def run(config_path, max_seconds=None):
         "unique_track_ids": len(seen_ids),
         "evidence_frames_saved": saved_frames,
     }
-    with open(os.path.join(EVIDENCE, "metrics.json"), "w") as f:
+    with open(os.path.join(EVIDENCE, f"metrics_{slug}.json"), "w") as f:
         json.dump(metrics, f, indent=2)
     print("[info] evidence written to ./evidence/", flush=True)
 
 
 # --- MJPEG viewer (kept minimal; the dashboard embeds this stream) ---------
-def _serve():
+def _serve(port=8080):
     from flask import Flask, Response
     app = Flask(__name__)
 
@@ -377,7 +412,7 @@ def _serve():
                 time.sleep(0.05)
         return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-    app.run(host="0.0.0.0", port=8080, threaded=True)
+    app.run(host="0.0.0.0", port=port, threaded=True)
 
 
 if __name__ == "__main__":
@@ -386,6 +421,8 @@ if __name__ == "__main__":
     ap.add_argument("--seconds", type=float, default=None,
                     help="stop after N seconds of video (evidence run)")
     ap.add_argument("--no-serve", action="store_true")
+    ap.add_argument("--port", type=int, default=8080,
+                    help="MJPEG stream port (use a distinct port per camera)")
     ap.add_argument("--api-url", default=None,
                     help="POST live zone-states + alerts to this API base "
                          "(e.g. http://127.0.0.1:8000) for the dashboard")
@@ -396,5 +433,5 @@ if __name__ == "__main__":
         print(f"[info] live-posting to {_API['base']}", flush=True)
 
     if not args.no_serve:
-        threading.Thread(target=_serve, daemon=True).start()
+        threading.Thread(target=lambda: _serve(args.port), daemon=True).start()
     run(args.config, max_seconds=args.seconds)

@@ -11,8 +11,9 @@ Run: uvicorn services.api.app:app --host 0.0.0.0 --port 8000
 import asyncio
 import os
 import time
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -22,13 +23,16 @@ from .store import InMemoryStore
 from .bus import InMemoryBus
 from .report import render_report_html
 
-# Backend selection: default to in-memory so the API boots even before Postgres/
-# Redis exist; switch to Postgres/Redis via env when the services are up.
+# Backend selection: durable SQLite by default (survives restarts, date-queryable).
+# DATABASE_URL -> Postgres; FINBLADE_INMEMORY=1 -> in-memory (tests/ephemeral).
 if os.environ.get("DATABASE_URL"):
     from .store import PostgresStore
     store = PostgresStore(os.environ["DATABASE_URL"])
-else:
+elif os.environ.get("FINBLADE_INMEMORY"):
     store = InMemoryStore()
+else:
+    from .sqlite_store import SQLiteStore
+    store = SQLiteStore(os.environ.get("FINBLADE_DB", "data/finblade.db"))
 
 if os.environ.get("REDIS_URL"):
     from .bus import RedisStreamBus
@@ -37,7 +41,52 @@ else:
     bus = InMemoryBus()
 
 svc = IngestService(store, bus)
-app = FastAPI(title="FinBlade CCTV API", version="1.0")
+
+# --- server-side camera-offline monitor (R-07) -----------------------------
+OFFLINE_S = 30.0
+_cam_offline: dict = {}
+
+
+async def _offline_monitor():
+    """Fire R-07 when a camera stops posting for >30s; clear + auto-ack on return."""
+    while True:
+        try:
+            await asyncio.sleep(5)
+            now = time.time()
+            for c in svc.cameras():
+                cid, last = c.get("camera_id"), c.get("last_seen")
+                if not cid or last is None:
+                    continue
+                silent = now - last
+                was = _cam_offline.get(cid, False)
+                if silent > OFFLINE_S and not was:
+                    _cam_offline[cid] = True
+                    svc.raise_alert({"rule_id": "R-07", "severity": "RED",
+                                     "message": f"camera {cid} offline >{int(OFFLINE_S)}s",
+                                     "camera_id": cid, "ts": now, "kind": "FIRE"})
+                elif silent <= OFFLINE_S and was:
+                    _cam_offline[cid] = False
+                    # auto-ack the open offline alert so the health grid recovers
+                    for a in svc.list_alerts(unacked_only=True):
+                        if a.get("rule_id") == "R-07" and a.get("camera_id") == cid:
+                            svc.acknowledge(str(a.get("alert_id")), "system-recovery", now)
+                    svc.raise_alert({"rule_id": "R-07", "severity": "INFO",
+                                     "message": f"camera {cid} recovered",
+                                     "camera_id": cid, "ts": now, "kind": "CLEAR"})
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            pass  # never let the monitor kill the app
+
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(_offline_monitor())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="FinBlade CCTV API", version="1.0", lifespan=lifespan)
 
 # Air-gapped LAN demo: allow the dashboard (file:// or another origin) to call us.
 app.add_middleware(
@@ -51,6 +100,43 @@ app.add_middleware(
 _WEB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "web"))
 if os.path.isdir(_WEB_DIR):
     app.mount("/web", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+
+# Serve saved event/alert frames (video-clip bookmarks) so logs can pull them.
+_BOOKMARKS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
+                                              "evidence", "bookmarks"))
+os.makedirs(_BOOKMARKS_DIR, exist_ok=True)
+app.mount("/bookmarks", StaticFiles(directory=_BOOKMARKS_DIR), name="bookmarks")
+
+
+# --- history / logs (date-filterable) --------------------------------------
+@app.get("/api/v1/history/events")
+async def history_events(frm: float = Query(0, alias="from"),
+                         to: float = Query(9_000_000_000_000.0, alias="to"),
+                         camera_id: str = Query(None), zone_id: str = Query(None),
+                         event_type: str = Query(None), limit: int = Query(500)):
+    return {"events": svc.events_history(frm, to, camera_id=camera_id, zone_id=zone_id,
+                                         event_type=event_type, limit=limit)}
+
+
+@app.get("/api/v1/history/alerts")
+async def history_alerts(frm: float = Query(0, alias="from"),
+                         to: float = Query(9_000_000_000_000.0, alias="to"),
+                         camera_id: str = Query(None), rule_id: str = Query(None),
+                         limit: int = Query(500)):
+    return {"alerts": svc.alerts_history(frm, to, camera_id=camera_id, rule_id=rule_id,
+                                         limit=limit)}
+
+
+@app.get("/api/v1/cameras")
+async def cameras():
+    now = time.time()
+    out = []
+    for c in svc.cameras():
+        last = c.get("last_seen")
+        c = dict(c)
+        c["online"] = (last is not None and (now - last) <= OFFLINE_S)
+        out.append(c)
+    return {"cameras": out}
 
 
 @app.post("/api/v1/alerts")

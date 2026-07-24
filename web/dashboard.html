@@ -54,7 +54,9 @@ body{
 .section-h{display:flex;align-items:center;gap:10px;margin:0 0 10px;}
 .section-h .rule{flex:1;height:1px;background:var(--fb-line);}
 
-/* feed (uses the theme .fb-bracket corner motif) */
+/* feeds (uses the theme .fb-bracket corner motif) */
+.feeds{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+@media(max-width:640px){.feeds{grid-template-columns:1fr;}}
 .feed{position:relative;aspect-ratio:16/10;border-radius:var(--fb-r-lg);overflow:hidden;display:flex;align-items:center;justify-content:center;
   background:repeating-linear-gradient(0deg,rgba(0,0,0,.18) 0 1px,transparent 1px 3px),radial-gradient(120% 90% at 50% 40%,var(--fb-surface-2),var(--fb-void) 75%);}
 .feed img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--fb-void);}
@@ -129,6 +131,7 @@ body{
       <span class="site" id="site">—</span>
       <span class="clock fb-num" id="clock">--:--:--</span>
       <span class="conn" id="conn"><span class="dot"></span> connecting…</span>
+      <a class="fb-btn" href="history.html">History</a>
       <button class="fb-btn fb-btn--primary" id="report">Occupancy report</button>
     </div>
   </div>
@@ -143,13 +146,20 @@ body{
 
     <div class="grid">
       <section>
-        <div class="section-h"><p class="eyebrow">Live feed · annotated</p><span class="rule"></span></div>
-        <div class="feed fb-bracket" id="feed">
-          <div class="scan"></div>
-          <div class="live"><span class="rd"></span> Live</div>
-          <div class="tc fb-num" id="tc">00:00:00</div>
-          <div class="ph" id="feedPh">connecting to inference stream on :8080<br>detect · track · foot-point · zone overlay</div>
-          <div class="cap">yolov8n · CPU</div>
+        <div class="section-h"><p class="eyebrow">Live feeds · annotated</p><span class="rule"></span></div>
+        <div class="feeds" id="feeds">
+          <div class="feed fb-bracket" data-port="8080">
+            <div class="scan"></div><div class="live"><span class="rd"></span> Live</div>
+            <div class="tc fb-num" data-tc>00:00:00</div>
+            <div class="ph">connecting · stream :8080<br>detect · track · foot-point · zones</div>
+            <div class="cap">Camera A · :8080</div>
+          </div>
+          <div class="feed fb-bracket" data-port="8081">
+            <div class="scan"></div><div class="live"><span class="rd"></span> Live</div>
+            <div class="tc fb-num" data-tc>00:00:00</div>
+            <div class="ph">no signal · stream :8081</div>
+            <div class="cap">Camera B · :8081</div>
+          </div>
         </div>
         <div class="section-h" style="margin-top:18px;"><p class="eyebrow">Camera health</p><span class="rule"></span></div>
         <div class="panel cams" id="cams"><span class="empty">no cameras reporting</span></div>
@@ -174,12 +184,15 @@ const t0=Date.now();
 const SEVCLASS={NORMAL:'normal',AMBER:'warning',RED:'critical',CRITICAL:'critical',INFO:'normal'};
 const BRACK={AMBER:'warning',RED:'critical'};
 
-// live annotated feed (best effort; placeholder until the stream is up)
-(function mountFeed(){
-  const img=new Image();
-  img.onload=()=>{const p=$('feedPh');if(p)p.remove();if(!img.parentNode)$('feed').appendChild(img);};
-  img.onerror=()=>{};
-  img.src=STREAM;
+// live annotated feeds (best effort; each tile connects to its camera's port)
+(function mountFeeds(){
+  document.querySelectorAll('#feeds .feed').forEach(tile=>{
+    const port=tile.getAttribute('data-port');
+    const img=new Image();
+    img.onload=()=>{const p=tile.querySelector('.ph');if(p)p.remove();if(!img.parentNode)tile.insertBefore(img,tile.firstChild);};
+    img.onerror=()=>{};
+    img.src=`http://${location.hostname}:${port}/stream`;
+  });
 })();
 
 function renderKpis(zones,alerts){
@@ -285,7 +298,8 @@ $('report').addEventListener('click',()=>window.open(`${API}/api/v1/reports/occu
 setInterval(()=>{
   $('clock').textContent=new Date().toLocaleTimeString('en-GB');
   const s=Math.floor((Date.now()-t0)/1000);
-  $('tc').textContent=`00:${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+  const tc=`00:${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+  document.querySelectorAll('[data-tc]').forEach(el=>el.textContent=tc);
 },1000);
 
 connect();startPoll();

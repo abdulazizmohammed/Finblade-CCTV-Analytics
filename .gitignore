@@ -5,13 +5,21 @@ venv/
 .pytest_cache/
 media/*.mp4
 media/cam1_frame.jpg
+media/*_frame.jpg
 *.Zone.Identifier
 *:Zone.Identifier
 
 # Regenerated evidence artifacts (keep contact_sheet.jpg + metrics.json as proof)
 evidence/frames/
+evidence/bookmarks/
 evidence/*.jsonl
 evidence/redbox_check.jpg
+evidence/scenario_first_frame.jpg
+evidence/metrics_*.json
+evidence/contact_*.jpg
+
+# Local SQLite history db (regenerated at runtime)
+data/
 
 # Local tooling / logs (bootstrap + install helpers)
 scripts/get-pip.py

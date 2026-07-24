@@ -1,0 +1,31 @@
+# SECOND-CAMERA config (demo shows 1-2 CCTV feeds).
+#
+# A distinct feed (the wide terminal clip) as CAM-B-02 so the dashboard shows two
+# cameras and the "disconnect one camera" step has a second camera to drop.
+# Run with a distinct MJPEG port:  run_cpu.py --config config/cameras.cam2.yaml --port 8081
+#
+# Zones here are rough (one broad floor zone) — good enough to produce live
+# occupancy + a heartbeat for the multi-camera / camera-offline demo. Draw real
+# polygons with tools/zone-editor.html against media/CAM-B-02_frame.jpg if needed.
+
+camera_id: CAM-B-02
+site_id: SITE-DXB-01
+
+source: media/1903279-uhd_1920_1440_30fps.mp4
+frame_width: 1920
+frame_height: 1440
+
+model_path: models/yolov8n.pt
+device: CPU
+conf_threshold: 0.35
+person_class_id: 0
+process_fps: 6
+imgsz: 1280
+
+zones:
+  - zone_id: ZONE-B-LOBBY
+    zone_name: Terminal Lobby
+    restricted: false
+    capacity_max: 60
+    area_sqm: 120.0
+    polygon: [[200, 650], [1700, 650], [1800, 1200], [150, 1200]]

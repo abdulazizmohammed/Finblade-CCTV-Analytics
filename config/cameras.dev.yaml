@@ -1,0 +1,43 @@
+# DEV / CPU variant config (added by the overnight agent — see DECISIONS.md D-2).
+#
+# This does NOT replace config/cameras.yaml. That file is the human's Arc/GPU
+# deployment config and is left untouched (device: GPU, OpenVINO IR path).
+# This variant runs the SAME pipeline on CPU with a .pt model against a local
+# file, so the spine can be shaken out without the Arc box.
+#
+# Zone polygons below MIRROR cameras.yaml verbatim (still the placeholder
+# rectangles). Replace them the same way: run once, open media/cam1_frame.jpg,
+# read off the real corners. Do this in cameras.yaml (the source of truth) and
+# copy here, or just edit here for CPU runs.
+
+camera_id: CAM-A-01
+site_id: SITE-DXB-01
+
+# Local file source (no RTSP/MediaMTX needed for CPU shake-out).
+# NOTE: points at the file actually present in media/. If you rename it to
+# clip.mp4 (see BLOCKERS.md B-2), update this line too.
+source: media/1903279-uhd_1920_1440_30fps.mp4
+frame_width: 1280
+frame_height: 720
+
+# YOLO / tracking — CPU + .pt (NOT OpenVINO/GPU; see CLAUDE.md rule 4).
+model_path: models/yolov8n.pt
+device: CPU
+conf_threshold: 0.35
+person_class_id: 0     # COCO 'person'
+process_fps: 8         # CPU-friendly frame-skip target
+
+zones:
+  - zone_id: ZONE-01
+    zone_name: Lobby
+    restricted: false
+    capacity_max: 40
+    area_sqm: 60.0
+    polygon: [[100, 300], [1180, 300], [1180, 700], [100, 700]]
+
+  - zone_id: ZONE-02
+    zone_name: Restricted Bay
+    restricted: true
+    capacity_max: 5
+    area_sqm: 12.0
+    polygon: [[850, 120], [1180, 120], [1180, 300], [850, 300]]

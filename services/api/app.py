@@ -14,6 +14,8 @@ import time
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .service import IngestService
 from .store import InMemoryStore
@@ -36,6 +38,31 @@ else:
 
 svc = IngestService(store, bus)
 app = FastAPI(title="FinBlade CCTV API", version="1.0")
+
+# Air-gapped LAN demo: allow the dashboard (file:// or another origin) to call us.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Serve the dashboard + theme so the operator can just open one URL.
+_WEB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "web"))
+if os.path.isdir(_WEB_DIR):
+    app.mount("/web", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+
+
+@app.post("/api/v1/alerts")
+async def raise_alert(request: Request):
+    """Ingest an alert fired by the inference-side rule engine (UC-44 feed).
+
+    The rule engine currently runs in the inference process; this lets it push
+    fired alerts to the store the dashboard reads. (A server-side consumer of the
+    event bus is the alternative wiring — see bus.py.)"""
+    alert = await request.json()
+    alert_id = svc.raise_alert(alert)
+    return JSONResponse(status_code=202, content={"accepted": True, "alert_id": alert_id})
 
 
 @app.post("/api/v1/events/ingest")

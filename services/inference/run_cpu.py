@@ -51,9 +51,28 @@ from finblade.geometry import foot_point                 # noqa: E402
 from finblade.identity import PersonRefHasher            # noqa: E402
 from finblade.metrics import (                           # noqa: E402
     DwellTracker, FlowCounter, ZoneStateAggregator, density_per_sqm, capacity_pct,
+    density_status,
 )
 from finblade.rules import RuleEngine                    # noqa: E402
 from finblade.zones import zone_of                       # noqa: E402
+
+try:
+    import requests  # already present (ultralytics dep); used for live POSTs
+except Exception:
+    requests = None
+
+# Live API sink (set by --api-url). When set, zone-states + alerts are POSTed so
+# the dashboard shows live data. Failures are swallowed so inference never stalls.
+_API = {"base": None}
+
+
+def _post(path, payload):
+    if not _API["base"] or requests is None:
+        return
+    try:
+        requests.post(_API["base"] + path, json=payload, timeout=0.5)
+    except Exception:
+        pass  # dashboard is best-effort; never block the pipeline on it
 
 # --- theme-matched overlay colours (BGR = hex channels reversed) -----------
 # Source of truth: web/finblade-theme.css :root overlay block.
@@ -250,9 +269,11 @@ def run(config_path, max_seconds=None):
                     intr = eng.evaluate_intrusion(pr, confirmed, zobj.restricted, vnow)
                     if intr:
                         alerts_fp.write(json.dumps(intr.as_dict()) + "\n")
+                        _post("/api/v1/alerts", intr.as_dict())
                     lo = eng.evaluate_loiter(pr, confirmed, d, vnow)
                     if lo:
                         alerts_fp.write(json.dumps(lo.as_dict()) + "\n")
+                        _post("/api/v1/alerts", lo.as_dict())
 
         det_counts.append(len(tracks))
         processed += 1
@@ -265,12 +286,21 @@ def run(config_path, max_seconds=None):
             for z in cfg.zones:
                 occ = occupancy[z.zone_id]
                 dens = density_per_sqm(occ, z.area_sqm)
+                cap_pct = capacity_pct(occ, z.capacity_max)
                 events_fp.write(json.dumps(
                     new_event(DENSITY_UPDATE, cfg.camera_id, cfg.site_id, vnow,
                               zone_id=z.zone_id, occupancy=occ, density=dens)) + "\n")
-                for al in eng.evaluate_zone(z.zone_id, dens,
-                                            capacity_pct(occ, z.capacity_max), vnow):
+                # Live zone-state for the dashboard cards (UC-29).
+                _post("/api/v1/zones/state", {
+                    "zone_id": z.zone_id, "camera_id": cfg.camera_id,
+                    "occupancy": occ, "density": dens, "capacity_pct": cap_pct,
+                    "inflow_per_min": flow.inflow_per_min(z.zone_id, vnow),
+                    "outflow_per_min": flow.outflow_per_min(z.zone_id, vnow),
+                    "status": density_status(dens), "ts": vnow,
+                })
+                for al in eng.evaluate_zone(z.zone_id, dens, cap_pct, vnow):
                     alerts_fp.write(json.dumps(al.as_dict()) + "\n")
+                    _post("/api/v1/alerts", al.as_dict())
 
         summary = "  ".join(f"{z.zone_name}={occupancy[z.zone_id]}" for z in cfg.zones)
         print(f"[{time.strftime('%H:%M:%S')}] tracked={len(tracks)}  {summary}", flush=True)
@@ -346,7 +376,14 @@ if __name__ == "__main__":
     ap.add_argument("--seconds", type=float, default=None,
                     help="stop after N seconds of video (evidence run)")
     ap.add_argument("--no-serve", action="store_true")
+    ap.add_argument("--api-url", default=None,
+                    help="POST live zone-states + alerts to this API base "
+                         "(e.g. http://127.0.0.1:8000) for the dashboard")
     args = ap.parse_args()
+
+    if args.api_url:
+        _API["base"] = args.api_url.rstrip("/")
+        print(f"[info] live-posting to {_API['base']}", flush=True)
 
     if not args.no_serve:
         threading.Thread(target=_serve, daemon=True).start()

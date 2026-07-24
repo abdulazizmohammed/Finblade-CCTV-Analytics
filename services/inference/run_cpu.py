@@ -87,9 +87,12 @@ EVIDENCE = os.path.join(_REPO_ROOT, "evidence")
 FRAMES_DIR = os.path.join(EVIDENCE, "frames")
 BOOKMARKS_DIR = os.path.join(EVIDENCE, "bookmarks")   # saved frame per event/alert
 
-# Movement events that get a bookmarked frame + are pushed to the history store.
+# Movement events pushed to the history store.
 ZONE_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION}
 POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE}
+# Only these alert severities get a saved frame (bookmark): R-06 intrusion
+# (CRITICAL) and R-02 density-critical (RED). Amber alerts do not.
+CRITICAL_SEVERITIES = {"CRITICAL", "RED"}
 
 _latest_jpeg = {"buf": None}
 _lock = threading.Lock()
@@ -350,9 +353,12 @@ def run(config_path, max_seconds=None):
             with _lock:
                 _latest_jpeg["buf"] = buf.tobytes()
 
+        # Bookmark a frame ONLY for critical alerts (R-06 intrusion, R-02 density
+        # critical) — not for every alert or movement event.
+        crit_alerts = [a for a in pending_alerts
+                       if str(a.get("severity", "")).upper() in CRITICAL_SEVERITIES]
         frame_ref = None
-        movement = any(ev["event_type"] in ZONE_EVENT_TYPES for ev in pending_events)
-        if pending_alerts or movement:
+        if crit_alerts:
             bookmark_seq += 1
             bname = f"bm_{cfg.camera_id}_{bookmark_seq:05d}.jpg"
             cv2.imwrite(os.path.join(BOOKMARKS_DIR, bname), annotated)
@@ -360,8 +366,6 @@ def run(config_path, max_seconds=None):
 
         # --- pass 2: persist to files + push to API (history + live) ---------
         for ev in pending_events:
-            if frame_ref and ev["event_type"] in ZONE_EVENT_TYPES:
-                ev["frame"] = frame_ref
             events_fp.write(json.dumps(ev) + "\n")
             if ev["event_type"] in POST_EVENT_TYPES:
                 _post("/api/v1/events/ingest", ev)
@@ -373,7 +377,7 @@ def run(config_path, max_seconds=None):
             # Rule engine is zone-centric; stamp which camera this alert came from.
             if al.get("camera_id") is None:
                 al["camera_id"] = cfg.camera_id
-            if frame_ref:
+            if frame_ref and str(al.get("severity", "")).upper() in CRITICAL_SEVERITIES:
                 al["frame"] = frame_ref
             alerts_fp.write(json.dumps(al) + "\n")
             _post("/api/v1/alerts", al)

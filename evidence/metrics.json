@@ -3,13 +3,13 @@
   "device": "cpu",
   "imgsz": 1280,
   "conf_threshold": 0.35,
-  "frames_processed": 513,
-  "avg_fps": 4.26,
+  "frames_processed": 120,
+  "avg_fps": 3.39,
   "detections_per_frame": {
-    "avg": 14.58,
-    "min": 5,
-    "max": 25
+    "avg": 12.38,
+    "min": 7,
+    "max": 17
   },
-  "unique_track_ids": 150,
-  "evidence_frames_saved": 23
+  "unique_track_ids": 32,
+  "evidence_frames_saved": 6
 }

@@ -3,242 +3,300 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FinBlade — Operations</title>
-<!-- Theme first; never hard-code a colour below. System fonts only (air-gapped). -->
+<title>FinBlade — Crowd Operations</title>
+<!-- Brand tokens first; every colour below comes from these variables. -->
 <link rel="stylesheet" href="finblade-theme.css">
 <style>
-  /* Layout only — every colour comes from theme variables. */
-  .fb-top {
-    display: flex; align-items: center; gap: 12px;
-    padding: 12px 18px; border-bottom: 1px solid var(--fb-line);
-    background: var(--fb-surface);
-  }
-  .fb-top h1 {
-    font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em;
-  }
-  .fb-top .spacer { flex: 1; }
-  .fb-conn {
-    font-family: var(--fb-font-data); font-size: 10px; letter-spacing: .1em;
-    text-transform: uppercase; color: var(--fb-text-muted);
-  }
-  .fb-wrap {
-    display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px;
-    padding: 14px; max-width: 1400px; margin: 0 auto;
-  }
-  @media (max-width: 900px) { .fb-wrap { grid-template-columns: 1fr; } }
+/* Layout + components for the ops console. Colours are theme variables only;
+   the only literals are neutral black/white shading (not brand hues). */
+body{
+  background:
+    radial-gradient(1200px 600px at 78% -10%, var(--fb-teal-ghost), transparent 60%),
+    radial-gradient(900px 500px at -5% 0%, var(--fb-restricted-ghost), transparent 55%),
+    var(--fb-void);
+  min-height:100vh;
+}
+.eyebrow{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-text-faint);font-weight:500;margin:0;}
 
-  .feed { position: relative; background: var(--fb-void); border-radius: var(--fb-r-lg);
-          overflow: hidden; aspect-ratio: 16 / 9; display: flex;
-          align-items: center; justify-content: center; }
-  .feed img { width: 100%; height: 100%; object-fit: contain; }
-  .feed .placeholder { color: var(--fb-text-faint); font-family: var(--fb-font-data);
-                       font-size: 12px; text-align: center; padding: 20px; }
+/* command bar */
+.topbar{display:flex;align-items:center;gap:16px;padding:12px 22px;background:var(--fb-surface);
+  border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:10;}
+.brand{display:flex;align-items:center;gap:11px;}
+.brand svg{display:block;filter:drop-shadow(0 0 6px var(--fb-teal-ghost));}
+.brand .bl-stroke{fill:none;stroke:var(--fb-teal);stroke-width:2;stroke-linejoin:round;}
+.brand .bl-fill{fill:var(--fb-teal);opacity:.9;}
+.brand .wm{font-weight:700;font-size:16px;letter-spacing:.14em;}
+.brand .wm b{color:var(--fb-teal);}
+.brand .tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.spacer{flex:1;}
+.meta{display:flex;align-items:center;gap:18px;}
+.meta .site{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);letter-spacing:.04em;}
+.clock{font-family:var(--fb-font-data);color:var(--fb-teal);letter-spacing:.06em;font-variant-numeric:tabular-nums;}
+.conn{display:flex;align-items:center;gap:7px;font-family:var(--fb-font-data);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.conn .dot{width:7px;height:7px;border-radius:50%;background:var(--fb-teal);box-shadow:0 0 8px var(--fb-teal);animation:fbpulse 2.4s ease-in-out infinite;}
+.conn.off .dot{background:var(--fb-critical);box-shadow:0 0 8px var(--fb-critical);}
+@keyframes fbpulse{0%,100%{opacity:1}50%{opacity:.25}}
 
-  .grid-zones { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-                gap: 12px; }
-  .zcard { padding: 12px; }
-  .zcard h3 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
-  .zcard .metric { display: flex; justify-content: space-between; align-items: baseline;
-                   margin-top: 8px; }
-  .zcard .metric .big { font-size: 24px; }
-  .zcard .metric .lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .1em;
-                        color: var(--fb-text-faint); font-family: var(--fb-font-data); }
-  .bar { height: 4px; border-radius: 2px; background: var(--fb-line); margin-top: 10px;
-         overflow: hidden; }
-  .bar > span { display: block; height: 100%; background: var(--fb-ok); }
-  .bar[data-status="AMBER"] > span    { background: var(--fb-warning); }
-  .bar[data-status="RED"] > span      { background: var(--fb-critical); }
+.wrap{max-width:1440px;margin:0 auto;padding:18px 22px 40px;}
 
-  .cams { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-  .cam { font-family: var(--fb-font-data); font-size: 11px; padding: 6px 10px;
-         border: 1px solid var(--fb-line); border-radius: var(--fb-r);
-         display: flex; align-items: center; gap: 6px; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; }
-  .dot--on  { background: var(--fb-teal); }         /* chrome: "receiving" */
-  .dot--off { background: var(--fb-critical); }     /* live fault */
+/* KPI strip */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+.kpi{background:linear-gradient(180deg,var(--fb-surface-2),var(--fb-surface));border:1px solid var(--fb-line);
+  border-radius:var(--fb-r-lg);padding:14px 16px;position:relative;overflow:hidden;}
+.kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--fb-teal);opacity:.35;}
+.kpi.alert::after{background:var(--fb-critical);opacity:.9;}
+.kpi .val{font-size:30px;line-height:1;font-weight:500;letter-spacing:-.02em;margin-top:10px;}
+.kpi .val .u{font-size:13px;color:var(--fb-text-muted);margin-left:5px;letter-spacing:0;}
+.kpi .sub{margin-top:8px;font-size:11px;color:var(--fb-text-muted);font-family:var(--fb-font-data);}
+.kpi.alert .val{color:var(--fb-critical);}
 
-  .alerts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px;
-            max-height: 380px; overflow-y: auto; }
-  .alert { padding: 9px 11px; border-radius: var(--fb-r);
-           border-left: 3px solid var(--fb-ok); background: var(--fb-surface-2); }
-  .alert[data-sev="AMBER"]    { border-left-color: var(--fb-warning); }
-  .alert[data-sev="RED"]      { border-left-color: var(--fb-critical); }
-  .alert[data-sev="CRITICAL"] { border-left-color: var(--fb-restricted); } /* intrusion */
-  .alert .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-  .alert .rule { font-family: var(--fb-font-data); font-size: 10px;
-                 letter-spacing: .08em; color: var(--fb-text-muted); }
-  .alert .msg { margin: 4px 0 0; font-size: 12.5px; }
-  .empty { color: var(--fb-text-faint); font-size: 12px; padding: 8px 2px; }
+.grid{display:grid;grid-template-columns:1.65fr 1fr;gap:16px;}
+@media(max-width:960px){.grid{grid-template-columns:1fr;}.kpis{grid-template-columns:repeat(2,1fr);}}
+
+.panel{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);}
+.section-h{display:flex;align-items:center;gap:10px;margin:0 0 10px;}
+.section-h .rule{flex:1;height:1px;background:var(--fb-line);}
+
+/* feed (uses the theme .fb-bracket corner motif) */
+.feed{position:relative;aspect-ratio:16/10;border-radius:var(--fb-r-lg);overflow:hidden;display:flex;align-items:center;justify-content:center;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.18) 0 1px,transparent 1px 3px),radial-gradient(120% 90% at 50% 40%,var(--fb-surface-2),var(--fb-void) 75%);}
+.feed img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--fb-void);}
+.feed .scan{position:absolute;inset:0;height:40%;background:linear-gradient(180deg,transparent,var(--fb-teal-ghost) 50%,transparent);animation:scan 6s linear infinite;pointer-events:none;}
+@keyframes scan{0%{transform:translateY(-120%)}100%{transform:translateY(320%)}}
+.feed .live{position:absolute;left:12px;top:12px;display:flex;align-items:center;gap:6px;font-family:var(--fb-font-data);font-size:10px;letter-spacing:.14em;color:var(--fb-critical);text-transform:uppercase;z-index:3;}
+.feed .live .rd{width:7px;height:7px;border-radius:50%;background:var(--fb-critical);box-shadow:0 0 8px var(--fb-critical);animation:fbpulse 1.6s ease-in-out infinite;}
+.feed .tc{position:absolute;right:12px;top:12px;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-teal);letter-spacing:.05em;z-index:3;}
+.feed .cap{position:absolute;left:12px;bottom:12px;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);z-index:3;}
+.feed .ph{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;text-align:center;z-index:2;padding:20px;}
+
+/* camera health */
+.cams{display:flex;gap:10px;flex-wrap:wrap;padding:12px 14px;}
+.cam{display:flex;align-items:center;gap:8px;font-family:var(--fb-font-data);font-size:11px;padding:7px 11px;border:1px solid var(--fb-line);border-radius:var(--fb-r);}
+.cam .d{width:7px;height:7px;border-radius:50%;}
+.cam .d.on{background:var(--fb-teal);box-shadow:0 0 6px var(--fb-teal);}
+.cam .d.off{background:var(--fb-critical);}
+.empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:6px 2px;}
+
+/* zone cards (theme .fb-bracket) */
+.zones{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+@media(max-width:520px){.zones{grid-template-columns:1fr;}}
+.zcard{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:14px;}
+.zcard .zh{display:flex;justify-content:space-between;align-items:center;}
+.zcard h3{margin:0;font-size:13px;font-weight:600;}
+.pill{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:2px 7px;border-radius:2px;border:1px solid currentColor;}
+.pill.normal{color:var(--fb-ok);}
+.pill.warning{color:var(--fb-warning);background:var(--fb-warning-ghost);}
+.pill.critical{color:var(--fb-critical);background:var(--fb-critical-ghost);}
+.pill.restricted{color:var(--fb-restricted);background:var(--fb-restricted-ghost);}
+.zbig{display:flex;align-items:baseline;gap:6px;margin-top:8px;}
+.zbig .n{font-size:30px;font-weight:500;line-height:1;}
+.zbig .of{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:14px;}
+.zrow{display:flex;justify-content:space-between;margin-top:8px;font-family:var(--fb-font-data);font-size:12px;color:var(--fb-text-muted);}
+.meter{height:5px;border-radius:3px;background:var(--fb-line);margin-top:10px;overflow:hidden;}
+.meter>span{display:block;height:100%;background:var(--fb-ok);border-radius:3px;transition:width .4s;}
+.meter[data-s="AMBER"]>span{background:var(--fb-warning);}
+.meter[data-s="RED"]>span{background:var(--fb-critical);}
+.flow{display:flex;justify-content:space-between;margin-top:10px;}
+.flow .f{display:flex;flex-direction:column;gap:2px;}
+.flow .k{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--fb-text-faint);font-family:var(--fb-font-data);}
+.flow .v{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:13px;}
+
+/* alerts */
+.alerts{display:flex;flex-direction:column;gap:9px;padding:12px 14px;max-height:520px;overflow-y:auto;}
+.alert{display:flex;gap:11px;padding:10px 12px;border-radius:var(--fb-r);background:var(--fb-surface-2);border-left:3px solid var(--fb-ok);}
+.alert[data-sev="AMBER"]{border-left-color:var(--fb-warning);}
+.alert[data-sev="RED"]{border-left-color:var(--fb-critical);}
+.alert[data-sev="CRITICAL"]{border-left-color:var(--fb-restricted);background:linear-gradient(90deg,var(--fb-restricted-ghost),var(--fb-surface-2));animation:alarm 1.4s steps(2) infinite;}
+@keyframes alarm{0%,100%{background:linear-gradient(90deg,var(--fb-restricted-ghost),var(--fb-surface-2));}50%{background:var(--fb-surface-2);}}
+.alert .body{flex:1;min-width:0;}
+.alert .top{display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.alert .rid{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.08em;color:var(--fb-text-muted);}
+.alert .msg{margin:4px 0 0;font-size:12.5px;}
+.alert .t{font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);}
+.ack{background:transparent;border:1px solid var(--fb-line-bright);color:var(--fb-text-muted);font-family:var(--fb-font-data);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:5px 9px;border-radius:var(--fb-r);cursor:pointer;align-self:center;}
+.ack:hover{border-color:var(--fb-teal);color:var(--fb-teal);}
+
+.foot{margin-top:22px;text-align:center;color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:10px;letter-spacing:.06em;}
+:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
 </style>
 </head>
 <body>
-  <div class="fb-top">
-    <span class="fb-live" aria-hidden="true"></span>
-    <h1>FinBlade&nbsp;·&nbsp;Crowd Operations</h1>
-    <span class="fb-timecode" id="clock">--:--:--</span>
+  <div class="topbar">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+        <path class="bl-stroke" d="M6 3 L20 3 L26 16 L20 29 L6 29 L12 16 Z"/>
+        <path class="bl-fill" d="M12 16 L20 3 L26 16 Z"/>
+      </svg>
+      <span class="wm">FIN<b>BLADE</b></span>
+      <span class="tag">Crowd Ops</span>
+    </div>
     <span class="spacer"></span>
-    <span class="fb-conn" id="conn">connecting…</span>
-    <button class="fb-btn" id="reportBtn">Occupancy report</button>
+    <div class="meta">
+      <span class="site" id="site">—</span>
+      <span class="clock fb-num" id="clock">--:--:--</span>
+      <span class="conn" id="conn"><span class="dot"></span> connecting…</span>
+      <button class="fb-btn fb-btn--primary" id="report">Occupancy report</button>
+    </div>
   </div>
 
-  <div class="fb-wrap">
-    <!-- LEFT: live annotated feed (UC-41) -->
-    <section>
-      <p class="fb-eyebrow">Live feed · annotated</p>
-      <div class="feed fb-bracket" id="feed">
-        <div class="placeholder" id="feedPlaceholder">
-          waiting for inference stream on :8080<br>
-          (boxes · track IDs · foot points · zone overlays)
+  <div class="wrap">
+    <div class="kpis">
+      <div class="kpi"><p class="eyebrow">Total occupancy</p><div class="val fb-num" id="kOcc">0<span class="u">people</span></div><div class="sub" id="kOccSub">across 0 zones</div></div>
+      <div class="kpi" id="kAlertTile"><p class="eyebrow">Active alerts</p><div class="val fb-num" id="kAlerts">0</div><div class="sub" id="kAlertsSub">0 critical · 0 warning</div></div>
+      <div class="kpi"><p class="eyebrow">Cameras online</p><div class="val fb-num" id="kCams">0<span class="u">/ 0</span></div><div class="sub">heartbeat &lt; 30s</div></div>
+      <div class="kpi"><p class="eyebrow">Peak density</p><div class="val fb-num" id="kDens">0.00<span class="u">/m²</span></div><div class="sub" id="kDensSub">—</div></div>
+    </div>
+
+    <div class="grid">
+      <section>
+        <div class="section-h"><p class="eyebrow">Live feed · annotated</p><span class="rule"></span></div>
+        <div class="feed fb-bracket" id="feed">
+          <div class="scan"></div>
+          <div class="live"><span class="rd"></span> Live</div>
+          <div class="tc fb-num" id="tc">00:00:00</div>
+          <div class="ph" id="feedPh">connecting to inference stream on :8080<br>detect · track · foot-point · zone overlay</div>
+          <div class="cap">yolov8n · CPU</div>
         </div>
-      </div>
+        <div class="section-h" style="margin-top:18px;"><p class="eyebrow">Camera health</p><span class="rule"></span></div>
+        <div class="panel cams" id="cams"><span class="empty">no cameras reporting</span></div>
+      </section>
 
-      <p class="fb-eyebrow" style="margin-top:16px;">Camera health</p>
-      <div class="fb-panel">
-        <div class="cams" id="cams"><span class="empty">no cameras reporting</span></div>
-      </div>
-    </section>
-
-    <!-- RIGHT: zones + alerts -->
-    <section>
-      <p class="fb-eyebrow">Zones</p>
-      <div class="grid-zones" id="zones"><span class="empty">no zone data</span></div>
-
-      <p class="fb-eyebrow" style="margin-top:16px;">Alerts</p>
-      <div class="fb-panel">
-        <div class="alerts" id="alerts"><span class="empty">no active alerts</span></div>
-      </div>
-    </section>
+      <section>
+        <div class="section-h"><p class="eyebrow">Zones</p><span class="rule"></span></div>
+        <div class="zones" id="zones"><span class="empty">no zone data</span></div>
+        <div class="section-h" style="margin-top:18px;"><p class="eyebrow">Alert feed</p><span class="rule"></span></div>
+        <div class="panel alerts" id="alerts"><span class="empty">no active alerts</span></div>
+      </section>
+    </div>
+    <div class="foot">FinBlade Crowd Analytics · CPU inference · air-gapped build</div>
   </div>
 
 <script>
-// ---- config: same-host services (air-gapped, no external calls) ----
-const API = `http://${location.hostname}:8000`;
-const WS  = `ws://${location.hostname}:8000/ws`;
-const STREAM = `http://${location.hostname}:8080/stream`;
-const PILL = { NORMAL:'fb-pill--normal', AMBER:'fb-pill--warning',
-               RED:'fb-pill--critical', CRITICAL:'fb-pill--restricted' };
+const API=`http://${location.hostname}:8000`, WS=`ws://${location.hostname}:8000/ws`, STREAM=`http://${location.hostname}:8080/stream`;
+const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
+const t0=Date.now();
 
-function el(id){ return document.getElementById(id); }
-function esc(s){ const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML; }
+const SEVCLASS={NORMAL:'normal',AMBER:'warning',RED:'critical',CRITICAL:'critical',INFO:'normal'};
+const BRACK={AMBER:'warning',RED:'critical'};
 
-// ---- live feed (best-effort; shows placeholder until stream is up) ----
+// live annotated feed (best effort; placeholder until the stream is up)
 (function mountFeed(){
-  const img = new Image();
-  img.alt = 'annotated feed';
-  img.onload = () => { el('feedPlaceholder')?.remove(); if(!img.parentNode) el('feed').appendChild(img); };
-  img.onerror = () => {};
-  img.src = STREAM;
-  img.onload = () => { const p=el('feedPlaceholder'); if(p) p.remove(); el('feed').appendChild(img); };
+  const img=new Image();
+  img.onload=()=>{const p=$('feedPh');if(p)p.remove();if(!img.parentNode)$('feed').appendChild(img);};
+  img.onerror=()=>{};
+  img.src=STREAM;
 })();
 
-// ---- rendering ----
+function renderKpis(zones,alerts){
+  const totOcc=zones.reduce((a,z)=>a+(+z.occupancy||0),0);
+  $('kOcc').innerHTML=`${totOcc}<span class="u">people</span>`;
+  $('kOccSub').textContent=`across ${zones.length} zone${zones.length===1?'':'s'}`;
+  const crit=alerts.filter(a=>['CRITICAL','RED'].includes(String(a.severity).toUpperCase())).length;
+  const warn=alerts.length-crit;
+  $('kAlerts').textContent=alerts.length;
+  $('kAlertsSub').textContent=`${crit} critical · ${warn} warning`;
+  $('kAlertTile').classList.toggle('alert',alerts.length>0);
+  const cams=[...new Set(zones.map(z=>z.camera_id).filter(Boolean))];
+  const offline=new Set(alerts.filter(a=>a.rule_id==='R-07').map(a=>a.camera_id));
+  const online=cams.filter(c=>!offline.has(c)).length;
+  $('kCams').innerHTML=`${online}<span class="u">/ ${cams.length}</span>`;
+  let peak={d:-1,name:'—',status:''};
+  zones.forEach(z=>{if((+z.density||0)>peak.d)peak={d:+z.density,name:z.zone_name||z.zone_id,status:z.status};});
+  $('kDens').innerHTML=`${(peak.d<0?0:peak.d).toFixed(2)}<span class="u">/m²</span>`;
+  $('kDensSub').textContent=peak.d<0?'—':`${peak.name} · ${String(peak.status||'normal').toLowerCase()} band`;
+}
+
 function renderZones(zones){
-  const host = el('zones');
-  if(!zones || !zones.length){ host.innerHTML = '<span class="empty">no zone data</span>'; return; }
-  host.innerHTML = zones.map(z => {
-    const st = String(z.status||'NORMAL').toUpperCase();
-    const cap = Math.min(100, Number(z.capacity_pct||0));
-    return `<div class="fb-panel fb-bracket zcard" data-status="${st==='NORMAL'?'':st.toLowerCase()}">
-      <div class="row" style="display:flex;justify-content:space-between;align-items:center;">
-        <h3>${esc(z.zone_id)}</h3>
-        <span class="fb-pill ${PILL[st]||'fb-pill--normal'}">${esc(st)}</span>
-      </div>
-      <div class="metric">
-        <span class="big fb-num">${Number(z.occupancy||0)}</span>
-        <span class="lbl">occupancy</span>
-      </div>
-      <div class="metric">
-        <span class="fb-num">${Number(z.density||0).toFixed(2)}/m²</span>
-        <span class="fb-num">${cap.toFixed(0)}% cap</span>
-      </div>
-      <div class="bar" data-status="${st}"><span style="width:${cap}%"></span></div>
-      <div class="metric">
-        <span class="lbl">in ${Number(z.inflow_per_min||0).toFixed(1)}/min</span>
-        <span class="lbl">out ${Number(z.outflow_per_min||0).toFixed(1)}/min</span>
-      </div>
-    </div>`;
+  const host=$('zones');
+  if(!zones.length){host.innerHTML='<span class="empty">no zone data</span>';return;}
+  host.innerHTML=zones.map(z=>{
+    const st=String(z.status||'NORMAL').toUpperCase();
+    const intrusion=z.restricted && (+z.occupancy||0)>0;
+    const dataStatus=intrusion?'restricted':(BRACK[st]||'');
+    const pill=intrusion?'restricted':(SEVCLASS[st]||'normal');
+    const pillTxt=intrusion?'Intrusion':st;
+    const cap=Math.min(100,+z.capacity_pct||0);
+    const capMax=(z.capacity_pct>0)?Math.round(100*(+z.occupancy||0)/(+z.capacity_pct)):'—';
+    return `<div class="zcard fb-bracket"${dataStatus?` data-status="${dataStatus}"`:''}>
+      <div class="zh"><h3>${esc(z.zone_name||z.zone_id)}</h3><span class="pill ${pill}">${esc(pillTxt)}</span></div>
+      <div class="zbig"><span class="n fb-num">${+z.occupancy||0}</span><span class="of">/ ${capMax}</span></div>
+      <div class="zrow"><span class="fb-num">${(+z.density||0).toFixed(2)} /m²</span><span>${z.restricted?'no-go zone':cap.toFixed(0)+'% capacity'}</span></div>
+      <div class="meter" data-s="${z.restricted?'':st}"><span style="width:${cap}%"></span></div>
+      <div class="flow">
+        <div class="f"><span class="k">Inflow</span><span class="v">${(+z.inflow_per_min||0).toFixed(1)}/min</span></div>
+        <div class="f"><span class="k">Outflow</span><span class="v">${(+z.outflow_per_min||0).toFixed(1)}/min</span></div>
+      </div></div>`;
   }).join('');
 }
 
-function renderCams(zones){
-  // Derive a simple health grid from zone camera_ids present in the feed.
-  const host = el('cams');
-  const cams = {};
-  (zones||[]).forEach(z => { if(z.camera_id) cams[z.camera_id] = true; });
-  const ids = Object.keys(cams);
-  if(!ids.length){ host.innerHTML = '<span class="empty">no cameras reporting</span>'; return; }
-  host.innerHTML = ids.map(id =>
-    `<span class="cam"><span class="dot dot--on"></span>${esc(id)}</span>`).join('');
+function renderCams(zones,alerts){
+  const host=$('cams');
+  const cams=[...new Set(zones.map(z=>z.camera_id).filter(Boolean))];
+  if(!cams.length){host.innerHTML='<span class="empty">no cameras reporting</span>';return;}
+  const offline=new Set(alerts.filter(a=>a.rule_id==='R-07').map(a=>a.camera_id));
+  host.innerHTML=cams.map(c=>{
+    const off=offline.has(c);
+    return `<span class="cam"><span class="d ${off?'off':'on'}"></span>${esc(c)} · ${off?'offline':'online'}</span>`;
+  }).join('');
 }
 
 function renderAlerts(alerts){
-  const host = el('alerts');
-  if(!alerts || !alerts.length){ host.innerHTML = '<span class="empty">no active alerts</span>'; return; }
-  host.innerHTML = alerts.map(a => {
-    const sev = String(a.severity||'INFO').toUpperCase();
-    const isAlarm = (sev==='RED'||sev==='CRITICAL');
-    return `<div class="alert ${isAlarm?'fb-alarm':''}" data-sev="${sev}">
-      <div class="row">
-        <span class="rule">${esc(a.rule_id)} · ${esc(sev)}</span>
-        <button class="fb-btn fb-btn--danger" data-ack="${esc(a.alert_id)}">ack</button>
-      </div>
-      <p class="msg">${esc(a.message)}</p>
-    </div>`;
+  const host=$('alerts');
+  if(!alerts.length){host.innerHTML='<span class="empty">no active alerts</span>';return;}
+  host.innerHTML=alerts.map(a=>{
+    const sev=String(a.severity||'INFO').toUpperCase();
+    return `<div class="alert" data-sev="${sev}">
+      <div class="body"><div class="top"><span class="rid">${esc(a.rule_id)} · ${esc(sev)}</span>
+      <span class="t fb-num">${a.ts!=null?(+a.ts).toFixed(0)+'s':''}</span></div>
+      <p class="msg">${esc(a.message)}</p></div>
+      <button class="ack" data-ack="${esc(a.alert_id)}">Ack</button></div>`;
   }).join('');
-  host.querySelectorAll('[data-ack]').forEach(btn =>
-    btn.addEventListener('click', () => ackAlert(btn.getAttribute('data-ack'))));
+  host.querySelectorAll('[data-ack]').forEach(b=>b.addEventListener('click',()=>ack(b.getAttribute('data-ack'))));
 }
 
-async function ackAlert(id){
-  try {
-    await fetch(`${API}/api/v1/alerts/${id}/ack`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({acknowledged_by:'operator'})
-    });
-    poll(); // refresh
-  } catch(e){ /* offline; will refresh on next tick */ }
+async function ack(id){
+  try{await fetch(`${API}/api/v1/alerts/${id}/ack`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acknowledged_by:'operator'})});poll();}catch(e){}
 }
 
-function apply(data){
-  renderZones(data.zones);
-  renderCams(data.zones);
-  renderAlerts(data.alerts);
+function apply(d){
+  const zones=d.zones||[], alerts=d.alerts||[];
+  if(zones[0]&&zones[0].camera_id)$('site').textContent=zones[0].camera_id;
+  renderKpis(zones,alerts);renderZones(zones);renderCams(zones,alerts);renderAlerts(alerts);
 }
 
-// ---- transport: WebSocket (UC-45) with 5s REST fallback (UC-46) ----
-let ws=null, pollTimer=null;
-function setConn(t){ el('conn').textContent = t; }
-
+let ws=null,pollTimer=null;
+const setConn=(t,off)=>{const c=$('conn');c.innerHTML=`<span class="dot"></span> ${t}`;c.classList.toggle('off',!!off);};
 async function poll(){
-  try {
-    const [z,a] = await Promise.all([
+  try{
+    const [z,a]=await Promise.all([
       fetch(`${API}/api/v1/zones/state`).then(r=>r.json()),
-      fetch(`${API}/api/v1/alerts?unacked_only=true`).then(r=>r.json())
-    ]);
-    apply({zones:z.zones, alerts:a.alerts});
-    setConn('rest · 5s');
-  } catch(e){ setConn('offline'); }
+      fetch(`${API}/api/v1/alerts?unacked_only=true`).then(r=>r.json())]);
+    apply({zones:z.zones,alerts:a.alerts});setConn('rest · 5s');
+  }catch(e){setConn('offline',true);}
 }
-function startPolling(){ if(pollTimer) return; poll(); pollTimer=setInterval(poll,5000); }
-function stopPolling(){ clearInterval(pollTimer); pollTimer=null; }
-
+function startPoll(){if(pollTimer)return;poll();pollTimer=setInterval(poll,5000);}
+function stopPoll(){clearInterval(pollTimer);pollTimer=null;}
 function connect(){
-  try {
-    ws = new WebSocket(WS);
-    ws.onopen = () => { setConn('websocket'); stopPolling(); };
-    ws.onmessage = (m) => { try { apply(JSON.parse(m.data)); } catch(e){} };
-    ws.onclose = () => { setConn('rest · 5s'); startPolling(); setTimeout(connect, 4000); };
-    ws.onerror = () => { try{ ws.close(); }catch(e){} };
-  } catch(e){ startPolling(); }
+  try{
+    ws=new WebSocket(WS);
+    ws.onopen=()=>{setConn('websocket');stopPoll();};
+    ws.onmessage=m=>{try{apply(JSON.parse(m.data));}catch(e){}};
+    ws.onclose=()=>{setConn('rest · 5s');startPoll();setTimeout(connect,4000);};
+    ws.onerror=()=>{try{ws.close();}catch(e){}};
+  }catch(e){startPoll();}
 }
 
-el('reportBtn').addEventListener('click', () =>
-  window.open(`${API}/api/v1/reports/occupancy`, '_blank'));
+$('report').addEventListener('click',()=>window.open(`${API}/api/v1/reports/occupancy`,'_blank'));
+setInterval(()=>{
+  $('clock').textContent=new Date().toLocaleTimeString('en-GB');
+  const s=Math.floor((Date.now()-t0)/1000);
+  $('tc').textContent=`00:${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+},1000);
 
-setInterval(() => { el('clock').textContent = new Date().toLocaleTimeString(); }, 1000);
-
-connect();
-startPolling(); // immediate data even before WS opens; WS cancels it on open
+connect();startPoll();
 </script>
 </body>
 </html>

@@ -291,8 +291,11 @@ def run(config_path, max_seconds=None):
                     new_event(DENSITY_UPDATE, cfg.camera_id, cfg.site_id, vnow,
                               zone_id=z.zone_id, occupancy=occ, density=dens)) + "\n")
                 # Live zone-state for the dashboard cards (UC-29).
+                # zone_name/restricted are extra keys (validator ignores them)
+                # that let the dashboard label cards + show intrusion styling.
                 _post("/api/v1/zones/state", {
                     "zone_id": z.zone_id, "camera_id": cfg.camera_id,
+                    "zone_name": z.zone_name, "restricted": z.restricted,
                     "occupancy": occ, "density": dens, "capacity_pct": cap_pct,
                     "inflow_per_min": flow.inflow_per_min(z.zone_id, vnow),
                     "outflow_per_min": flow.outflow_per_min(z.zone_id, vnow),

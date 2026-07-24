@@ -1,0 +1,114 @@
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from finblade.events import DENSITY_UPDATE, ZONE_ENTRY, new_event
+from finblade.identity import PersonRefHasher
+from services.api.bus import InMemoryBus
+from services.api.report import render_report_html
+from services.api.schema import validate_zone_state
+from services.api.service import IngestService
+from services.api.store import InMemoryStore
+
+PR = PersonRefHasher(session_salt="fixed").ref(1)
+
+
+def _svc():
+    return IngestService(InMemoryStore(), InMemoryBus())
+
+
+class TestIngest(unittest.TestCase):
+    def test_valid_event_accepted_and_published(self):
+        svc = _svc()
+        e = new_event(ZONE_ENTRY, "CAM-A-01", "SITE-1", 1.0,
+                      zone_to="Z1", person_ref=PR, confidence=0.9)
+        code, body = svc.ingest_event(e)
+        self.assertEqual(code, 202)
+        self.assertTrue(body["accepted"])
+        self.assertEqual(svc.store.event_count(), 1)
+        self.assertEqual(len(svc.bus.consume()), 1)
+
+    def test_malformed_event_rejected_not_stored(self):
+        svc = _svc()
+        e = new_event(DENSITY_UPDATE, "CAM-A-01", "SITE-1", 1.0,
+                      zone_id="Z1", occupancy=-3, density=0.1)
+        code, body = svc.ingest_event(e)
+        self.assertEqual(code, 422)
+        self.assertFalse(body["accepted"])
+        self.assertEqual(svc.store.event_count(), 0)
+        self.assertEqual(len(svc.bus.consume()), 0)
+
+
+class TestZoneState(unittest.TestCase):
+    def _state(self, **over):
+        base = dict(zone_id="Z1", camera_id="CAM-A-01", occupancy=3, density=0.05,
+                    capacity_pct=7.5, inflow_per_min=1.0, outflow_per_min=0.0,
+                    status="NORMAL", ts=100.0)
+        base.update(over)
+        return base
+
+    def test_valid_state_accepted(self):
+        svc = _svc()
+        code, _ = svc.record_zone_state(self._state())
+        self.assertEqual(code, 202)
+
+    def test_bad_status_rejected(self):
+        ok, errs = validate_zone_state(self._state(status="GREEN"))
+        self.assertFalse(ok)
+
+    def test_latest_state_and_range(self):
+        svc = _svc()
+        svc.record_zone_state(self._state(ts=100.0, occupancy=3))
+        svc.record_zone_state(self._state(ts=105.0, occupancy=5))
+        latest = svc.zone_states()
+        self.assertEqual(len(latest), 1)
+        self.assertEqual(latest[0]["occupancy"], 5)
+        rng = svc.zone_state_range("Z1", 99.0, 101.0)
+        self.assertEqual(len(rng), 1)
+        self.assertEqual(rng[0]["occupancy"], 3)
+
+
+class TestAlertsAck(unittest.TestCase):
+    def test_ack_flow(self):
+        svc = _svc()
+        aid = svc.raise_alert({"rule_id": "R-02", "severity": "RED",
+                               "message": "critical", "zone_id": "Z1", "ts": 10.0})
+        self.assertEqual(len(svc.list_alerts(unacked_only=True)), 1)
+        code, body = svc.acknowledge(aid, "operator-jane", ts=20.0)
+        self.assertEqual(code, 200)
+        self.assertEqual(body["acknowledged_by"], "operator-jane")
+        self.assertEqual(len(svc.list_alerts(unacked_only=True)), 0)
+
+    def test_double_ack_conflicts(self):
+        svc = _svc()
+        aid = svc.raise_alert({"rule_id": "R-02", "severity": "RED",
+                               "message": "x", "ts": 10.0})
+        svc.acknowledge(aid, "op", ts=20.0)
+        code, _ = svc.acknowledge(aid, "op2", ts=21.0)
+        self.assertEqual(code, 409)
+
+    def test_ack_requires_who(self):
+        svc = _svc()
+        aid = svc.raise_alert({"rule_id": "R-02", "severity": "RED", "message": "x", "ts": 1.0})
+        code, _ = svc.acknowledge(aid, "", ts=2.0)
+        self.assertEqual(code, 400)
+
+
+class TestReport(unittest.TestCase):
+    def test_report_html_has_no_hardcoded_hex(self):
+        html_out = render_report_html(
+            [{"zone_id": "Z1", "occupancy": 5, "density": 0.08, "capacity_pct": 12.5,
+              "inflow_per_min": 1.0, "outflow_per_min": 0.5, "status": "AMBER"}],
+            generated_at=0.0)
+        self.assertIn("finblade-theme.css", html_out)
+        self.assertIn("fb-num", html_out)          # tabular numerals class
+        self.assertIn("fb-pill--warning", html_out)  # amber via theme class
+        # No inline hex colour literals anywhere in the report body.
+        import re
+        self.assertEqual(re.findall(r"#[0-9a-fA-F]{6}", html_out), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

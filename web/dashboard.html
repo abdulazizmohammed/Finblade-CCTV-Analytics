@@ -21,12 +21,8 @@ body{
 /* command bar */
 .topbar{display:flex;align-items:center;gap:16px;padding:12px 22px;background:var(--fb-surface);
   border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:10;}
-.brand{display:flex;align-items:center;gap:11px;}
-.brand svg{display:block;filter:drop-shadow(0 0 6px var(--fb-teal-ghost));}
-.brand .bl-stroke{fill:none;stroke:var(--fb-teal);stroke-width:2;stroke-linejoin:round;}
-.brand .bl-fill{fill:var(--fb-teal);opacity:.9;}
-.brand .wm{font-weight:700;font-size:16px;letter-spacing:.14em;}
-.brand .wm b{color:var(--fb-teal);}
+.brand{display:flex;align-items:center;gap:12px;}
+.brand-logo{height:30px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
 .brand .tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;
   color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
 .spacer{flex:1;}
@@ -125,11 +121,7 @@ body{
 <body>
   <div class="topbar">
     <div class="brand">
-      <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
-        <path class="bl-stroke" d="M6 3 L20 3 L26 16 L20 29 L6 29 L12 16 Z"/>
-        <path class="bl-fill" d="M12 16 L20 3 L26 16 Z"/>
-      </svg>
-      <span class="wm">FIN<b>BLADE</b></span>
+      <img class="brand-logo" src="logo.svg" alt="FinBlade" width="126" height="30">
       <span class="tag">Crowd Ops</span>
     </div>
     <span class="spacer"></span>

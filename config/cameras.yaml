@@ -1,0 +1,40 @@
+# Camera + zone definitions for the spine.
+#
+# Zone polygons are given in PIXEL coordinates of the decoded frame (see width/height).
+# For the spine we keep it simple with pixel polygons + a measured floor area.
+# Upgrade path: switch to normalized [0..1] coords + a per-camera homography so
+# density_sqm is geometrically exact instead of using a hand-measured area.
+#
+# HOW TO SET THE POLYGON:
+#   1. Run the service once — it saves a still frame to ./media/cam1_frame.jpg
+#   2. Open it, read off pixel coordinates of the zone corners
+#   3. Paste them below (clockwise), set area_sqm to the real measured floor area
+
+camera_id: CAM-A-01
+site_id: SITE-DXB-01
+rtsp_url: rtsp://mediamtx:8554/cam1   # 'mediamtx' = compose service name; use host IP if run bare
+frame_width: 1280
+frame_height: 720
+
+# YOLO / tracking
+model_path: /models/yolov8n_openvino_model   # OpenVINO IR dir (see README export step)
+device: GPU            # OpenVINO device: GPU = Intel Arc; CPU as fallback
+conf_threshold: 0.35
+person_class_id: 0     # COCO 'person'
+process_fps: 12        # frame-skip target to keep latency low; -1 = every frame
+
+zones:
+  - zone_id: ZONE-01
+    zone_name: Lobby
+    restricted: false
+    capacity_max: 40
+    area_sqm: 60.0
+    # placeholder rectangle — replace with real corners from the saved still frame
+    polygon: [[100, 300], [1180, 300], [1180, 700], [100, 700]]
+
+  - zone_id: ZONE-02
+    zone_name: Restricted Bay
+    restricted: true
+    capacity_max: 5
+    area_sqm: 12.0
+    polygon: [[850, 120], [1180, 120], [1180, 300], [850, 300]]

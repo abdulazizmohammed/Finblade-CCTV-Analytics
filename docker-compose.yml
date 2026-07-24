@@ -1,0 +1,38 @@
+services:
+  # Stage 2 — video ingest. Republishes ./media/clip.mp4 as a looping RTSP source.
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    restart: unless-stopped
+    ports:
+      - "8554:8554"     # RTSP
+    volumes:
+      - ./config/mediamtx.yml:/mediamtx.yml:ro
+      - ./media:/media:ro
+
+  # Stage 3 — vision inference (the spine). Detect + track + zone + occupancy.
+  inference:
+    build: ./services/inference
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    ports:
+      - "8080:8080"     # annotated MJPEG viewer -> open http://<host>:8080
+    volumes:
+      - ./config:/config:ro
+      - ./media:/media           # writable: service saves a reference still here
+      - ./models:/models:ro      # put the exported OpenVINO model dir here
+    devices:
+      - "/dev/dri:/dev/dri"      # Arc GPU passthrough for OpenVINO device=GPU
+    group_add:
+      - "video"
+      - "render"
+
+  # ---- NEXT STEPS (build these once the spine is green) ----
+  # redis:            # Stage 4 — event bus + live state + embedding TTL
+  #   image: redis:7-alpine
+  # api:              # Stage 5/6 — FastAPI: /events/ingest, /zones/state, rule engine
+  #   build: ./services/api
+  # postgres:         # zones/cameras/alerts/events (+ TimescaleDB for zone_state_ts)
+  #   image: timescale/timescaledb:latest-pg16
+  # dashboard:        # Stage 7 — Angular + ECharts + WebSocket
+  #   build: ./services/dashboard

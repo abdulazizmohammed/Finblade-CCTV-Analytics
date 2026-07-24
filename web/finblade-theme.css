@@ -1,0 +1,250 @@
+/* ============================================================
+   FinBlade — design tokens
+   Shared by the zone editor and the operations dashboard.
+   Import this first; never hard-code a colour anywhere else.
+
+   Brand accent #18bdc2 is taken from finblade.ai.
+   Everything else is derived to sit around it.
+
+   TWO SEMANTIC RULES — follow these, they are not cosmetic:
+
+   1. Teal is CHROME, never STATUS. Brand teal marks interactive
+      and structural elements only. It is never used to mean
+      "this zone is fine" — teal and green are too close in hue
+      to separate on a wall-mounted screen.
+
+   2. RESTRICTED is not CRITICAL.
+        magenta, dashed  = this area is permanently off-limits
+                           (a static property of the zone)
+        red, solid       = something is wrong right now
+                           (a live state)
+      An intrusion renders as a magenta zone flashing red. Never
+      draw a restricted boundary in red — it becomes unreadable
+      the moment a density alert fires next to it.
+
+   NORMAL status is deliberately colourless. Calm should be
+   visually silent so amber and red carry all the urgency.
+   ============================================================ */
+
+:root {
+  /* --- substrate: teal-tinted near-black, not neutral grey --- */
+  --fb-void:        #08131a;   /* page background            */
+  --fb-surface:     #0e1f29;   /* panels, cards              */
+  --fb-surface-2:   #142c38;   /* raised / hover             */
+  --fb-line:        #1d3d4b;   /* hairline borders           */
+  --fb-line-bright: #2a5568;   /* emphasised borders         */
+
+  /* --- brand: chrome only --- */
+  --fb-teal:        #18bdc2;   /* confirmed brand accent     */
+  --fb-teal-bright: #4fdce0;   /* hover / focus              */
+  --fb-teal-dim:    #0d6f74;   /* pressed / muted chrome     */
+  --fb-teal-ghost:  rgba(24, 189, 194, 0.12);  /* fills, glows */
+
+  /* --- text --- */
+  --fb-text:        #dcecf0;
+  --fb-text-muted:  #7d9aa5;
+  --fb-text-faint:  #4e6a76;
+
+  /* --- status: NORMAL is intentionally absent --- */
+  --fb-warning:     #f0a029;   /* amber  — density > 2.0/m2  */
+  --fb-critical:    #ef4b4b;   /* red    — density > 4.0/m2  */
+  --fb-restricted:  #e0479e;   /* magenta — no-go zone       */
+  --fb-ok:          #7d9aa5;   /* normal = muted, not green  */
+
+  --fb-warning-ghost:    rgba(240, 160, 41, 0.14);
+  --fb-critical-ghost:   rgba(239, 75, 75, 0.14);
+  --fb-restricted-ghost: rgba(224, 71, 158, 0.12);
+
+  /* --- type: system stacks only.
+         FinBlade deploys on-prem and air-gapped; a dashboard that
+         fetches web fonts renders wrong and pitches worse. --- */
+  --fb-font-ui:   'Inter Tight', 'Inter', -apple-system, BlinkMacSystemFont,
+                  'Segoe UI', Roboto, system-ui, sans-serif;
+  --fb-font-data: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Segoe UI Mono',
+                  Menlo, Consolas, monospace;
+
+  --fb-r:    4px;    /* radius: tight. this is instrumentation, not marketing */
+  --fb-r-lg: 6px;
+}
+
+/* ------------------------------------------------------------
+   Base
+   ------------------------------------------------------------ */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--fb-void);
+  color: var(--fb-text);
+  font-family: var(--fb-font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------------
+   Numerals — the one rule that matters most on this product.
+   Occupancy, density and timecodes update every second. If the
+   digits aren't tabular the layout twitches constantly and the
+   whole dashboard reads as unstable.
+   ------------------------------------------------------------ */
+.fb-num, .fb-data, .fb-timecode {
+  font-family: var(--fb-font-data);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.fb-timecode {
+  color: var(--fb-teal);
+  letter-spacing: 0.04em;
+}
+
+/* ------------------------------------------------------------
+   Eyebrow labels — surveillance vernacular: short, upper, tracked
+   ------------------------------------------------------------ */
+.fb-eyebrow {
+  font-family: var(--fb-font-data);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fb-text-faint);
+  margin: 0 0 10px;
+  font-weight: 500;
+}
+
+/* ------------------------------------------------------------
+   Panels
+   ------------------------------------------------------------ */
+.fb-panel {
+  background: var(--fb-surface);
+  border: 1px solid var(--fb-line);
+  border-radius: var(--fb-r-lg);
+  padding: 14px;
+}
+
+/* Signature motif: corner brackets, borrowed from the framing
+   marks drawn over a monitored video feed. Applied to zone cards
+   and the canvas — nowhere else, or it stops meaning anything. */
+.fb-bracket { position: relative; }
+.fb-bracket::before,
+.fb-bracket::after {
+  content: '';
+  position: absolute;
+  width: 12px; height: 12px;
+  border: 1px solid var(--fb-teal);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.fb-bracket::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.fb-bracket::after  { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+.fb-bracket[data-status="warning"]::before,
+.fb-bracket[data-status="warning"]::after  { border-color: var(--fb-warning);  opacity: 1; }
+.fb-bracket[data-status="critical"]::before,
+.fb-bracket[data-status="critical"]::after { border-color: var(--fb-critical); opacity: 1; }
+.fb-bracket[data-status="restricted"]::before,
+.fb-bracket[data-status="restricted"]::after { border-color: var(--fb-restricted); opacity: 1; }
+
+/* ------------------------------------------------------------
+   Controls
+   ------------------------------------------------------------ */
+.fb-label {
+  display: block;
+  font-family: var(--fb-font-data);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fb-text-muted);
+  margin: 12px 0 4px;
+}
+
+.fb-input {
+  width: 100%;
+  background: var(--fb-void);
+  border: 1px solid var(--fb-line);
+  color: var(--fb-text);
+  font-family: var(--fb-font-data);
+  font-size: 13px;
+  padding: 7px 9px;
+  border-radius: var(--fb-r);
+}
+.fb-input:focus {
+  outline: none;
+  border-color: var(--fb-teal);
+  box-shadow: 0 0 0 3px var(--fb-teal-ghost);
+}
+
+.fb-btn {
+  background: var(--fb-surface-2);
+  border: 1px solid var(--fb-line-bright);
+  color: var(--fb-text);
+  font-family: var(--fb-font-ui);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: var(--fb-r);
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.fb-btn:hover  { border-color: var(--fb-teal); }
+.fb-btn:focus-visible {
+  outline: 2px solid var(--fb-teal-bright);
+  outline-offset: 2px;
+}
+.fb-btn--primary {
+  background: var(--fb-teal);
+  border-color: var(--fb-teal);
+  color: #04141a;
+  font-weight: 600;
+}
+.fb-btn--primary:hover { background: var(--fb-teal-bright); border-color: var(--fb-teal-bright); }
+.fb-btn--danger { color: var(--fb-critical); border-color: var(--fb-critical); background: transparent; }
+
+/* ------------------------------------------------------------
+   Status pills
+   ------------------------------------------------------------ */
+.fb-pill {
+  display: inline-block;
+  font-family: var(--fb-font-data);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+}
+.fb-pill--normal     { color: var(--fb-ok); }
+.fb-pill--warning    { color: var(--fb-warning);    background: var(--fb-warning-ghost); }
+.fb-pill--critical   { color: var(--fb-critical);   background: var(--fb-critical-ghost); }
+.fb-pill--restricted { color: var(--fb-restricted); background: var(--fb-restricted-ghost); }
+
+/* Live indicator — a slow pulse, not a blink. Reads as "receiving"
+   rather than "alarming". */
+.fb-live {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--fb-teal);
+  animation: fb-pulse 2.4s ease-in-out infinite;
+}
+@keyframes fb-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* Only alerts are allowed to demand attention. */
+.fb-alarm { animation: fb-alarm 1s steps(2) infinite; }
+@keyframes fb-alarm { 0%,100% { background: var(--fb-critical-ghost); } 50% { background: transparent; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .fb-live, .fb-alarm { animation: none; }
+  * { transition: none !important; }
+}
+
+/* ------------------------------------------------------------
+   Canvas-overlay colours, exported for JS.
+   The Python annotator in the inference service must match these
+   (note: OpenCV takes BGR, so reverse the channels there).
+   ------------------------------------------------------------ */
+:root {
+  --fb-overlay-track:      #18bdc2;  /* person bounding box   */
+  --fb-overlay-foot:       #f0a029;  /* ground-contact point  */
+  --fb-overlay-zone:       #4fdce0;  /* monitored zone edge   */
+  --fb-overlay-restricted: #e0479e;  /* no-go zone edge       */
+}

@@ -1,0 +1,29 @@
+# MediaMTX — republishes a recorded clip as a looping RTSP source.
+# This gives you a deterministic, repeatable demo input. Every run is identical.
+#
+# Drop your recording at ./media/clip.mp4, then the stream is available at:
+#   rtsp://<host>:8554/cam1
+#
+# runOnDemand only starts ffmpeg when something subscribes, and restarts on exit,
+# so the loop is self-healing.
+
+logLevel: info
+rtspAddress: :8554
+
+paths:
+  cam1:
+    runOnDemand: >
+      ffmpeg -re -stream_loop -1 -i /media/clip.mp4
+      -c:v libx264 -preset veryfast -tune zerolatency -g 30
+      -an -f rtsp rtsp://localhost:8554/cam1
+    runOnDemandRestart: yes
+    runOnDemandCloseAfter: 10s
+
+  # Add a second camera later by dropping ./media/clip2.mp4 and uncommenting:
+  # cam2:
+  #   runOnDemand: >
+  #     ffmpeg -re -stream_loop -1 -i /media/clip2.mp4
+  #     -c:v libx264 -preset veryfast -tune zerolatency -g 30
+  #     -an -f rtsp rtsp://localhost:8554/cam2
+  #   runOnDemandRestart: yes
+  #   runOnDemandCloseAfter: 10s

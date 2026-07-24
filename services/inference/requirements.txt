@@ -1,0 +1,7 @@
+# Pinned to reduce surprises on first run. Bump deliberately, not accidentally.
+ultralytics==8.3.40      # provides YOLO + built-in ByteTrack (model.track)
+openvino==2024.4.0       # Arc GPU inference backend
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+pyyaml==6.0.2
+flask==3.0.3             # tiny MJPEG server so you can watch the annotated feed in a browser

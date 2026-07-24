@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinBlade — Operations</title>
+<!-- Theme first; never hard-code a colour below. System fonts only (air-gapped). -->
+<link rel="stylesheet" href="finblade-theme.css">
+<style>
+  /* Layout only — every colour comes from theme variables. */
+  .fb-top {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--fb-line);
+    background: var(--fb-surface);
+  }
+  .fb-top h1 {
+    font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em;
+  }
+  .fb-top .spacer { flex: 1; }
+  .fb-conn {
+    font-family: var(--fb-font-data); font-size: 10px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--fb-text-muted);
+  }
+  .fb-wrap {
+    display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px;
+    padding: 14px; max-width: 1400px; margin: 0 auto;
+  }
+  @media (max-width: 900px) { .fb-wrap { grid-template-columns: 1fr; } }
+
+  .feed { position: relative; background: var(--fb-void); border-radius: var(--fb-r-lg);
+          overflow: hidden; aspect-ratio: 16 / 9; display: flex;
+          align-items: center; justify-content: center; }
+  .feed img { width: 100%; height: 100%; object-fit: contain; }
+  .feed .placeholder { color: var(--fb-text-faint); font-family: var(--fb-font-data);
+                       font-size: 12px; text-align: center; padding: 20px; }
+
+  .grid-zones { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                gap: 12px; }
+  .zcard { padding: 12px; }
+  .zcard h3 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
+  .zcard .metric { display: flex; justify-content: space-between; align-items: baseline;
+                   margin-top: 8px; }
+  .zcard .metric .big { font-size: 24px; }
+  .zcard .metric .lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .1em;
+                        color: var(--fb-text-faint); font-family: var(--fb-font-data); }
+  .bar { height: 4px; border-radius: 2px; background: var(--fb-line); margin-top: 10px;
+         overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--fb-ok); }
+  .bar[data-status="AMBER"] > span    { background: var(--fb-warning); }
+  .bar[data-status="RED"] > span      { background: var(--fb-critical); }
+
+  .cams { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .cam { font-family: var(--fb-font-data); font-size: 11px; padding: 6px 10px;
+         border: 1px solid var(--fb-line); border-radius: var(--fb-r);
+         display: flex; align-items: center; gap: 6px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .dot--on  { background: var(--fb-teal); }         /* chrome: "receiving" */
+  .dot--off { background: var(--fb-critical); }     /* live fault */
+
+  .alerts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px;
+            max-height: 380px; overflow-y: auto; }
+  .alert { padding: 9px 11px; border-radius: var(--fb-r);
+           border-left: 3px solid var(--fb-ok); background: var(--fb-surface-2); }
+  .alert[data-sev="AMBER"]    { border-left-color: var(--fb-warning); }
+  .alert[data-sev="RED"]      { border-left-color: var(--fb-critical); }
+  .alert[data-sev="CRITICAL"] { border-left-color: var(--fb-restricted); } /* intrusion */
+  .alert .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .alert .rule { font-family: var(--fb-font-data); font-size: 10px;
+                 letter-spacing: .08em; color: var(--fb-text-muted); }
+  .alert .msg { margin: 4px 0 0; font-size: 12.5px; }
+  .empty { color: var(--fb-text-faint); font-size: 12px; padding: 8px 2px; }
+</style>
+</head>
+<body>
+  <div class="fb-top">
+    <span class="fb-live" aria-hidden="true"></span>
+    <h1>FinBlade&nbsp;·&nbsp;Crowd Operations</h1>
+    <span class="fb-timecode" id="clock">--:--:--</span>
+    <span class="spacer"></span>
+    <span class="fb-conn" id="conn">connecting…</span>
+    <button class="fb-btn" id="reportBtn">Occupancy report</button>
+  </div>
+
+  <div class="fb-wrap">
+    <!-- LEFT: live annotated feed (UC-41) -->
+    <section>
+      <p class="fb-eyebrow">Live feed · annotated</p>
+      <div class="feed fb-bracket" id="feed">
+        <div class="placeholder" id="feedPlaceholder">
+          waiting for inference stream on :8080<br>
+          (boxes · track IDs · foot points · zone overlays)
+        </div>
+      </div>
+
+      <p class="fb-eyebrow" style="margin-top:16px;">Camera health</p>
+      <div class="fb-panel">
+        <div class="cams" id="cams"><span class="empty">no cameras reporting</span></div>
+      </div>
+    </section>
+
+    <!-- RIGHT: zones + alerts -->
+    <section>
+      <p class="fb-eyebrow">Zones</p>
+      <div class="grid-zones" id="zones"><span class="empty">no zone data</span></div>
+
+      <p class="fb-eyebrow" style="margin-top:16px;">Alerts</p>
+      <div class="fb-panel">
+        <div class="alerts" id="alerts"><span class="empty">no active alerts</span></div>
+      </div>
+    </section>
+  </div>
+
+<script>
+// ---- config: same-host services (air-gapped, no external calls) ----
+const API = `http://${location.hostname}:8000`;
+const WS  = `ws://${location.hostname}:8000/ws`;
+const STREAM = `http://${location.hostname}:8080/stream`;
+const PILL = { NORMAL:'fb-pill--normal', AMBER:'fb-pill--warning',
+               RED:'fb-pill--critical', CRITICAL:'fb-pill--restricted' };
+
+function el(id){ return document.getElementById(id); }
+function esc(s){ const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML; }
+
+// ---- live feed (best-effort; shows placeholder until stream is up) ----
+(function mountFeed(){
+  const img = new Image();
+  img.alt = 'annotated feed';
+  img.onload = () => { el('feedPlaceholder')?.remove(); if(!img.parentNode) el('feed').appendChild(img); };
+  img.onerror = () => {};
+  img.src = STREAM;
+  img.onload = () => { const p=el('feedPlaceholder'); if(p) p.remove(); el('feed').appendChild(img); };
+})();
+
+// ---- rendering ----
+function renderZones(zones){
+  const host = el('zones');
+  if(!zones || !zones.length){ host.innerHTML = '<span class="empty">no zone data</span>'; return; }
+  host.innerHTML = zones.map(z => {
+    const st = String(z.status||'NORMAL').toUpperCase();
+    const cap = Math.min(100, Number(z.capacity_pct||0));
+    return `<div class="fb-panel fb-bracket zcard" data-status="${st==='NORMAL'?'':st.toLowerCase()}">
+      <div class="row" style="display:flex;justify-content:space-between;align-items:center;">
+        <h3>${esc(z.zone_id)}</h3>
+        <span class="fb-pill ${PILL[st]||'fb-pill--normal'}">${esc(st)}</span>
+      </div>
+      <div class="metric">
+        <span class="big fb-num">${Number(z.occupancy||0)}</span>
+        <span class="lbl">occupancy</span>
+      </div>
+      <div class="metric">
+        <span class="fb-num">${Number(z.density||0).toFixed(2)}/m²</span>
+        <span class="fb-num">${cap.toFixed(0)}% cap</span>
+      </div>
+      <div class="bar" data-status="${st}"><span style="width:${cap}%"></span></div>
+      <div class="metric">
+        <span class="lbl">in ${Number(z.inflow_per_min||0).toFixed(1)}/min</span>
+        <span class="lbl">out ${Number(z.outflow_per_min||0).toFixed(1)}/min</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderCams(zones){
+  // Derive a simple health grid from zone camera_ids present in the feed.
+  const host = el('cams');
+  const cams = {};
+  (zones||[]).forEach(z => { if(z.camera_id) cams[z.camera_id] = true; });
+  const ids = Object.keys(cams);
+  if(!ids.length){ host.innerHTML = '<span class="empty">no cameras reporting</span>'; return; }
+  host.innerHTML = ids.map(id =>
+    `<span class="cam"><span class="dot dot--on"></span>${esc(id)}</span>`).join('');
+}
+
+function renderAlerts(alerts){
+  const host = el('alerts');
+  if(!alerts || !alerts.length){ host.innerHTML = '<span class="empty">no active alerts</span>'; return; }
+  host.innerHTML = alerts.map(a => {
+    const sev = String(a.severity||'INFO').toUpperCase();
+    const isAlarm = (sev==='RED'||sev==='CRITICAL');
+    return `<div class="alert ${isAlarm?'fb-alarm':''}" data-sev="${sev}">
+      <div class="row">
+        <span class="rule">${esc(a.rule_id)} · ${esc(sev)}</span>
+        <button class="fb-btn fb-btn--danger" data-ack="${esc(a.alert_id)}">ack</button>
+      </div>
+      <p class="msg">${esc(a.message)}</p>
+    </div>`;
+  }).join('');
+  host.querySelectorAll('[data-ack]').forEach(btn =>
+    btn.addEventListener('click', () => ackAlert(btn.getAttribute('data-ack'))));
+}
+
+async function ackAlert(id){
+  try {
+    await fetch(`${API}/api/v1/alerts/${id}/ack`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({acknowledged_by:'operator'})
+    });
+    poll(); // refresh
+  } catch(e){ /* offline; will refresh on next tick */ }
+}
+
+function apply(data){
+  renderZones(data.zones);
+  renderCams(data.zones);
+  renderAlerts(data.alerts);
+}
+
+// ---- transport: WebSocket (UC-45) with 5s REST fallback (UC-46) ----
+let ws=null, pollTimer=null;
+function setConn(t){ el('conn').textContent = t; }
+
+async function poll(){
+  try {
+    const [z,a] = await Promise.all([
+      fetch(`${API}/api/v1/zones/state`).then(r=>r.json()),
+      fetch(`${API}/api/v1/alerts?unacked_only=true`).then(r=>r.json())
+    ]);
+    apply({zones:z.zones, alerts:a.alerts});
+    setConn('rest · 5s');
+  } catch(e){ setConn('offline'); }
+}
+function startPolling(){ if(pollTimer) return; poll(); pollTimer=setInterval(poll,5000); }
+function stopPolling(){ clearInterval(pollTimer); pollTimer=null; }
+
+function connect(){
+  try {
+    ws = new WebSocket(WS);
+    ws.onopen = () => { setConn('websocket'); stopPolling(); };
+    ws.onmessage = (m) => { try { apply(JSON.parse(m.data)); } catch(e){} };
+    ws.onclose = () => { setConn('rest · 5s'); startPolling(); setTimeout(connect, 4000); };
+    ws.onerror = () => { try{ ws.close(); }catch(e){} };
+  } catch(e){ startPolling(); }
+}
+
+el('reportBtn').addEventListener('click', () =>
+  window.open(`${API}/api/v1/reports/occupancy`, '_blank'));
+
+setInterval(() => { el('clock').textContent = new Date().toLocaleTimeString(); }, 1000);
+
+connect();
+startPolling(); // immediate data even before WS opens; WS cancels it on open
+</script>
+</body>
+</html>

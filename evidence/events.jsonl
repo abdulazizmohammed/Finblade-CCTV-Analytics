@@ -1,0 +1,14 @@
+{"event_id": "158bfade-00cf-4b9c-b8b1-4e24585a0709", "event_type": "DENSITY_UPDATE", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 0.0, "zone_id": "ZONE-01", "occupancy": 10, "density": 0.16666666666666666}
+{"event_id": "c1d2aad9-d14e-4708-89f5-02961a360408", "event_type": "CAMERA_HEARTBEAT", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 0.0}
+{"event_id": "43815d66-91cd-4f89-af5a-6564cf720ac7", "event_type": "DENSITY_UPDATE", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 5.0, "zone_id": "ZONE-01", "occupancy": 40, "density": 0.6666666666666666}
+{"event_id": "22644535-b81f-4056-b6b5-8926ef2bd749", "event_type": "CAMERA_HEARTBEAT", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 5.0}
+{"event_id": "49e2f575-d4f9-4184-bc6c-3dcc9a5419b9", "event_type": "DENSITY_UPDATE", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 10.0, "zone_id": "ZONE-01", "occupancy": 130, "density": 2.1666666666666665}
+{"event_id": "4fc339d7-c031-49d7-b8e9-b46d8d2a51da", "event_type": "CAMERA_HEARTBEAT", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 10.0}
+{"event_id": "5a526d2a-aac9-4cb5-92b7-e4d2657ca278", "event_type": "DENSITY_UPDATE", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 15.0, "zone_id": "ZONE-01", "occupancy": 260, "density": 4.333333333333333}
+{"event_id": "1d328763-4ddc-43db-a851-cf6477f5ab99", "event_type": "CAMERA_HEARTBEAT", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 15.0}
+{"event_id": "8209cec5-812c-45fb-b428-0e6c9dff8ea3", "event_type": "DENSITY_UPDATE", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 20.0, "zone_id": "ZONE-01", "occupancy": 130, "density": 2.1666666666666665}
+{"event_id": "0bc54e81-ee18-40b5-9a9a-0e58d616f168", "event_type": "CAMERA_HEARTBEAT", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 20.0}
+{"event_id": "d798cb30-30a9-4464-985f-1a13eba3517b", "event_type": "DENSITY_UPDATE", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 25.0, "zone_id": "ZONE-01", "occupancy": 40, "density": 0.6666666666666666}
+{"event_id": "482ac3bc-20ec-4e22-b920-c93c8f54b7f9", "event_type": "CAMERA_HEARTBEAT", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 25.0}
+{"event_id": "0d264f2f-bc67-4a2e-ba7d-443a4c91adf2", "event_type": "ZONE_ENTRY", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 12.0, "zone_to": "ZONE-02", "person_ref": "pr_1c57c24ef67cf957", "confidence": 0.94}
+{"event_id": "928bd72e-eba6-4722-89ff-c241f1b12ff1", "event_type": "CAMERA_OFFLINE", "camera_id": "CAM-A-01", "site_id": "SITE-DXB-01", "timestamp": 57.0, "last_seen": 25.0}

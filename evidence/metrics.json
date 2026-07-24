@@ -1,0 +1,21 @@
+{
+  "SYNTHETIC": true,
+  "note": "NOT a detection run. No camera/YOLO. Core-only scenario replay. Annotated frames + contact_sheet.jpg require real detection (cv2 + weights) - see BLOCKERS.md B-1.",
+  "events_emitted": 14,
+  "events_by_type": {
+    "DENSITY_UPDATE": 6,
+    "CAMERA_HEARTBEAT": 6,
+    "ZONE_ENTRY": 1,
+    "CAMERA_OFFLINE": 1
+  },
+  "alerts_fired": 7,
+  "alerts_by_rule": {
+    "R-03": 1,
+    "R-01": 2,
+    "R-02": 2,
+    "R-06": 1,
+    "R-07": 1
+  },
+  "detection_ran": false,
+  "avg_detections_per_frame": null
+}

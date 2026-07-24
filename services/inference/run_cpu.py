@@ -370,6 +370,9 @@ def run(config_path, max_seconds=None):
         for st in pending_states:
             _post("/api/v1/zones/state", st)
         for al in pending_alerts:
+            # Rule engine is zone-centric; stamp which camera this alert came from.
+            if al.get("camera_id") is None:
+                al["camera_id"] = cfg.camera_id
             if frame_ref:
                 al["frame"] = frame_ref
             alerts_fp.write(json.dumps(al) + "\n")

@@ -1,12 +1,40 @@
-# Morning report — 2026-07-24 (overnight, unattended)
+# Morning report — 2026-07-24
 
-## TL;DR
+## UPDATE (later session, you were awake and authorised installs)
+**The vision path now RUNS end-to-end on your clip.** I installed a CPU-only
+stack (no sudo: bootstrapped pip into ~/.local, made `.venv`, installed the
+pinned deps + CPU torch), downloaded `models/yolov8n.pt`, and ran real detection.
+
+Visually confirmed from `evidence/frames/*.jpg` (I could view them this session):
+- boxes land on people, orange foot-point dots at the feet, teal Lobby zone +
+  **magenta-dashed** Restricted Bay drawn per the theme, live occupancy label
+  (`Lobby: 5/40 0.08/m²`).
+- Your clip is a wide-angle terminal (Hamad/Doha). At YOLO's default imgsz=640
+  recall was terrible (**0.32 people/frame** — most are small/distant). I wired
+  `imgsz` into config (UC-07) and set **1280**, which took it to **8.9/frame
+  (max 17)** at 4.75 FPS on CPU. See `evidence/metrics.json`.
+
+Still needs your eyes/hands: **zone polygons are placeholders** (the Restricted
+Bay rectangle currently sits over the skylight, not a floor). Draw real ones from
+`media/cam1_frame.jpg` into `config/cameras.yaml` + `config/cameras.dev.yaml`.
+For even better far-field recall, drop in `yolov8s.pt`/`yolov8m.pt`.
+
+Run it yourself: `.venv/bin/python services/inference/run_cpu.py --config
+config/cameras.dev.yaml --seconds 60 --no-serve` (drop `--no-serve` to watch the
+annotated MJPEG on http://localhost:8080).
+
+The original overnight report follows (some blockers below are now resolved —
+B-1 is DONE; B-2/B-3 notes still stand).
+
+---
+
+## TL;DR (original overnight run)
 The deterministic brain of the system is **built and verified**: metrics, events,
 schema, rule engine, API logic, dashboard — **84 unit/integration tests, all
 green**, runnable in 0.005s with `python3 -m unittest discover -s tests`.
-The **vision front-end could not run** (no model weights, and cv2/ultralytics/
-torch aren't installed; you said no downloads). So I did NOT fake it — I built
-the CPU runner ready to go and left a blocker. **~15 min of your time unblocks it.**
+The **vision front-end could not run** at the time (no model weights, and cv2/
+ultralytics/torch not installed; no-download rule). I did NOT fake it — I built
+the CPU runner ready to go and left a blocker. *(Now resolved — see UPDATE above.)*
 
 ## Status
 Slices complete: **2, 3, 5 fully; 4 (logic) fully; 6 (build+theme) fully.**

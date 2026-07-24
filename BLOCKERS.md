@@ -4,7 +4,13 @@ Timestamped, most-blocking first. Each: what failed, what I tried, best hypothes
 
 ---
 
-## B-1 — Vision pipeline cannot execute (detection deps + weights absent)  [HARD]
+## B-1 — Vision pipeline cannot execute (detection deps + weights absent)  [RESOLVED]
+
+> RESOLVED in a later session once the human authorised installs: bootstrapped
+> pip into ~/.local (no sudo), created `.venv`, installed CPU torch + the pinned
+> deps + lapx, downloaded `models/yolov8n.pt`. Detection now runs on the clip;
+> real evidence in `evidence/`. Detail below kept for the record.
+
 
 **What:** The detect → track slice (Slice 1 / UC-06..09) cannot run in this
 environment.

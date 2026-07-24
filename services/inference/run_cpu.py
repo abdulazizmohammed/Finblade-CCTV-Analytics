@@ -210,7 +210,8 @@ def run(config_path, max_seconds=None):
         vnow = now - t_start
 
         res = model.track(frame, persist=True, classes=[cfg.person_class_id],
-                          conf=cfg.conf_threshold, tracker="bytetrack.yaml",
+                          conf=cfg.conf_threshold, imgsz=cfg.imgsz,
+                          tracker="bytetrack.yaml",
                           device=device, verbose=False)[0]
 
         tracks = []
@@ -299,6 +300,8 @@ def run(config_path, max_seconds=None):
     metrics = {
         "config": os.path.basename(config_path),
         "device": device,
+        "imgsz": cfg.imgsz,
+        "conf_threshold": cfg.conf_threshold,
         "frames_processed": processed,
         "avg_fps": round(processed / elapsed, 2) if elapsed else 0.0,
         "detections_per_frame": {

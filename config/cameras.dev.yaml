@@ -26,6 +26,9 @@ device: CPU
 conf_threshold: 0.35
 person_class_id: 0     # COCO 'person'
 process_fps: 8         # CPU-friendly frame-skip target
+# UC-07 detection tuning — raise for small/distant people in wide-angle views.
+# 640 = YOLO default (fast, low recall here); 1280 = far better recall, ~3-4x slower.
+imgsz: 1280
 
 zones:
   - zone_id: ZONE-01

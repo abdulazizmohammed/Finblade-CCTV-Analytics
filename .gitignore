@@ -7,3 +7,14 @@ media/*.mp4
 media/cam1_frame.jpg
 *.Zone.Identifier
 *:Zone.Identifier
+
+# Regenerated evidence artifacts (keep contact_sheet.jpg + metrics.json as proof)
+evidence/frames/
+evidence/*.jsonl
+
+# Local tooling / logs (bootstrap + install helpers)
+scripts/get-pip.py
+scripts/*.log
+
+# Model weights — fetched via scripts/get_weights.py, not committed
+models/*.pt

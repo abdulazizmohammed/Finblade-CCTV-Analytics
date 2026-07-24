@@ -24,6 +24,7 @@ class CameraConfig:
     conf_threshold: float
     person_class_id: int
     process_fps: int
+    imgsz: int
     zones: List[Zone]
 
 
@@ -45,5 +46,6 @@ def load_camera_config(path: str) -> CameraConfig:
         conf_threshold=float(cfg.get("conf_threshold", 0.35)),
         person_class_id=int(cfg.get("person_class_id", 0)),
         process_fps=int(cfg.get("process_fps", 12)),
+        imgsz=int(cfg.get("imgsz", 640)),
         zones=[zone_from_dict(z) for z in cfg.get("zones", [])],
     )

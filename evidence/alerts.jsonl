@@ -1,7 +1,0 @@
-{"rule_id": "R-03", "severity": "AMBER", "message": "zone ZONE-01 at 100% capacity - restrict entry", "ts": 5.0, "zone_id": "ZONE-01", "camera_id": null, "person_ref": null, "kind": "FIRE"}
-{"rule_id": "R-01", "severity": "AMBER", "message": "density warning 2.17/m2 in ZONE-01", "ts": 10.0, "zone_id": "ZONE-01", "camera_id": null, "person_ref": null, "kind": "FIRE"}
-{"rule_id": "R-02", "severity": "RED", "message": "density critical 4.33/m2 in ZONE-01", "ts": 15.0, "zone_id": "ZONE-01", "camera_id": null, "person_ref": null, "kind": "FIRE"}
-{"rule_id": "R-02", "severity": "INFO", "message": "density critical cleared in ZONE-01", "ts": 25.0, "zone_id": "ZONE-01", "camera_id": null, "person_ref": null, "kind": "CLEAR"}
-{"rule_id": "R-01", "severity": "INFO", "message": "density warning cleared in ZONE-01", "ts": 25.0, "zone_id": "ZONE-01", "camera_id": null, "person_ref": null, "kind": "CLEAR"}
-{"rule_id": "R-06", "severity": "CRITICAL", "message": "RESTRICTED intrusion in ZONE-02", "ts": 12.0, "zone_id": "ZONE-02", "camera_id": null, "person_ref": "pr_1c57c24ef67cf957", "kind": "FIRE"}
-{"rule_id": "R-07", "severity": "RED", "message": "camera CAM-A-01 offline >30s", "ts": 57.0, "zone_id": null, "camera_id": "CAM-A-01", "person_ref": null, "kind": "FIRE"}

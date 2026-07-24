@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+echo "=== /dev/dri (Linux GPU nodes) ==="
+ls -la /dev/dri 2>&1 || echo "  (absent)"
+echo "=== /dev/dxg (WSL2 GPU paravirt device) ==="
+ls -la /dev/dxg 2>&1 || echo "  (absent)"
+echo "=== WSL lib GPU passthrough dir ==="
+ls -la /usr/lib/wsl/lib 2>&1 | head -20 || echo "  (absent)"
+echo "=== Intel GPU via lspci ==="
+(command -v lspci >/dev/null && lspci | grep -iE 'vga|display|intel' ) 2>&1 || echo "  lspci not available"
+echo "=== clinfo / OpenCL platforms ==="
+(command -v clinfo >/dev/null && clinfo -l) 2>&1 || echo "  clinfo not installed"
+echo "=== done ==="

@@ -22,10 +22,10 @@ frame_height: 720
 
 # YOLO / tracking — CPU + .pt (NOT OpenVINO/GPU; see CLAUDE.md rule 4).
 model_path: models/yolov8n.pt
-device: CPU
+device: cuda        # NVIDIA RTX PRO 2000 (Blackwell); falls back to CPU if absent
 conf_threshold: 0.35
 person_class_id: 0     # COCO 'person'
-process_fps: 8         # CPU-friendly frame-skip target
+process_fps: 15        # GPU headroom (CPU fallback self-limits)
 # UC-07 detection tuning — raise for small/distant people in wide-angle views.
 # 640 = YOLO default (fast, low recall here); 1280 = far better recall, ~3-4x slower.
 imgsz: 1280

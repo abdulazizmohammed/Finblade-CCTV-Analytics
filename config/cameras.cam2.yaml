@@ -16,10 +16,10 @@ frame_width: 1920
 frame_height: 1440
 
 model_path: models/yolov8n.pt
-device: CPU
+device: cuda        # NVIDIA RTX PRO 2000 (Blackwell); falls back to CPU if absent
 conf_threshold: 0.35
 person_class_id: 0
-process_fps: 6
+process_fps: 12     # GPU; larger 1920x1440 frames so a touch lower than cam A.
 imgsz: 1280
 
 zones:

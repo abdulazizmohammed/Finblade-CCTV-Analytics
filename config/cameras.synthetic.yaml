@@ -18,11 +18,11 @@ frame_height: 688
 
 # Detection — CPU, .pt. imgsz upsamples the small 464-wide frame for recall.
 model_path: models/yolov8n.pt
-device: CPU
+device: cuda        # NVIDIA RTX PRO 2000 (Blackwell); falls back to CPU if absent
 conf_threshold: 0.35
 person_class_id: 0
-process_fps: 8
-imgsz: 1280
+process_fps: 20     # GPU sustains ~24 FPS @ imgsz 1280; caps near source rate.
+imgsz: 1280         # (CPU fallback self-limits to whatever it manages.)
 
 zones:
   # Left/centre walkway where the group moves (and the lone man bottom-left).

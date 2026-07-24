@@ -95,6 +95,31 @@ _latest_jpeg = {"buf": None}
 _lock = threading.Lock()
 
 
+def _resolve_device(want):
+    """Map config `device` to an Ultralytics device string.
+
+    'cpu' -> cpu. 'cuda'/'gpu'/'nvidia'/'0' -> NVIDIA CUDA if available, else CPU.
+    (Intel Arc/OpenVINO is a separate backend handled by main.py, not here.)
+    """
+    w = str(want).strip().lower()
+    if w == "cpu":
+        return "cpu"
+    if w in ("cuda", "cuda:0", "gpu", "nvidia", "0"):
+        try:
+            import torch
+            if torch.cuda.is_available():
+                print(f"[info] using CUDA GPU: {torch.cuda.get_device_name(0)}", flush=True)
+                return "cuda:0"
+        except Exception:
+            pass
+        print(f"[warn] device '{want}' requested but CUDA unavailable; using CPU",
+              file=sys.stderr)
+        return "cpu"
+    print(f"[warn] device '{want}' not supported here (cpu/cuda only); using CPU",
+          file=sys.stderr)
+    return "cpu"
+
+
 def _die_if_missing_deps():
     if _MISSING:
         print("[BLOCKER] cannot run detection — missing:", ", ".join(_MISSING),
@@ -179,10 +204,7 @@ def run(config_path, max_seconds=None):
     os.makedirs(FRAMES_DIR, exist_ok=True)
     cfg = load_camera_config(config_path)
 
-    if cfg.device.upper() != "CPU":
-        print(f"[warn] config device={cfg.device}; forcing CPU per project rule 4.",
-              file=sys.stderr)
-    device = "cpu"
+    device = _resolve_device(cfg.device)
 
     if not os.path.exists(cfg.model_path):
         print(f"[BLOCKER] weights not found: {cfg.model_path} (see BLOCKERS.md B-1)",

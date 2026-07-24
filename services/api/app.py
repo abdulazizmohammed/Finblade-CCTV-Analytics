@@ -127,6 +127,22 @@ async def history_alerts(frm: float = Query(0, alias="from"),
                                          limit=limit)}
 
 
+@app.get("/api/v1/reports/occupancy.json")
+async def occupancy_report_json(frm: float = Query(0, alias="from"),
+                                to: float = Query(9_000_000_000_000.0, alias="to"),
+                                camera_id: str = Query(None), zone_id: str = Query(None)):
+    zones = svc.occupancy_stats(frm, to, camera_id=camera_id, zone_id=zone_id)
+    return {
+        "from": frm, "to": to, "generated_at": time.time(),
+        "zones": zones,
+        "totals": {
+            "zones": len(zones),
+            "peak_total_occupancy": sum(int(z.get("peak_occupancy", 0)) for z in zones),
+            "peak_density": max((float(z.get("peak_density", 0)) for z in zones), default=0.0),
+        },
+    }
+
+
 @app.get("/api/v1/cameras")
 async def cameras():
     now = time.time()

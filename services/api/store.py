@@ -28,6 +28,8 @@ class Store:
                     event_type=None, limit: int = 500) -> List[dict]: return []
     def list_alerts_history(self, t0: float, t1: float, camera_id=None, rule_id=None,
                             limit: int = 500) -> List[dict]: return []
+    def zone_state_stats(self, t0: float, t1: float, camera_id=None,
+                         zone_id=None) -> List[dict]: return []
 
 
 class InMemoryStore(Store):
@@ -124,6 +126,35 @@ class InMemoryStore(Store):
             out.append(a)
         out.sort(key=lambda a: a.get("ts", 0), reverse=True)
         return out[:limit]
+
+    def zone_state_stats(self, t0, t1, camera_id=None, zone_id=None):
+        groups = {}
+        for s in self._zone_ts:
+            ts = s.get("ts", 0)
+            if not (t0 <= ts <= t1):
+                continue
+            if camera_id and s.get("camera_id") != camera_id:
+                continue
+            if zone_id and s.get("zone_id") != zone_id:
+                continue
+            groups.setdefault(s["zone_id"], []).append(s)
+        out = []
+        for zid, rows in sorted(groups.items()):
+            occ = [r.get("occupancy", 0) for r in rows]
+            den = [r.get("density", 0.0) for r in rows]
+            cap = [r.get("capacity_pct", 0.0) for r in rows]
+            out.append({
+                "zone_id": zid,
+                "zone_name": rows[-1].get("zone_name"),
+                "camera_id": rows[-1].get("camera_id"),
+                "samples": len(rows),
+                "avg_occupancy": sum(occ) / len(occ),
+                "peak_occupancy": max(occ),
+                "avg_density": sum(den) / len(den),
+                "peak_density": max(den),
+                "avg_capacity_pct": sum(cap) / len(cap),
+            })
+        return out
 
 
 class PostgresStore(Store):  # pragma: no cover - requires a live DB (BLOCKERS.md B-3)

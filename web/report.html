@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinBlade — Occupancy Report</title>
+<link rel="stylesheet" href="finblade-theme.css">
+<style>
+body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),transparent 60%),var(--fb-void);min-height:100vh;}
+.eyebrow{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-text-faint);margin:0;}
+.topbar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);}
+.brand-logo{height:28px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
+.tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.spacer{flex:1;}
+.wrap{max-width:1040px;margin:0 auto;padding:18px 22px 60px;}
+
+.controls{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;margin:8px 0 20px;}
+.field{display:flex;flex-direction:column;gap:5px;}
+.field label{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.field input,.field select{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:13px;padding:7px 9px;border-radius:var(--fb-r);}
+.field input:focus,.field select:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+
+.report{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:22px;}
+.rhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:1px solid var(--fb-line);padding-bottom:14px;margin-bottom:14px;}
+.rhead h1{margin:6px 0 0;font-size:18px;font-weight:600;}
+.rhead .meta{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);text-align:right;line-height:1.7;}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:6px 0 18px;}
+.kpi{border:1px solid var(--fb-line);border-radius:var(--fb-r);padding:10px 12px;}
+.kpi .v{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:24px;margin-top:6px;}
+.kpi .v .u{font-size:12px;color:var(--fb-text-muted);margin-left:4px;}
+
+.tablewrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;min-width:640px;}
+th,td{text-align:right;padding:9px 12px;border-bottom:1px solid var(--fb-line);white-space:nowrap;}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left;}
+th{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);}
+td{font-size:13px;color:var(--fb-text);}
+td.num{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;}
+.empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:22px;text-align:center;}
+.foot{margin-top:14px;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);}
+
+:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+
+/* print: just the report, on white */
+@media print{
+  .topbar,.controls,.noprint{display:none !important;}
+  body{background:#fff;}
+  .wrap{padding:0;max-width:none;}
+  .report{border:0;background:#fff;color:#000;padding:0;}
+  .report *{color:#000 !important;}
+  th{color:#333 !important;}
+  th,td{border-color:#ccc !important;}
+}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <img class="brand-logo" src="logo.svg" alt="FinBlade">
+    <span class="tag">Occupancy Report</span>
+    <span class="spacer"></span>
+    <button class="fb-btn" id="print">Print / Save PDF</button>
+    <a class="fb-btn fb-btn--primary" href="dashboard.html">← Live dashboard</a>
+  </div>
+
+  <div class="wrap">
+    <div class="controls noprint">
+      <div class="field"><label for="from">From date</label><input type="date" id="from"></div>
+      <div class="field"><label for="to">To date</label><input type="date" id="to"></div>
+      <div class="field"><label for="cam">Camera</label>
+        <select id="cam"><option value="">All cameras</option></select></div>
+      <div class="field"><label for="zone">Zone</label>
+        <select id="zone"><option value="">All zones</option></select></div>
+      <div class="field"><label>&nbsp;</label><button class="fb-btn fb-btn--primary" id="gen">Generate</button></div>
+    </div>
+
+    <div class="report" id="report"><div class="empty">Choose a range and Generate.</div></div>
+  </div>
+
+<script>
+const API=`http://${location.hostname}:8000`;
+const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
+
+function bounds(){
+  const f=$('from').value, t=$('to').value;
+  const from = f ? new Date(f+'T00:00:00').getTime()/1000 : 0;
+  const to   = t ? new Date(t+'T23:59:59').getTime()/1000 : Date.now()/1000+86400;
+  return {from,to};
+}
+function fmt(ts){const d=new Date(ts*1000);const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;}
+
+async function loadFilters(){
+  try{
+    const {cameras}=await fetch(`${API}/api/v1/cameras`).then(r=>r.json());
+    cameras.forEach(c=>{const o=document.createElement('option');o.value=c.camera_id;o.textContent=c.camera_id;$('cam').appendChild(o);});
+  }catch(e){}
+  try{
+    const {zones}=await fetch(`${API}/api/v1/zones/state`).then(r=>r.json());
+    [...new Map(zones.map(z=>[z.zone_id,z])).values()].forEach(z=>{
+      const o=document.createElement('option');o.value=z.zone_id;
+      o.textContent=(z.zone_name||z.zone_id);$('zone').appendChild(o);});
+  }catch(e){}
+}
+
+async function generate(){
+  const {from,to}=bounds();
+  const q=new URLSearchParams({from,to});
+  if($('cam').value)q.set('camera_id',$('cam').value);
+  if($('zone').value)q.set('zone_id',$('zone').value);
+  let data;
+  try{ data=await fetch(`${API}/api/v1/reports/occupancy.json?${q}`).then(r=>r.json()); }
+  catch(e){ $('report').innerHTML='<div class="empty">Offline — is the API running on :8000?</div>'; return; }
+  render(data);
+}
+
+function render(d){
+  const zones=d.zones||[];
+  const t=d.totals||{};
+  const rows = zones.length ? zones.map(z=>`<tr>
+      <td>${esc(z.zone_id)}</td>
+      <td>${esc(z.zone_name||'—')}</td>
+      <td class="num">${esc(z.camera_id||'—')}</td>
+      <td class="num">${(+z.avg_occupancy||0).toFixed(1)}</td>
+      <td class="num">${+z.peak_occupancy||0}</td>
+      <td class="num">${(+z.avg_density||0).toFixed(2)}</td>
+      <td class="num">${(+z.peak_density||0).toFixed(2)}</td>
+      <td class="num">${(+z.avg_capacity_pct||0).toFixed(0)}%</td>
+      <td class="num">${+z.samples||0}</td></tr>`).join('')
+    : '<tr><td colspan="9"><div class="empty">No zone data in this range.</div></td></tr>';
+
+  $('report').innerHTML=`
+    <div class="rhead">
+      <div><p class="eyebrow">FinBlade · Crowd Analytics</p><h1>Occupancy Report</h1></div>
+      <div class="meta">
+        Period: ${d.from?fmt(d.from):'start'} → ${d.to?fmt(d.to):'now'}<br>
+        Generated: ${fmt(d.generated_at)}<br>
+        Filter: ${esc($('cam').value||'all cameras')} · ${esc($('zone').value||'all zones')}
+      </div>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><p class="eyebrow">Zones</p><div class="v">${t.zones||0}</div></div>
+      <div class="kpi"><p class="eyebrow">Peak total occupancy</p><div class="v">${t.peak_total_occupancy||0}<span class="u">people</span></div></div>
+      <div class="kpi"><p class="eyebrow">Peak density</p><div class="v">${(+t.peak_density||0).toFixed(2)}<span class="u">/m²</span></div></div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Zone</th><th>Name</th><th>Camera</th><th>Avg occ</th><th>Peak occ</th>
+        <th>Avg /m²</th><th>Peak /m²</th><th>Avg cap</th><th>Samples</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <p class="foot">Occupancy aggregated from 5-second zone-state samples over the selected period.</p>`;
+}
+
+// init
+const today=new Date().toISOString().slice(0,10);
+$('from').value=today; $('to').value=today;
+$('gen').addEventListener('click', generate);
+$('print').addEventListener('click', ()=>window.print());
+loadFilters().then(generate);
+</script>
+</body>
+</html>

@@ -132,7 +132,7 @@ body{
       <span class="clock fb-num" id="clock">--:--:--</span>
       <span class="conn" id="conn"><span class="dot"></span> connecting…</span>
       <a class="fb-btn" href="history.html">History</a>
-      <button class="fb-btn fb-btn--primary" id="report">Occupancy report</button>
+      <a class="fb-btn fb-btn--primary" href="report.html">Occupancy report</a>
     </div>
   </div>
 
@@ -294,7 +294,6 @@ function connect(){
   }catch(e){startPoll();}
 }
 
-$('report').addEventListener('click',()=>window.open(`${API}/api/v1/reports/occupancy`,'_blank'));
 setInterval(()=>{
   $('clock').textContent=new Date().toLocaleTimeString('en-GB');
   const s=Math.floor((Date.now()-t0)/1000);

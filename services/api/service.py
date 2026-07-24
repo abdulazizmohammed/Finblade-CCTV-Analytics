@@ -48,6 +48,9 @@ class IngestService:
     def cameras(self):
         return self.store.list_cameras()
 
+    def occupancy_stats(self, t0, t1, **f):
+        return self.store.zone_state_stats(t0, t1, **f)
+
     # -- alerts --
     def raise_alert(self, alert: dict) -> str:
         return self.store.save_alert(alert)

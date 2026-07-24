@@ -1,0 +1,43 @@
+# SYNTHETIC-CLIP config variant (AI-generated scenario video).
+#
+# Does not replace cameras.yaml or cameras.dev.yaml. Points at the AI clip and
+# carries zone polygons fitted to THAT framing (group-walkway "Concourse" on the
+# left, taped-off "Restricted Area" wedge on the right).
+#
+# Polygons below are in REAL pixel coords of the actual clip (464x688), read off
+# evidence/scenario_first_frame.jpg. Fine-tune with tools/zone-editor.html if a
+# rule mis-fires. area_sqm on the concourse is intentionally small so the group
+# trips density for the demo — set the real measured area for production.
+
+camera_id: CAM-SYN-01
+site_id: SITE-SYN-01
+
+source: media/scenario_demo.mp4
+frame_width: 464
+frame_height: 688
+
+# Detection — CPU, .pt. imgsz upsamples the small 464-wide frame for recall.
+model_path: models/yolov8n.pt
+device: CPU
+conf_threshold: 0.35
+person_class_id: 0
+process_fps: 8
+imgsz: 1280
+
+zones:
+  # Left/centre walkway where the group moves (and the lone man bottom-left).
+  - zone_id: ZONE-LOBBY
+    zone_name: Concourse
+    restricted: false
+    capacity_max: 20
+    area_sqm: 5.0          # small on purpose -> ~12 people => density amber/red
+    polygon: [[40, 240], [268, 210], [285, 398], [215, 600], [40, 560]]
+
+  # Taped-off no-go wedge on the right (RESTRICTED - NO ENTRY). A foot crossing
+  # the tape fires R-06 immediately.
+  - zone_id: ZONE-RESTRICTED
+    zone_name: Restricted Area
+    restricted: true
+    capacity_max: 2
+    area_sqm: 6.0
+    polygon: [[270, 408], [440, 250], [464, 262], [464, 500]]

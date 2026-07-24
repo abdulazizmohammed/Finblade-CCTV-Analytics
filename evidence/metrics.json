@@ -1,15 +1,15 @@
 {
-  "config": "cameras.dev.yaml",
+  "config": "cameras.synthetic.yaml",
   "device": "cpu",
   "imgsz": 1280,
   "conf_threshold": 0.35,
-  "frames_processed": 216,
-  "avg_fps": 4.75,
+  "frames_processed": 189,
+  "avg_fps": 4.7,
   "detections_per_frame": {
-    "avg": 8.9,
-    "min": 0,
-    "max": 17
+    "avg": 12.94,
+    "min": 7,
+    "max": 23
   },
-  "unique_track_ids": 157,
-  "evidence_frames_saved": 8
+  "unique_track_ids": 45,
+  "evidence_frames_saved": 7
 }

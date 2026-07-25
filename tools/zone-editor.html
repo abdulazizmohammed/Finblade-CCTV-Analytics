@@ -307,9 +307,12 @@ function yaml(){
 }
 
 async function saveServer(){
+  if(pts.length>=3) closeZone();   // commit an un-closed polygon so Save "just works"
   const cam=v('camera').trim(), api=v('api').replace(/\/$/,'');
   if(!cam){ setStatus('set a Camera ID first'); return; }
-  if(!zones.length){ setStatus('define at least one zone'); return; }
+  if(pts.length>0 && pts.length<3){ setStatus('finish the current zone (need ≥3 points) or clear it, then Save'); return; }
+  if(!zones.length){ setStatus('draw a zone first: left-click corners, right-click to close, then Save'); return; }
+  setStatus(`saving ${zones.length} zone(s) to ${cam}…`);
   const payload={camera_id:cam, zones: zones.map(z=>({
     zone_id:z.zone_id, zone_name:z.zone_name, zone_type:z.zone_type, restricted:z.restricted,
     capacity_max:z.capacity_max, area_sqm:z.area_sqm, warning_density:z.warning_density,

@@ -98,22 +98,21 @@ def _post_json(path, payload):
         return None
 
 
-def _load_zones_from_api(camera_id, frame_width, frame_height):
-    """Fetch editor-saved zones for this camera (normalized -> pixel at our res).
-
-    Returns a list of Zone or None. Prefers normalized polygons so zones scale to
-    this runner's frame size regardless of the resolution they were drawn at.
-    """
+def _fetch_zones_raw(camera_id):
+    """Fetch this camera's editor-saved zones (raw dicts), or None."""
     if requests is None or not _API["base"]:
         return None
     try:
         r = requests.get(_API["base"] + "/api/v1/zones",
                          params={"camera_id": camera_id}, timeout=1.0)
-        data = r.json().get("zones", [])
+        return r.json().get("zones", []) or None
     except Exception:
         return None
-    if not data:
-        return None
+
+
+def _zones_from_raw(data, frame_width, frame_height):
+    """Convert raw zone dicts to Zone objects (normalized -> pixel at our res, so
+    zones scale to this runner's frame size regardless of where they were drawn)."""
     from finblade.zones import zone_from_dict
     out = []
     for z in data:
@@ -121,6 +120,21 @@ def _load_zones_from_api(camera_id, frame_width, frame_height):
             z = dict(z); z.pop("polygon", None)   # force normalized -> pixel scaling
         out.append(zone_from_dict(z, frame_width, frame_height))
     return out
+
+
+def _zone_sig(data):
+    """Change signature so a live edit is detected without rebuilding every tick."""
+    return json.dumps([[z.get("zone_id"), z.get("zone_type"), z.get("restricted"),
+                        z.get("normalized_polygon") or z.get("polygon"),
+                        z.get("warning_density"), z.get("critical_density"),
+                        z.get("loitering_threshold_sec"), z.get("enabled")]
+                       for z in data], sort_keys=True)
+
+
+def _load_zones_from_api(camera_id, frame_width, frame_height):
+    """Startup convenience: raw fetch -> Zone list (or None)."""
+    raw = _fetch_zones_raw(camera_id)
+    return _zones_from_raw(raw, frame_width, frame_height) if raw else None
 
 # --- theme-matched overlay colours (BGR = hex channels reversed) -----------
 # Source of truth: web/finblade-theme.css :root overlay block.
@@ -287,10 +301,13 @@ def run(config_path, max_seconds=None):
     device = _resolve_device(cfg.device)
 
     # Prefer editor-saved zones from the API (source of truth); YAML is the seed.
-    api_zones = _load_zones_from_api(cfg.camera_id, cfg.frame_width, cfg.frame_height)
-    if api_zones:
-        cfg.zones = api_zones
-        log.info("loaded %d zone(s) from API for %s", len(api_zones), cfg.camera_id)
+    # zone_sig lets the run loop hot-reload zones when they change in the editor.
+    _raw_zones = _fetch_zones_raw(cfg.camera_id)
+    zone_sig = None
+    if _raw_zones:
+        cfg.zones = _zones_from_raw(_raw_zones, cfg.frame_width, cfg.frame_height)
+        zone_sig = _zone_sig(_raw_zones)
+        log.info("loaded %d zone(s) from API for %s", len(cfg.zones), cfg.camera_id)
     else:
         log.info("using %d zone(s) from config for %s", len(cfg.zones), cfg.camera_id)
 
@@ -357,6 +374,7 @@ def run(config_path, max_seconds=None):
     last_state = None
     last_health_log = 0.0
     last_health_post = 0.0
+    last_zone_check = 0.0
     ever_online = False
     restricted_zone_ids = {z.zone_id for z in cfg.zones if z.restricted}
     loiter_zone = {z.zone_id: z.loitering_threshold_sec for z in cfg.zones}
@@ -405,6 +423,20 @@ def run(config_path, max_seconds=None):
                 worker.simulate_failure()
             elif not want_sim and worker.simulating:
                 worker.restore()
+
+        # Hot-reload zones when they change in the editor (no restart needed).
+        if now - last_zone_check >= 4.0:
+            last_zone_check = now
+            raw = _fetch_zones_raw(cfg.camera_id)
+            if raw:
+                sig = _zone_sig(raw)
+                if sig != zone_sig:
+                    cfg.zones = _zones_from_raw(raw, cfg.frame_width, cfg.frame_height)
+                    restricted_zone_ids = {z.zone_id for z in cfg.zones if z.restricted}
+                    loiter_zone = {z.zone_id: z.loitering_threshold_sec for z in cfg.zones}
+                    zone_sig = sig
+                    log.info("hot-reloaded %d zone(s) from editor for %s",
+                             len(cfg.zones), cfg.camera_id)
 
         # Pull the latest frame from the capture thread (non-blocking).
         frame, fts, seq = worker.read_latest()

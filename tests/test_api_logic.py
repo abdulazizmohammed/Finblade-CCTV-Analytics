@@ -266,6 +266,27 @@ class TestOccupancyReport(unittest.TestCase):
         self.assertNotIn("None", csv_text)   # missing values render blank
 
 
+class TestZoneFreshness(unittest.TestCase):
+    _BASE = {"camera_id": "CAM-A-01", "occupancy": 1, "density": 0.1,
+             "capacity_pct": 5.0, "inflow_per_min": 0.0, "outflow_per_min": 0.0,
+             "status": "NORMAL"}
+
+    def test_stale_zone_dropped_from_live(self):
+        svc = _svc()
+        svc.record_zone_state({**self._BASE, "zone_id": "FRESH", "ts": 1000.0})
+        svc.record_zone_state({**self._BASE, "zone_id": "STALE", "ts": 900.0})  # 100s older
+        ids = {z["zone_id"] for z in svc.zone_states()}
+        self.assertIn("FRESH", ids)
+        self.assertNotIn("STALE", ids)   # removed/renamed zone drops off the dashboard
+
+    def test_recent_zones_both_kept(self):
+        svc = _svc()
+        svc.record_zone_state({**self._BASE, "zone_id": "A", "ts": 1000.0})
+        svc.record_zone_state({**self._BASE, "zone_id": "B", "ts": 990.0})  # within window
+        ids = {z["zone_id"] for z in svc.zone_states()}
+        self.assertEqual(ids, {"A", "B"})
+
+
 class TestReport(unittest.TestCase):
     def test_report_html_has_no_hardcoded_hex(self):
         html_out = render_report_html(

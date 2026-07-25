@@ -12,7 +12,7 @@ import sqlite3
 import threading
 from typing import List, Optional
 
-from .store import Store
+from .store import Store, _fresh_zones
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events(
@@ -262,7 +262,7 @@ class SQLiteStore(Store):
                     r.update(json.loads(extra))
                 except Exception:
                     pass
-        return out
+        return _fresh_zones(out)   # drop zones no longer reporting (removed/renamed)
 
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]:
         with self._lock:

@@ -11,6 +11,19 @@ tested against InMemoryStore without a database.
 
 from typing import Dict, List, Optional
 
+# Live dashboard freshness: a zone whose newest sample lags the overall newest by
+# more than this was removed/renamed in the editor (or its camera stopped), so it
+# is dropped from latest_zone_states. Referenced off the newest sample rather than
+# wall-clock so it stays stable in tests and offline replays.
+ZONE_STALE_SECONDS = 30.0
+
+
+def _fresh_zones(rows: List[dict]) -> List[dict]:
+    if not rows:
+        return rows
+    newest = max(r.get("ts", 0) for r in rows)
+    return [r for r in rows if r.get("ts", 0) >= newest - ZONE_STALE_SECONDS]
+
 
 class Store:
     def save_event(self, evt: dict) -> None: raise NotImplementedError
@@ -118,7 +131,7 @@ class InMemoryStore(Store):
             zid = s["zone_id"]
             if zid not in latest or s["ts"] >= latest[zid]["ts"]:
                 latest[zid] = s
-        return list(latest.values())
+        return _fresh_zones(list(latest.values()))
 
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]:
         return [s for s in self._zone_ts

@@ -9,7 +9,7 @@
 :root{
   --fb-void:#08131a; --fb-surface:#0e1f29; --fb-surface-2:#142c38;
   --fb-line:#1d3d4b; --fb-line-bright:#2a5568;
-  --fb-teal:#18bdc2; --fb-teal-bright:#4fdce0; --fb-teal-ghost:rgba(24,189,194,.12);
+  --fb-teal:#18bdc2; --fb-teal-bright:#4fdce0; --fb-teal-dim:#0d6f74; --fb-teal-ghost:rgba(24,189,194,.12);
   --fb-text:#dcecf0; --fb-text-muted:#7d9aa5; --fb-text-faint:#4e6a76;
   --fb-warning:#f0a029; --fb-critical:#ef4b4b; --fb-restricted:#e0479e; --fb-ok:#7d9aa5;
   --fb-restricted-ghost:rgba(224,71,158,.12);
@@ -23,6 +23,12 @@ body{margin:0;background:var(--fb-void);color:var(--fb-text);font-family:var(--f
   display:grid;grid-template-columns:1fr 380px;height:100vh;}
 header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 18px;height:48px;
   background:var(--fb-surface);border-bottom:1px solid var(--fb-line);}
+.brand-logo{height:24px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
+.tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.nav{display:flex;gap:3px;flex-wrap:wrap;}
+.nav a{font-family:var(--fb-font-data);font-size:11px;letter-spacing:.03em;color:var(--fb-text-muted);text-decoration:none;padding:6px 10px;border-radius:var(--fb-r);border:1px solid transparent;}
+.nav a:hover{color:var(--fb-text);border-color:var(--fb-line-bright);}
+.nav a.active{color:var(--fb-teal);border-color:var(--fb-teal-dim);}
 .mark{font-family:var(--fb-font-data);font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-teal);font-weight:600;}
 .mark span{color:var(--fb-text-faint);}
 .sep{flex:1;}
@@ -63,7 +69,15 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
 </style>
 
 <header>
-  <div class="mark">FinBlade <span>/ Zone Editor</span></div>
+  <img class="brand-logo" src="/web/logo.svg" alt="FinBlade">
+  <span class="tag">Zone Editor</span>
+  <nav class="nav">
+    <a href="/web/dashboard.html">Dashboard</a>
+    <a href="/web/cameras.html">Cameras</a>
+    <a href="/tools/zone-editor.html" class="active">Zones</a>
+    <a href="/web/history.html">History</a>
+    <a href="/web/report.html">Report</a>
+  </nav>
   <div class="sep"></div>
   <span class="status" id="status">load a frame to begin</span>
 </header>

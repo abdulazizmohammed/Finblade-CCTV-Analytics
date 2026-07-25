@@ -65,6 +65,8 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
 .pill.mon{color:var(--fb-ok);}
 .rm{position:absolute;top:8px;right:9px;cursor:pointer;color:var(--fb-text-faint);font-size:14px;line-height:1;background:none;border:0;padding:2px 4px;}
 .rm:hover{color:var(--fb-critical);}
+.edit{position:absolute;top:9px;right:32px;cursor:pointer;color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;line-height:1;background:none;border:0;padding:2px 4px;}
+.edit:hover{color:var(--fb-teal);}
 .empty{color:var(--fb-text-faint);font-size:12px;padding:14px 0;}
 </style>
 
@@ -86,9 +88,12 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
   <p class="eyebrow">Reference frame</p>
   <input type="file" accept="image/*" id="file">
   <p class="hint">
-    Load the still saved on first run (<code>media/&lt;camera&gt;_frame.jpg</code>).
-    <b>Left-click</b> to add corners, <b>drag</b> a point to move it,
+    Existing zones for this camera load automatically. Load the reference still
+    (<code>media/&lt;camera&gt;_frame.jpg</code>) to see and position them on the frame.
+    <b>Edit</b> a zone from the list to adjust it, or draw a new one:
+    <b>left-click</b> to add corners, <b>drag</b> a point to move it,
     <b>right-click a point</b> to delete it, <b>right-click empty</b> to close the zone.
+    Then <b>Save to server</b>.
   </p>
   <div class="frame"><canvas id="c" width="640" height="360"></canvas></div>
   <p class="readout" id="coord">Awaiting frame</p>
@@ -145,20 +150,22 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
 <script>
 const C = { zone:'#4fdce0', restricted:'#e0479e', draft:'#f0a029' };
 const cv=document.getElementById('c'), ctx=cv.getContext('2d');
-let img=null, nat={w:0,h:0}, scale=1, pts=[], zones=[];
+let img=null, nat={w:1280,h:720}, scale=1, pts=[], zones=[];
 let down=false, moved=false, dragIdx=-1;
 const $=id=>document.getElementById(id);
 const v=id=>$(id).value;
 $('api').value = `http://${location.hostname}:8000`;
 function setStatus(t){ $('status').textContent=t; }
+function sizeCanvas(){ scale=Math.min(1, 900/nat.w); cv.width=Math.round(nat.w*scale); cv.height=Math.round(nat.h*scale); }
 
 $('file').onchange = e=>{
   const f=e.target.files[0]; if(!f) return;
   img=new Image();
   img.onload=()=>{
     nat={w:img.naturalWidth,h:img.naturalHeight};
-    scale=Math.min(1, 900/nat.w);
-    cv.width=Math.round(nat.w*scale); cv.height=Math.round(nat.h*scale);
+    sizeCanvas();
+    // reposition any already-loaded zones onto this frame (norm is the source of truth)
+    zones.forEach(z=> z.polygon=(z.norm||[]).map(n=>[Math.round(n[0]*nat.w),Math.round(n[1]*nat.h)]));
     draw();
     $('coord').innerHTML=`Frame <b>${nat.w}×${nat.h}</b> — left-click to place corners`;
     setStatus(`frame ${nat.w}×${nat.h}`);
@@ -200,9 +207,13 @@ cv.addEventListener('contextmenu', e=>{
 });
 
 function draw(){
-  if(!img) return;
   ctx.clearRect(0,0,cv.width,cv.height);
-  ctx.drawImage(img,0,0,cv.width,cv.height);
+  if(img){ ctx.drawImage(img,0,0,cv.width,cv.height); }
+  else {
+    ctx.fillStyle='#0e1f29'; ctx.fillRect(0,0,cv.width,cv.height);
+    ctx.fillStyle='#4e6a76'; ctx.font='12px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillText('Load the reference frame to position zones accurately', 16, 24);
+  }
   zones.forEach(z=> poly(z.polygon, z.colour || (z.restricted?C.restricted:C.zone), z.restricted, z.zone_name));
   poly(pts, C.draft, false, null, true);
 }
@@ -231,6 +242,7 @@ $('btn-load').onclick=loadServer;
 function closeZone(){
   if(pts.length<3){ $('coord').innerHTML=`<b style="color:${C.draft}">Needs at least 3 points</b>`; return; }
   const ztype=v('ztype');
+  const polyPx=pts.slice();
   zones.push({
     zone_id:v('zid'), zone_name:v('zname'), zone_type:ztype,
     restricted: ztype==='RESTRICTED',
@@ -238,7 +250,7 @@ function closeZone(){
     warning_density:+v('warn'), critical_density:+v('crit'),
     loitering_threshold_sec:+v('loiter'), colour:v('colour'),
     adjacency_list: v('adj').split(',').map(s=>s.trim()).filter(Boolean),
-    polygon:pts.slice(),
+    polygon:polyPx, norm:polyPx.map(norm),
   });
   pts=[]; draw(); render();
 }
@@ -252,14 +264,31 @@ function render(){
       const d=document.createElement('div');
       d.className='zone'+(z.restricted?' nogo':'');
       d.innerHTML=
+        `<button class="edit" title="Edit" data-i="${i}">Edit</button>`+
         `<button class="rm" title="Remove" data-i="${i}">✕</button>`+
         `<div class="id">${z.zone_id}<span class="pill ${z.restricted?'nogo':'mon'}">${z.zone_type}</span></div>`+
         `<div class="meta">${z.zone_name} · ${z.polygon.length} pts · cap ${z.capacity_max} · ${z.area_sqm} m² · warn ${z.warning_density}/crit ${z.critical_density} · loiter ${z.loitering_threshold_sec}s</div>`;
       box.appendChild(d);
     });
     box.querySelectorAll('.rm').forEach(b=> b.onclick=()=>{zones.splice(+b.dataset.i,1); draw(); render();});
+    box.querySelectorAll('.edit').forEach(b=> b.onclick=()=>editZone(+b.dataset.i));
   }
   $('out').textContent=yaml();
+}
+
+// Pull an existing zone back onto the canvas + into the form to edit it. It is
+// removed from the list and re-added (with any changes) when you Close zone.
+function editZone(i){
+  const z=zones[i];
+  pts = (z.polygon||[]).map(p=>p.slice());
+  $('zid').value=z.zone_id; $('zname').value=z.zone_name; $('ztype').value=z.zone_type||'MONITORED';
+  $('cap').value=z.capacity_max; $('area').value=z.area_sqm;
+  $('warn').value=z.warning_density; $('crit').value=z.critical_density;
+  $('loiter').value=z.loitering_threshold_sec; $('colour').value=z.colour||'#4fdce0';
+  $('adj').value=(z.adjacency_list||[]).join(', ');
+  zones.splice(i,1);
+  draw(); render();
+  setStatus(`editing ${z.zone_id} — drag points, then "Close zone" to apply`);
 }
 
 function norm(p){ return [ +(p[0]/nat.w).toFixed(5), +(p[1]/nat.h).toFixed(5) ]; }
@@ -286,7 +315,7 @@ async function saveServer(){
     capacity_max:z.capacity_max, area_sqm:z.area_sqm, warning_density:z.warning_density,
     critical_density:z.critical_density, loitering_threshold_sec:z.loitering_threshold_sec,
     colour:z.colour, adjacency_list:z.adjacency_list, enabled:true,
-    normalized_polygon: z.polygon.map(norm),
+    normalized_polygon: (z.norm && z.norm.length) ? z.norm : z.polygon.map(norm),
   }))};
   try{
     const r=await fetch(`${api}/api/v1/zones`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -299,19 +328,29 @@ async function loadServer(){
   const cam=v('camera').trim(), api=v('api').replace(/\/$/,'');
   try{
     const {zones:zs}=await fetch(`${api}/api/v1/zones?camera_id=${encodeURIComponent(cam)}`).then(r=>r.json());
-    if(!zs || !zs.length){ setStatus(`no saved zones for ${cam}`); return; }
+    if(!zs || !zs.length){ zones=[]; pts=[]; draw(); render(); setStatus(`no saved zones for ${cam} — draw one`); return; }
     zones = zs.map(z=>({
       zone_id:z.zone_id, zone_name:z.zone_name, zone_type:z.zone_type, restricted:!!z.restricted,
       capacity_max:z.capacity_max, area_sqm:z.area_sqm, warning_density:z.warning_density,
       critical_density:z.critical_density, loitering_threshold_sec:z.loitering_threshold_sec,
       colour:z.colour||'#4fdce0', adjacency_list:z.adjacency_list||[],
+      norm:(z.normalized_polygon||[]),
       polygon:(z.normalized_polygon||[]).map(n=>[Math.round(n[0]*nat.w), Math.round(n[1]*nat.h)]),
     }));
-    draw(); render(); setStatus(`loaded ${zones.length} zone(s) for ${cam}`);
+    draw(); render(); setStatus(`loaded ${zones.length} zone(s) for ${cam}${img?'':' — load the frame to position them'}`);
   }catch(e){ setStatus('load failed — is the API running on :8000?'); }
 }
 
 // restricted-type auto-updates colour default
 $('ztype').onchange=()=>{ if(v('ztype')==='RESTRICTED') $('colour').value='#e0479e'; };
+
+// Reload the zone set whenever the camera changes.
+$('camera').addEventListener('change', loadServer);
+
+// On open: size the placeholder canvas and auto-load this camera's saved zones,
+// so existing zones are shown ready to edit / delete / extend immediately.
+sizeCanvas();
+draw();
+loadServer();
 </script>
 </html>

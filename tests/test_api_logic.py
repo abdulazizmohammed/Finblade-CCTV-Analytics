@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from finblade.events import DENSITY_UPDATE, ZONE_ENTRY, new_event
+from finblade.events import DENSITY_UPDATE, ZONE_ENTRY, ZONE_TRANSITION, new_event
 from finblade.identity import PersonRefHasher
 from services.api.bus import InMemoryBus
 from services.api.report import render_report_html
@@ -94,6 +94,30 @@ class TestAlertsAck(unittest.TestCase):
         aid = svc.raise_alert({"rule_id": "R-02", "severity": "RED", "message": "x", "ts": 1.0})
         code, _ = svc.acknowledge(aid, "", ts=2.0)
         self.assertEqual(code, 400)
+
+
+class TestMovementAndFilters(unittest.TestCase):
+    def _tx(self, svc, frm, to, ts, pr="pr_x", cam="CAM-A"):
+        svc.store.save_event(new_event(ZONE_TRANSITION, cam, "S", ts,
+                                       zone_from=frm, zone_to=to, person_ref=pr))
+
+    def test_movement_aggregates_transitions(self):
+        svc = _svc()
+        self._tx(svc, "Z1", "Z2", 100.0)
+        self._tx(svc, "Z1", "Z2", 110.0)
+        self._tx(svc, "Z2", "Z3", 120.0)
+        flows = svc.movement(0, 1e12)
+        by = {(f["zone_from"], f["zone_to"]): f["count"] for f in flows}
+        self.assertEqual(by[("Z1", "Z2")], 2)
+        self.assertEqual(by[("Z2", "Z3")], 1)
+
+    def test_events_person_ref_filter(self):
+        svc = _svc()
+        self._tx(svc, "Z1", "Z2", 100.0, pr="pr_a")
+        self._tx(svc, "Z1", "Z2", 101.0, pr="pr_b")
+        got = svc.events_history(0, 1e12, person_ref="pr_a")
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["person_ref"], "pr_a")
 
 
 class TestZones(unittest.TestCase):

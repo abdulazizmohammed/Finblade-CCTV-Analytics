@@ -25,7 +25,7 @@ class Store:
     def mark_camera_seen(self, camera_id: str, ts: float, site_id: str = None) -> None: pass
     def list_cameras(self) -> List[dict]: return []
     def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
-                    event_type=None, limit: int = 500) -> List[dict]: return []
+                    event_type=None, person_ref=None, limit: int = 500) -> List[dict]: return []
     def list_alerts_history(self, t0: float, t1: float, camera_id=None, rule_id=None,
                             limit: int = 500) -> List[dict]: return []
     def zone_state_stats(self, t0: float, t1: float, camera_id=None,
@@ -100,7 +100,8 @@ class InMemoryStore(Store):
     def list_cameras(self) -> List[dict]:
         return list(self._cameras.values())
 
-    def list_events(self, t0, t1, camera_id=None, zone_id=None, event_type=None, limit=500):
+    def list_events(self, t0, t1, camera_id=None, zone_id=None, event_type=None,
+                    person_ref=None, limit=500):
         out = []
         for e in self._events:
             ts = e.get("timestamp", 0)
@@ -109,6 +110,8 @@ class InMemoryStore(Store):
             if camera_id and e.get("camera_id") != camera_id:
                 continue
             if event_type and e.get("event_type") != event_type:
+                continue
+            if person_ref and e.get("person_ref") != person_ref:
                 continue
             if zone_id and zone_id not in (e.get("zone_id"), e.get("zone_from"), e.get("zone_to")):
                 continue

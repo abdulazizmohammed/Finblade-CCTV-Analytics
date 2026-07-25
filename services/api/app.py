@@ -118,9 +118,19 @@ if os.path.isdir(_TOOLS_DIR):
 async def history_events(frm: float = Query(0, alias="from"),
                          to: float = Query(9_000_000_000_000.0, alias="to"),
                          camera_id: str = Query(None), zone_id: str = Query(None),
-                         event_type: str = Query(None), limit: int = Query(500)):
+                         event_type: str = Query(None), person_ref: str = Query(None),
+                         limit: int = Query(500)):
     return {"events": svc.events_history(frm, to, camera_id=camera_id, zone_id=zone_id,
-                                         event_type=event_type, limit=limit)}
+                                         event_type=event_type, person_ref=person_ref,
+                                         limit=limit)}
+
+
+@app.get("/api/v1/movement")
+async def movement(minutes: float = Query(15.0), camera_id: str = Query(None)):
+    """Zone->zone transition counts over the last N minutes (Req 12)."""
+    now = time.time()
+    return {"minutes": minutes,
+            "flows": svc.movement(now - minutes * 60.0, now, camera_id=camera_id)}
 
 
 @app.get("/api/v1/history/alerts")

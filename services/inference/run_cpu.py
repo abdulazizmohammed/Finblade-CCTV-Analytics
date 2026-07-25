@@ -47,8 +47,10 @@ if _REPO_ROOT not in sys.path:
 from finblade.config import load_camera_config          # noqa: E402
 from finblade.debounce import BoundaryDebouncer          # noqa: E402
 from finblade.events import (                            # noqa: E402
-    CAMERA_HEARTBEAT, DENSITY_UPDATE, ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION,
-    new_event,
+    CAMERA_HEARTBEAT, CAMERA_OFFLINE, CAMERA_ONLINE, CAMERA_RECOVERED,
+    CAPACITY_WARNING, DENSITY_UPDATE, LOITERING_END, LOITERING_START,
+    RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
+    ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, new_event,
 )
 from finblade.geometry import foot_point                 # noqa: E402
 from finblade.identity import PersonRefHasher            # noqa: E402
@@ -60,7 +62,7 @@ from finblade.rules import RuleEngine                    # noqa: E402
 from finblade.tracking import TrackReaper                # noqa: E402
 from finblade.tracks import TrackRegistry                # noqa: E402
 from finblade.zones import zone_of                       # noqa: E402
-from services.inference.camera_worker import CameraWorker  # noqa: E402
+from services.inference.camera_worker import CameraWorker, CameraState  # noqa: E402
 
 # Shared handle so the MJPEG server can drive the demo simulate/restore controls.
 _worker = {"ref": None}
@@ -123,7 +125,9 @@ BOOKMARKS_DIR = os.path.join(EVIDENCE, "bookmarks")   # saved frame per event/al
 
 # Movement events pushed to the history store.
 ZONE_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION}
-POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE}
+POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE,
+                    CAPACITY_WARNING, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
+                    LOITERING_START, LOITERING_END}
 # Only these alert severities get a saved frame (bookmark): R-06 intrusion
 # (CRITICAL) and R-02 density-critical (RED). Amber alerts do not.
 CRITICAL_SEVERITIES = {"CRITICAL", "RED"}
@@ -312,6 +316,10 @@ def run(config_path, max_seconds=None):
     last_seq = -1
     last_state = None
     last_health_log = 0.0
+    ever_online = False
+    restricted_zone_ids = {z.zone_id for z in cfg.zones if z.restricted}
+    loiter_zone = {z.zone_id: z.loitering_threshold_sec for z in cfg.zones}
+    loiter_started = set()   # (person_ref, zone_id) with a LOITERING_START emitted
 
     while True:
         now = time.time()
@@ -319,11 +327,22 @@ def run(config_path, max_seconds=None):
         if max_seconds and elapsed >= max_seconds:
             break
 
-        # Log camera state transitions (ingest health, independent of detection).
+        # Camera state transitions -> health events (independent of detection).
         state = worker.state(now)
         if state != last_state:
-            log.info("camera %s state -> %s (%s)", cfg.camera_id, state,
-                     worker.health(now))
+            hv = worker.health(now)
+            log.info("camera %s state -> %s (%s)", cfg.camera_id, state, hv)
+            cev = None
+            if state == CameraState.OFFLINE and ever_online:
+                cev = new_event(CAMERA_OFFLINE, cfg.camera_id, cfg.site_id, now,
+                                last_seen=hv.get("last_valid_ts") or now)
+            elif state == CameraState.ONLINE:
+                cev = new_event(CAMERA_ONLINE if not ever_online else CAMERA_RECOVERED,
+                                cfg.camera_id, cfg.site_id, now)
+                ever_online = True
+            if cev is not None:
+                events_fp.write(json.dumps(cev) + "\n")
+                _post("/api/v1/events/ingest", cev)
             last_state = state
         if now - last_health_log >= 15.0:
             last_health_log = now
@@ -390,6 +409,22 @@ def run(config_path, max_seconds=None):
                             zone_from=old or "NONE", person_ref=pr))
                         if old:
                             flow.record_exit(old, vnow)
+                    # restricted-zone entry / exit events
+                    if confirmed in restricted_zone_ids:
+                        pending_events.append(new_event(
+                            RESTRICTED_ZONE_ENTRY, cfg.camera_id, cfg.site_id, vnow,
+                            zone_id=confirmed, person_ref=pr))
+                    if old in restricted_zone_ids and confirmed not in restricted_zone_ids:
+                        pending_events.append(new_event(
+                            RESTRICTED_ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
+                            zone_id=old, person_ref=pr))
+                    # loitering ended: left a zone they were loitering in
+                    if old and (pr, old) in loiter_started and confirmed != old:
+                        pending_events.append(new_event(
+                            LOITERING_END, cfg.camera_id, cfg.site_id, vnow,
+                            zone_id=old, person_ref=pr, dwell_time=dwell.dwell(tid, vnow)))
+                        loiter_started.discard((pr, old))
+                        eng.reset_loiter(pr, old)
                     prev_zone[tid] = confirmed
                 d = dwell.update(tid, confirmed, vnow)
                 # Consolidated per-track record (age/zones/dwell/confidence) for
@@ -402,9 +437,15 @@ def run(config_path, max_seconds=None):
                     intr = eng.evaluate_intrusion(pr, confirmed, zobj.restricted, vnow)
                     if intr:
                         pending_alerts.append(intr.as_dict())
-                    lo = eng.evaluate_loiter(pr, confirmed, d, vnow)
+                    lo = eng.evaluate_loiter(pr, confirmed, d, vnow,
+                                             threshold=loiter_zone.get(confirmed))
                     if lo:
                         pending_alerts.append(lo.as_dict())
+                        if (pr, confirmed) not in loiter_started:
+                            loiter_started.add((pr, confirmed))
+                            pending_events.append(new_event(
+                                LOITERING_START, cfg.camera_id, cfg.site_id, vnow,
+                                zone_id=confirmed, person_ref=pr, dwell_time=d))
 
         det_counts.append(len(tracks))
         processed += 1
@@ -412,9 +453,21 @@ def run(config_path, max_seconds=None):
         # Evict per-track state for tracks that left the scene (bounded memory).
         stale = reaper.reap(vnow)
         for tid in stale:
+            pr = hasher.ref(tid)
+            gone_zone = prev_zone.get(tid)
+            # emit exit events for a track that vanished while inside a zone
+            if gone_zone in restricted_zone_ids:
+                pending_events.append(new_event(
+                    RESTRICTED_ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
+                    zone_id=gone_zone, person_ref=pr))
+            if gone_zone and (pr, gone_zone) in loiter_started:
+                pending_events.append(new_event(
+                    LOITERING_END, cfg.camera_id, cfg.site_id, vnow,
+                    zone_id=gone_zone, person_ref=pr, dwell_time=dwell.dwell(tid, vnow)))
+                loiter_started.discard((pr, gone_zone))
             deb.drop(tid)
             dwell.drop(tid)
-            eng.drop_person(hasher.ref(tid))
+            eng.drop_person(pr)
             prev_zone.pop(tid, None)
             done = registry.complete(tid)          # final per-track summary
             if done is not None:
@@ -437,23 +490,26 @@ def run(config_path, max_seconds=None):
                 pending_events.append(new_event(
                     DENSITY_UPDATE, cfg.camera_id, cfg.site_id, vnow,
                     zone_id=z.zone_id, occupancy=occ, density=dens))
+                roll = flow.rolling(z.zone_id, vnow)   # 1m rates + net + 5m/15m
                 pending_states.append({
                     "zone_id": z.zone_id, "camera_id": cfg.camera_id,
                     "zone_name": z.zone_name, "restricted": z.restricted,
                     "zone_type": z.zone_type,
                     "occupancy": occ, "density": dens, "capacity_pct": cap_pct,
-                    "inflow_per_min": flow.inflow_per_min(z.zone_id, vnow),
-                    "outflow_per_min": flow.outflow_per_min(z.zone_id, vnow),
                     "peak_occupancy": zstats.peak(z.zone_id),
                     "avg_occupancy": round(zstats.average(z.zone_id), 1),
                     "trend": zstats.trend(z.zone_id, vnow),
                     "status": density_status(dens, z.warning_density, z.critical_density),
-                    "ts": vnow,
+                    "ts": vnow, **roll,
                 })
                 for al in eng.evaluate_zone(z.zone_id, dens, cap_pct, vnow,
                                             warning_on=z.warning_density,
                                             critical_on=z.critical_density):
                     pending_alerts.append(al.as_dict())
+                    if al.rule_id == "R-03" and al.kind == "FIRE":
+                        pending_events.append(new_event(
+                            CAPACITY_WARNING, cfg.camera_id, cfg.site_id, vnow,
+                            zone_id=z.zone_id, occupancy=occ, capacity_pct=cap_pct))
 
         # --- annotate once, then bookmark this moment if anything happened ---
         annotated = annotate(frame.copy(), cfg.zones, tracks, occupancy)

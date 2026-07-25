@@ -200,11 +200,12 @@ class RuleEngine:
 
     # -- loitering R-05 --
     def evaluate_loiter(self, person_ref: str, zone_id: Optional[str], dwell_s: float,
-                        now: float) -> Optional[Alert]:
+                        now: float, threshold: float = None) -> Optional[Alert]:
         if zone_id is None:
             return None
+        thr = self.t.loiter_seconds if threshold is None else threshold
         key = (person_ref, zone_id)
-        if dwell_s >= self.t.loiter_seconds and key not in self._loiter_fired:
+        if dwell_s >= thr and key not in self._loiter_fired:
             self._loiter_fired.add(key)
             return Alert("R-05", SEV_AMBER,
                          f"loitering {dwell_s:.0f}s in {zone_id}", now,

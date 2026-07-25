@@ -71,9 +71,12 @@ tr.clickable:hover td{background:var(--fb-surface-2);}
         <select id="type"><option value="">All</option></select></div>
       <div class="field"><label for="cam">Camera</label>
         <select id="cam"><option value="">All cameras</option></select></div>
+      <div class="field"><label for="pref">Anon ref</label>
+        <input type="text" id="pref" placeholder="pr_…" style="width:130px"></div>
       <div class="field"><label>&nbsp;</label><button class="fb-btn" id="refresh">Search</button></div>
     </div>
 
+    <div id="flows"></div>
     <p class="count" id="count">—</p>
     <div class="tablewrap"><table>
       <thead id="thead"></thead>
@@ -96,7 +99,9 @@ const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');
 let mode='alerts';
 
 const ALERT_TYPES=['R-01','R-02','R-03','R-05','R-06','R-07'];
-const EVENT_TYPES=['ZONE_ENTRY','ZONE_EXIT','ZONE_TRANSITION','DENSITY_UPDATE'];
+const EVENT_TYPES=['ZONE_ENTRY','ZONE_EXIT','ZONE_TRANSITION','DENSITY_UPDATE',
+  'CAPACITY_WARNING','RESTRICTED_ZONE_ENTRY','RESTRICTED_ZONE_EXIT',
+  'LOITERING_START','LOITERING_END','CAMERA_ONLINE','CAMERA_OFFLINE','CAMERA_RECOVERED'];
 
 function iso(ts){ // epoch seconds -> local YYYY-MM-DD HH:MM:SS
   const d=new Date(ts*1000);
@@ -130,10 +135,11 @@ async function loadCameras(){
 
 async function load(){
   const {from,to}=dayBounds();
-  const cam=$('cam').value, typ=$('type').value;
-  let url, rows;
+  const cam=$('cam').value, typ=$('type').value, pref=$('pref').value.trim();
+  let rows;
   try{
     if(mode==='alerts'){
+      $('flows').innerHTML='';
       const q=new URLSearchParams({from,to,limit:1000});
       if(cam)q.set('camera_id',cam); if(typ)q.set('rule_id',typ);
       rows=(await fetch(`${API}/api/v1/history/alerts?${q}`).then(r=>r.json())).alerts||[];
@@ -141,11 +147,29 @@ async function load(){
     }else{
       const q=new URLSearchParams({from,to,limit:1000});
       if(cam)q.set('camera_id',cam); if(typ)q.set('event_type',typ);
+      if(pref)q.set('person_ref',pref);
       rows=(await fetch(`${API}/api/v1/history/events?${q}`).then(r=>r.json())).events||[];
       renderEvents(rows);
+      loadFlows(cam);
     }
     $('count').textContent=`${rows.length} ${mode==='alerts'?'alerts':'events'} · ${$('from').value||'start'} → ${$('to').value||'now'}`;
   }catch(e){ $('count').textContent='offline — is the API running on :8000?'; }
+}
+
+async function loadFlows(cam){
+  try{
+    const q=new URLSearchParams({minutes:15});
+    if(cam)q.set('camera_id',cam);
+    const {flows}=await fetch(`${API}/api/v1/movement?${q}`).then(r=>r.json());
+    if(!flows || !flows.length){ $('flows').innerHTML=''; return; }
+    const rows=flows.map(f=>`<tr><td class="mono">${esc(f.zone_from)}</td>
+      <td class="mono">→</td><td class="mono">${esc(f.zone_to)}</td>
+      <td class="num">${f.count}</td></tr>`).join('');
+    $('flows').innerHTML=`<p class="count">Zone → zone movement · last 15 min</p>
+      <div class="tablewrap" style="margin-bottom:16px"><table>
+      <thead><tr><th>From</th><th></th><th>To</th><th>Count</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }catch(e){ $('flows').innerHTML=''; }
 }
 
 function frameCell(fr){

@@ -91,6 +91,28 @@ class TestFlow(unittest.TestCase):
         self.assertAlmostEqual(f.inflow_per_min("Z1", now=3.0), 1.0)
         self.assertAlmostEqual(f.outflow_per_min("Z1", now=3.0), 1.0)
 
+    def test_net_flow(self):
+        f = FlowCounter(window_s=60.0)
+        for t in range(3):
+            f.record_entry("Z1", now=float(t))     # 3 in
+        f.record_exit("Z1", now=3.0)               # 1 out
+        self.assertAlmostEqual(f.net_flow_per_min("Z1", now=4.0), 2.0)
+
+    def test_rolling_windows_5m_15m(self):
+        f = FlowCounter(window_s=60.0)
+        # 10 entries spread over ~10 minutes
+        for i in range(10):
+            f.record_entry("Z1", now=float(i * 60))     # one per minute, t=0..540
+        now = 600.0
+        roll = f.rolling("Z1", now)
+        # last 1 min: entries in [540,600] -> the t=540 one -> 1/min
+        self.assertAlmostEqual(roll["inflow_per_min"], 1.0)
+        # last 5 min: entries in [300,600] -> t=300,360,420,480,540 = 5 -> 5/5=1.0/min
+        self.assertAlmostEqual(roll["inflow_5m"], 1.0)
+        # last 15 min: all 10 -> 10/15 ≈ 0.67/min
+        self.assertAlmostEqual(roll["inflow_15m"], round(10 * 60.0 / 900.0, 2))
+        self.assertIn("net_flow", roll)
+
 
 class TestZoneStats(unittest.TestCase):
     def test_peak_and_average(self):

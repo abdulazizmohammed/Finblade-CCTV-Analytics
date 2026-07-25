@@ -60,8 +60,9 @@ class FlowCounter:
     person hovering on a line does not inflate the flow.
     """
 
-    def __init__(self, window_s: float = 60.0):
-        self.window_s = window_s
+    def __init__(self, window_s: float = 60.0, max_window_s: float = 900.0):
+        self.window_s = window_s                       # default rate window (1 min)
+        self.max_window_s = max(window_s, max_window_s)  # retain up to 15 min of events
         # zone_id -> deque[(t, kind)] kind in {"in","out"}
         self._events: Dict[str, Deque[Tuple[float, str]]] = {}
 
@@ -77,23 +78,41 @@ class FlowCounter:
         self._log(zone_id, "out", now)
 
     def _evict(self, dq: Deque[Tuple[float, str]], now: float) -> None:
-        cutoff = now - self.window_s
+        cutoff = now - self.max_window_s
         while dq and dq[0][0] < cutoff:
             dq.popleft()
 
-    def _rate(self, zone_id: str, kind: str, now: float) -> float:
+    def _rate(self, zone_id: str, kind: str, now: float, window: float) -> float:
         dq = self._events.get(zone_id)
         if not dq:
             return 0.0
         self._evict(dq, now)
-        count = sum(1 for _, k in dq if k == kind)
-        return count * 60.0 / self.window_s
+        cutoff = now - window
+        count = sum(1 for t, k in dq if k == kind and t >= cutoff)
+        return count * 60.0 / window
 
-    def inflow_per_min(self, zone_id: str, now: float) -> float:
-        return self._rate(zone_id, "in", now)
+    def inflow_per_min(self, zone_id: str, now: float, window: float = None) -> float:
+        return self._rate(zone_id, "in", now, window or self.window_s)
 
-    def outflow_per_min(self, zone_id: str, now: float) -> float:
-        return self._rate(zone_id, "out", now)
+    def outflow_per_min(self, zone_id: str, now: float, window: float = None) -> float:
+        return self._rate(zone_id, "out", now, window or self.window_s)
+
+    def net_flow_per_min(self, zone_id: str, now: float, window: float = None) -> float:
+        w = window or self.window_s
+        return (self.inflow_per_min(zone_id, now, w)
+                - self.outflow_per_min(zone_id, now, w))
+
+    def rolling(self, zone_id: str, now: float) -> dict:
+        """1-min rates + net, plus 5-min and 15-min rolling averages (Req 11)."""
+        return {
+            "inflow_per_min": round(self.inflow_per_min(zone_id, now), 2),
+            "outflow_per_min": round(self.outflow_per_min(zone_id, now), 2),
+            "net_flow": round(self.net_flow_per_min(zone_id, now), 2),
+            "inflow_5m": round(self.inflow_per_min(zone_id, now, 300.0), 2),
+            "outflow_5m": round(self.outflow_per_min(zone_id, now, 300.0), 2),
+            "inflow_15m": round(self.inflow_per_min(zone_id, now, 900.0), 2),
+            "outflow_15m": round(self.outflow_per_min(zone_id, now, 900.0), 2),
+        }
 
 
 # Status labels are semantic, not colours. The dashboard maps these to theme

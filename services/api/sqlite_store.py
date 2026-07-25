@@ -25,7 +25,7 @@ CREATE INDEX IF NOT EXISTS ix_events_type ON events(event_type);
 CREATE TABLE IF NOT EXISTS zone_state_ts(
   id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT, camera_id TEXT, zone_name TEXT,
   zone_type TEXT, restricted INTEGER, ts REAL, occupancy INTEGER, density REAL, capacity_pct REAL,
-  peak_occupancy INTEGER, avg_occupancy REAL, trend TEXT,
+  peak_occupancy INTEGER, avg_occupancy REAL, trend TEXT, extra TEXT,
   inflow REAL, outflow REAL, status TEXT);
 CREATE INDEX IF NOT EXISTS ix_zst_zone_ts ON zone_state_ts(zone_id, ts);
 
@@ -75,15 +75,17 @@ class SQLiteStore(Store):
 
     def save_zone_state(self, s: dict) -> None:
         with self._lock:
+            extra = {k: s[k] for k in ("net_flow", "inflow_5m", "outflow_5m",
+                                       "inflow_15m", "outflow_15m") if k in s}
             self._conn.execute(
                 "INSERT INTO zone_state_ts(zone_id,camera_id,zone_name,zone_type,restricted,ts,"
-                "occupancy,density,capacity_pct,peak_occupancy,avg_occupancy,trend,inflow,outflow,status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "occupancy,density,capacity_pct,peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (s["zone_id"], s.get("camera_id"), s.get("zone_name"), s.get("zone_type"),
                  1 if s.get("restricted") else 0, float(s["ts"]), int(s["occupancy"]),
                  float(s["density"]), float(s["capacity_pct"]),
                  int(s.get("peak_occupancy", s["occupancy"])), float(s.get("avg_occupancy", 0)),
-                 s.get("trend", "flat"),
+                 s.get("trend", "flat"), json.dumps(extra),
                  float(s.get("inflow_per_min", 0)), float(s.get("outflow_per_min", 0)),
                  s.get("status")))
             self._conn.commit()
@@ -132,13 +134,19 @@ class SQLiteStore(Store):
         with self._lock:
             cur = self._conn.execute(
                 "SELECT zone_id,camera_id,zone_name,zone_type,restricted,ts,occupancy,density,"
-                "capacity_pct,peak_occupancy,avg_occupancy,trend,"
+                "capacity_pct,peak_occupancy,avg_occupancy,trend,extra,"
                 "inflow AS inflow_per_min,outflow AS outflow_per_min,status "
                 "FROM zone_state_ts WHERE id IN "
                 "(SELECT MAX(id) FROM zone_state_ts GROUP BY zone_id)")
             out = _row(cur)
         for r in out:
             r["restricted"] = bool(r.get("restricted"))
+            extra = r.pop("extra", None)
+            if extra:
+                try:
+                    r.update(json.loads(extra))
+                except Exception:
+                    pass
         return out
 
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]:
@@ -148,7 +156,7 @@ class SQLiteStore(Store):
                 "WHERE zone_id=? AND ts BETWEEN ? AND ? ORDER BY ts", (zone_id, t0, t1)))
 
     def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
-                    event_type=None, limit: int = 500) -> List[dict]:
+                    event_type=None, person_ref=None, limit: int = 500) -> List[dict]:
         q = ("SELECT event_id,event_type,camera_id,site_id,zone_id,zone_from,zone_to,"
              "person_ref,ts,frame FROM events WHERE ts BETWEEN ? AND ?")
         p: list = [t0, t1]
@@ -158,6 +166,8 @@ class SQLiteStore(Store):
             q += " AND (zone_id=? OR zone_from=? OR zone_to=?)"; p += [zone_id, zone_id, zone_id]
         if event_type:
             q += " AND event_type=?"; p.append(event_type)
+        if person_ref:
+            q += " AND person_ref=?"; p.append(person_ref)
         q += " ORDER BY ts DESC LIMIT ?"; p.append(limit)
         with self._lock:
             return _row(self._conn.execute(q, p))

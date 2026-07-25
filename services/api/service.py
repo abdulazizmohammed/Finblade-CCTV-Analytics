@@ -48,6 +48,16 @@ class IngestService:
     def cameras(self):
         return self.store.list_cameras()
 
+    def movement(self, t0, t1, camera_id=None):
+        """Aggregate zone->zone transitions in a window into from/to counts."""
+        from collections import Counter
+        evs = self.store.list_events(t0, t1, camera_id=camera_id,
+                                     event_type="ZONE_TRANSITION", limit=5000)
+        c = Counter((e.get("zone_from"), e.get("zone_to")) for e in evs
+                    if e.get("zone_from") and e.get("zone_to"))
+        return [{"zone_from": f, "zone_to": t, "count": n}
+                for (f, t), n in c.most_common()]
+
     def occupancy_stats(self, t0, t1, **f):
         return self.store.zone_state_stats(t0, t1, **f)
 

@@ -16,28 +16,38 @@ ZONE_ENTRY = "ZONE_ENTRY"
 ZONE_EXIT = "ZONE_EXIT"
 ZONE_TRANSITION = "ZONE_TRANSITION"
 DENSITY_UPDATE = "DENSITY_UPDATE"
+CAPACITY_WARNING = "CAPACITY_WARNING"
+RESTRICTED_ZONE_ENTRY = "RESTRICTED_ZONE_ENTRY"
+RESTRICTED_ZONE_EXIT = "RESTRICTED_ZONE_EXIT"
+LOITERING_START = "LOITERING_START"
+LOITERING_END = "LOITERING_END"
 CAMERA_HEARTBEAT = "CAMERA_HEARTBEAT"
+CAMERA_ONLINE = "CAMERA_ONLINE"
 CAMERA_OFFLINE = "CAMERA_OFFLINE"
+CAMERA_RECOVERED = "CAMERA_RECOVERED"
 
 EVENT_TYPES = {
-    ZONE_ENTRY,
-    ZONE_EXIT,
-    ZONE_TRANSITION,
-    DENSITY_UPDATE,
-    CAMERA_HEARTBEAT,
-    CAMERA_OFFLINE,
+    ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE, CAPACITY_WARNING,
+    RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT, LOITERING_START, LOITERING_END,
+    CAMERA_HEARTBEAT, CAMERA_ONLINE, CAMERA_OFFLINE, CAMERA_RECOVERED,
 }
 
 # Per-type required payload keys and their python types.
-# ``str_or_none`` allows None for zone_from on a fresh entry etc.
 _NUM = (int, float)
 _SCHEMA = {
     ZONE_ENTRY: {"zone_to": str, "person_ref": str, "confidence": _NUM},
     ZONE_EXIT: {"zone_from": str, "person_ref": str},
     ZONE_TRANSITION: {"zone_from": str, "zone_to": str, "person_ref": str},
     DENSITY_UPDATE: {"zone_id": str, "occupancy": int, "density": _NUM},
+    CAPACITY_WARNING: {"zone_id": str, "occupancy": int, "capacity_pct": _NUM},
+    RESTRICTED_ZONE_ENTRY: {"zone_id": str, "person_ref": str},
+    RESTRICTED_ZONE_EXIT: {"zone_id": str, "person_ref": str},
+    LOITERING_START: {"zone_id": str, "person_ref": str, "dwell_time": _NUM},
+    LOITERING_END: {"zone_id": str, "person_ref": str, "dwell_time": _NUM},
     CAMERA_HEARTBEAT: {},
+    CAMERA_ONLINE: {},
     CAMERA_OFFLINE: {"last_seen": _NUM},
+    CAMERA_RECOVERED: {},
 }
 
 

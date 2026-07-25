@@ -238,6 +238,7 @@ function renderZones(zones){
       <div class="flow">
         <div class="f"><span class="k">Inflow</span><span class="v">${(+z.inflow_per_min||0).toFixed(1)}/min</span></div>
         <div class="f"><span class="k">Outflow</span><span class="v">${(+z.outflow_per_min||0).toFixed(1)}/min</span></div>
+        <div class="f"><span class="k">Net</span><span class="v">${z.net_flow!=null?(z.net_flow>0?'+':'')+(+z.net_flow).toFixed(1):'—'}</span></div>
         <div class="f"><span class="k">Avg occ</span><span class="v">${(+z.avg_occupancy||0).toFixed(1)}</span></div>
       </div></div>`;
   }).join('');

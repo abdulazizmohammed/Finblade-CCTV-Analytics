@@ -96,6 +96,63 @@ class TestAlertsAck(unittest.TestCase):
         self.assertEqual(code, 400)
 
 
+class TestAlertLifecycle(unittest.TestCase):
+    def _open(self, svc):
+        return svc.raise_alert({"rule_id": "R-06", "severity": "RED",
+                                "message": "intrusion", "zone_id": "Z1", "ts": 10.0})
+
+    def test_resolve_closes_and_leaves_feed(self):
+        svc = _svc()
+        aid = self._open(svc)
+        code, body = svc.resolve(aid, "RESOLVED", "op-jane", ts=30.0, note="checked, all clear")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["status"], "RESOLVED")
+        # closed alerts drop out of the active feed entirely
+        self.assertEqual(len(svc.list_alerts()), 0)
+
+    def test_resolve_stamps_ack_if_not_acked(self):
+        svc = _svc()
+        aid = self._open(svc)
+        svc.resolve(aid, "RESOLVED", "op-jane", ts=30.0)
+        a = svc.store._alerts[aid]
+        self.assertEqual(a["acknowledged_by"], "op-jane")   # resolve implies ack
+
+    def test_ack_then_dismiss_with_note(self):
+        svc = _svc()
+        aid = self._open(svc)
+        svc.acknowledge(aid, "op", ts=20.0)
+        code, body = svc.resolve(aid, "DISMISSED", "op", ts=25.0, note="false alarm — reflection")
+        self.assertEqual(code, 200)
+        self.assertEqual(svc.store._alerts[aid]["note"], "false alarm — reflection")
+
+    def test_double_resolve_conflicts(self):
+        svc = _svc()
+        aid = self._open(svc)
+        svc.resolve(aid, "RESOLVED", "op", ts=30.0)
+        code, _ = svc.resolve(aid, "RESOLVED", "op2", ts=31.0)
+        self.assertEqual(code, 409)
+
+    def test_bad_action_rejected(self):
+        svc = _svc()
+        aid = self._open(svc)
+        code, _ = svc.resolve(aid, "BANANA", "op", ts=30.0)
+        self.assertEqual(code, 400)
+
+    def test_resolve_requires_who(self):
+        svc = _svc()
+        aid = self._open(svc)
+        code, _ = svc.resolve(aid, "RESOLVED", "", ts=30.0)
+        self.assertEqual(code, 400)
+
+    def test_history_retains_closed_alert(self):
+        svc = _svc()
+        aid = self._open(svc)
+        svc.resolve(aid, "RESOLVED", "op", ts=30.0)
+        hist = svc.alerts_history(0, 1e12)
+        self.assertEqual(len(hist), 1)                       # still on record
+        self.assertEqual(hist[0]["status"], "RESOLVED")
+
+
 class TestMovementAndFilters(unittest.TestCase):
     def _tx(self, svc, frm, to, ts, pr="pr_x", cam="CAM-A"):
         svc.store.save_event(new_event(ZONE_TRANSITION, cam, "S", ts,

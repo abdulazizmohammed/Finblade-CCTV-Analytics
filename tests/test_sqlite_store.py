@@ -68,6 +68,32 @@ class TestSQLiteCameraHealth(unittest.TestCase):
         c = next(c for c in s.list_cameras() if c["camera_id"] == "CAM-OLD")
         self.assertEqual(c["state"], "ONLINE")
 
+    def test_alert_lifecycle(self):
+        s = SQLiteStore(self.db)
+        aid = s.save_alert({"rule_id": "R-06", "severity": "RED", "message": "x",
+                            "zone_id": "Z1", "ts": 10.0})
+        self.assertEqual(len(s.list_alerts()), 1)                 # OPEN -> in feed
+        self.assertTrue(s.update_alert(aid, "RESOLVED", "op", 30.0, note="handled"))
+        self.assertEqual(len(s.list_alerts()), 0)                 # closed -> out of feed
+        self.assertFalse(s.update_alert(aid, "RESOLVED", "op2", 31.0))  # already closed
+        hist = s.list_alerts_history(0, 1e12)
+        self.assertEqual(hist[0]["status"], "RESOLVED")
+        self.assertEqual(hist[0]["note"], "handled")
+        self.assertEqual(hist[0]["resolved_by"], "op")
+
+    def test_alerts_migration_on_old_db(self):
+        conn = sqlite3.connect(self.db)
+        conn.execute("CREATE TABLE alerts(alert_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                     "rule_id TEXT, severity TEXT, message TEXT, zone_id TEXT, camera_id TEXT, "
+                     "person_ref TEXT, ts REAL, frame TEXT, kind TEXT, "
+                     "acknowledged_by TEXT, acknowledged_at REAL)")
+        conn.execute("INSERT INTO alerts(rule_id,ts,kind) VALUES('R-01',5.0,'FIRE')")
+        conn.commit(); conn.close()
+        s = SQLiteStore(self.db)                                  # migrates alerts table
+        feed = s.list_alerts()
+        self.assertEqual(feed[0]["status"], "OPEN")               # back-filled default
+        self.assertTrue(s.update_alert(feed[0]["alert_id"], "DISMISSED", "op", 9.0))
+
     def test_event_payload_extra_survives_roundtrip(self):
         # Phase 7 regression: duration lives only in the payload JSON.
         s = SQLiteStore(self.db)

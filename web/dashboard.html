@@ -54,6 +54,11 @@ body{
 .section-h{display:flex;align-items:center;gap:10px;margin:0 0 10px;}
 .section-h .rule{flex:1;height:1px;background:var(--fb-line);}
 
+/* overlay toggle bar */
+.ovlbar{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:0 0 12px;padding:8px 12px;background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r);}
+.ovlbar .ovllbl{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--fb-text-faint);}
+.ovlbar label{display:flex;align-items:center;gap:6px;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);cursor:pointer;}
+.ovlbar input{accent-color:var(--fb-teal);cursor:pointer;}
 /* feeds (uses the theme .fb-bracket corner motif) */
 .feeds{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 @media(max-width:640px){.feeds{grid-template-columns:1fr;}}
@@ -95,6 +100,11 @@ body{
 .meter>span{display:block;height:100%;background:var(--fb-ok);border-radius:3px;transition:width .4s;}
 .meter[data-s="WARNING"]>span{background:var(--fb-warning);}
 .meter[data-s="CRITICAL"]>span{background:var(--fb-critical);}
+.sparkwrap{margin-top:12px;padding-top:10px;border-top:1px solid var(--fb-line);}
+.sparklbl{display:block;font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);margin-bottom:4px;}
+.spark{width:100%;height:24px;display:block;}
+.spark.ph{height:24px;background:repeating-linear-gradient(90deg,var(--fb-line) 0 1px,transparent 1px 6px);opacity:.4;border-radius:2px;}
+.spark polyline{fill:none;stroke:var(--fb-text-muted);stroke-width:1.3;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round;}
 .flow{display:flex;justify-content:space-between;margin-top:10px;}
 .flow .f{display:flex;flex-direction:column;gap:2px;}
 .flow .k{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--fb-text-faint);font-family:var(--fb-font-data);}
@@ -112,8 +122,11 @@ body{
 .alert .rid{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.08em;color:var(--fb-text-muted);}
 .alert .msg{margin:4px 0 0;font-size:12.5px;}
 .alert .t{font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);}
-.ack{background:transparent;border:1px solid var(--fb-line-bright);color:var(--fb-text-muted);font-family:var(--fb-font-data);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:5px 9px;border-radius:var(--fb-r);cursor:pointer;align-self:center;}
+.actcol{display:flex;flex-direction:column;gap:5px;align-self:center;}
+.ack{background:transparent;border:1px solid var(--fb-line-bright);color:var(--fb-text-muted);font-family:var(--fb-font-data);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:5px 9px;border-radius:var(--fb-r);cursor:pointer;white-space:nowrap;}
 .ack:hover{border-color:var(--fb-teal);color:var(--fb-teal);}
+.ack.dismiss:hover{border-color:var(--fb-text-muted);color:var(--fb-text);}
+.stbadge{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--fb-ok);border:1px solid var(--fb-line-bright);border-radius:var(--fb-r);padding:5px 9px;text-align:center;}
 
 .foot{margin-top:22px;text-align:center;color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:10px;letter-spacing:.06em;}
 :focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
@@ -148,6 +161,14 @@ body{
     <div class="grid">
       <section>
         <div class="section-h"><p class="eyebrow">Live feeds · annotated</p><span class="rule"></span></div>
+        <div class="ovlbar" id="ovlbar">
+          <span class="ovllbl">Overlays</span>
+          <label><input type="checkbox" data-ovl="zones" checked> Zones</label>
+          <label><input type="checkbox" data-ovl="boxes" checked> Boxes</label>
+          <label><input type="checkbox" data-ovl="ids" checked> IDs</label>
+          <label><input type="checkbox" data-ovl="feet" checked> Foot points</label>
+          <label><input type="checkbox" data-ovl="dwell" checked> Dwell</label>
+        </div>
         <div class="feeds" id="feeds">
           <div class="feed fb-bracket" data-port="8080">
             <div class="scan"></div><div class="live"><span class="rd"></span> Live</div>
@@ -187,16 +208,31 @@ const SEVCLASS={NORMAL:'normal',WARNING:'warning',CRITICAL:'critical',AMBER:'war
 const BRACK={WARNING:'warning',CRITICAL:'critical'};
 const TREND={rising:'▲',falling:'▼',flat:'▬'};
 
-// live annotated feeds (best effort; each tile connects to its camera's port)
-(function mountFeeds(){
+// live annotated feeds (best effort; each tile connects to its camera's port).
+// Overlay toggles append ?layer=0 for any layer switched off; the inference MJPEG
+// server re-annotates the raw frame to match (all-on = the cheap default stream).
+const OVL={zones:true,boxes:true,ids:true,feet:true,dwell:true};
+function feedSrc(port){
+  const off=Object.keys(OVL).filter(k=>!OVL[k]).map(k=>`${k}=0`);
+  const q=off.length?`?${off.join('&')}&_=${Date.now()}`:'';
+  return `http://${location.hostname}:${port}/stream${q}`;
+}
+function applyFeeds(){
   document.querySelectorAll('#feeds .feed').forEach(tile=>{
     const port=tile.getAttribute('data-port');
-    const img=new Image();
-    img.onload=()=>{const p=tile.querySelector('.ph');if(p)p.remove();if(!img.parentNode)tile.insertBefore(img,tile.firstChild);};
-    img.onerror=()=>{};
-    img.src=`http://${location.hostname}:${port}/stream`;
+    let img=tile._img;
+    if(!img){
+      img=tile._img=new Image();
+      img.onload=()=>{const p=tile.querySelector('.ph');if(p)p.remove();if(!img.parentNode)tile.insertBefore(img,tile.firstChild);};
+      img.onerror=()=>{};
+    }
+    img.src=feedSrc(port);
   });
-})();
+}
+document.querySelectorAll('#ovlbar input[data-ovl]').forEach(cb=>cb.addEventListener('change',()=>{
+  OVL[cb.getAttribute('data-ovl')]=cb.checked; applyFeeds();
+}));
+applyFeeds();
 
 function renderKpis(zones,alerts){
   const totOcc=zones.reduce((a,z)=>a+(+z.occupancy||0),0);
@@ -215,6 +251,18 @@ function renderKpis(zones,alerts){
   zones.forEach(z=>{if((+z.density||0)>peak.d)peak={d:+z.density,name:z.zone_name||z.zone_id,status:z.status};});
   $('kDens').innerHTML=`${(peak.d<0?0:peak.d).toFixed(2)}<span class="u">/m²</span>`;
   $('kDensSub').textContent=peak.d<0?'—':`${peak.name} · ${String(peak.status||'normal').toLowerCase()} band`;
+}
+
+// rolling occupancy history per zone -> tiny SVG sparkline (data viz, kept
+// deliberately muted; status colour lives in the pill/meter, not the trace).
+const HIST={};
+function spark(id,val){
+  const a=HIST[id]||(HIST[id]=[]);
+  a.push(Math.max(0,+val||0)); if(a.length>40)a.shift();
+  if(a.length<2) return '<div class="spark ph"></div>';
+  const w=108,h=24,mx=Math.max(...a),mn=Math.min(...a),rng=(mx-mn)||1;
+  const pts=a.map((v,i)=>`${(i/(a.length-1)*w).toFixed(1)},${(h-2-((v-mn)/rng)*(h-4)).toFixed(1)}`).join(' ');
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}"/></svg>`;
 }
 
 function renderZones(zones){
@@ -241,7 +289,9 @@ function renderZones(zones){
         <div class="f"><span class="k">Outflow</span><span class="v">${(+z.outflow_per_min||0).toFixed(1)}/min</span></div>
         <div class="f"><span class="k">Net</span><span class="v">${z.net_flow!=null?(z.net_flow>0?'+':'')+(+z.net_flow).toFixed(1):'—'}</span></div>
         <div class="f"><span class="k">Avg occ</span><span class="v">${(+z.avg_occupancy||0).toFixed(1)}</span></div>
-      </div></div>`;
+      </div>
+      <div class="sparkwrap"><span class="sparklbl">Occupancy · last ${(HIST[z.zone_id]||[]).length}</span>${spark(z.zone_id,z.occupancy)}</div>
+      </div>`;
   }).join('');
 }
 
@@ -261,17 +311,38 @@ function renderAlerts(alerts){
   if(!alerts.length){host.innerHTML='<span class="empty">no active alerts</span>';return;}
   host.innerHTML=alerts.map(a=>{
     const sev=String(a.severity||'INFO').toUpperCase();
+    const st=String(a.status||'OPEN').toUpperCase();
+    const id=esc(a.alert_id);
+    const acked=st==='ACK';
+    const ackBtn=acked
+      ? `<span class="stbadge">Ack’d</span>`
+      : `<button class="ack" data-act="ack" data-id="${id}">Ack</button>`;
     return `<div class="alert" data-sev="${sev}">
-      <div class="body"><div class="top"><span class="rid">${esc(a.rule_id)} · ${esc(sev)}</span>
+      <div class="body"><div class="top"><span class="rid">${esc(a.rule_id)} · ${esc(sev)}${acked?' · ACK':''}</span>
       <span class="t fb-num">${a.ts!=null?(+a.ts).toFixed(0)+'s':''}</span></div>
       <p class="msg">${esc(a.message)}</p></div>
-      <button class="ack" data-ack="${esc(a.alert_id)}">Ack</button></div>`;
+      <div class="actcol">${ackBtn}
+        <button class="ack" data-act="resolve" data-id="${id}">Resolve</button>
+        <button class="ack dismiss" data-act="dismiss" data-id="${id}">Dismiss</button></div></div>`;
   }).join('');
-  host.querySelectorAll('[data-ack]').forEach(b=>b.addEventListener('click',()=>ack(b.getAttribute('data-ack'))));
+  host.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',()=>
+    alertAction(b.getAttribute('data-act'),b.getAttribute('data-id'))));
 }
 
-async function ack(id){
-  try{await fetch(`${API}/api/v1/alerts/${id}/ack`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acknowledged_by:'operator'})});poll();}catch(e){}
+async function alertAction(act,id){
+  try{
+    if(act==='ack'){
+      await fetch(`${API}/api/v1/alerts/${id}/ack`,{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({acknowledged_by:'operator'})});
+    }else{
+      const action=act==='dismiss'?'DISMISSED':'RESOLVED';
+      const note=prompt(`${action==='DISMISSED'?'Dismiss':'Resolve'} — optional note:`,'')||null;
+      await fetch(`${API}/api/v1/alerts/${id}/resolve`,{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action,resolved_by:'operator',note})});
+    }
+    poll();
+  }catch(e){}
 }
 
 function apply(d){
@@ -286,7 +357,7 @@ async function poll(){
   try{
     const [z,a]=await Promise.all([
       fetch(`${API}/api/v1/zones/state`).then(r=>r.json()),
-      fetch(`${API}/api/v1/alerts?unacked_only=true`).then(r=>r.json())]);
+      fetch(`${API}/api/v1/alerts`).then(r=>r.json())]);
     apply({zones:z.zones,alerts:a.alerts});setConn('rest · 5s');
   }catch(e){setConn('offline',true);}
 }

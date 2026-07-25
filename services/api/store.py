@@ -18,6 +18,8 @@ class Store:
     def save_alert(self, alert: dict) -> str: raise NotImplementedError
     def list_alerts(self, unacked_only: bool = False) -> List[dict]: raise NotImplementedError
     def acknowledge_alert(self, alert_id: str, who: str, ts: float) -> bool: raise NotImplementedError
+    def update_alert(self, alert_id: str, status: str, who: str, ts: float,
+                     note: str = None) -> bool: raise NotImplementedError
     def latest_zone_states(self) -> List[dict]: raise NotImplementedError
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]: raise NotImplementedError
 
@@ -61,23 +63,49 @@ class InMemoryStore(Store):
         rec["alert_id"] = alert_id
         rec.setdefault("acknowledged_by", None)
         rec.setdefault("acknowledged_at", None)
+        rec.setdefault("status", "OPEN")
+        rec.setdefault("note", None)
         self._alerts[alert_id] = rec
         return alert_id
 
     def list_alerts(self, unacked_only: bool = False) -> List[dict]:
-        # CLEAR alerts are informational; keep them out of the live/unacked feed.
-        vals = [a for a in self._alerts.values() if a.get("kind", "FIRE") != "CLEAR"]
+        # Active feed: fires not yet resolved/dismissed (CLEAR is informational).
+        vals = [a for a in self._alerts.values()
+                if a.get("kind", "FIRE") != "CLEAR"
+                and a.get("status", "OPEN") not in ("RESOLVED", "DISMISSED")]
         if unacked_only:
-            vals = [a for a in vals if a.get("acknowledged_by") is None]
+            vals = [a for a in vals if a.get("status", "OPEN") == "OPEN"]
         return sorted(vals, key=lambda a: a.get("ts", 0), reverse=True)
 
     def acknowledge_alert(self, alert_id: str, who: str, ts: float) -> bool:
+        return self.update_alert(alert_id, "ACK", who, ts)
+
+    def update_alert(self, alert_id: str, status: str, who: str, ts: float,
+                     note: str = None) -> bool:
         a = self._alerts.get(alert_id)
-        if a is None or a.get("acknowledged_by") is not None:
+        if a is None:
             return False
-        a["acknowledged_by"] = who
-        a["acknowledged_at"] = ts
-        return True
+        cur = a.get("status", "OPEN")
+        if status == "ACK":
+            if cur != "OPEN":
+                return False
+            a["status"] = "ACK"
+            a["acknowledged_by"] = who
+            a["acknowledged_at"] = ts
+            return True
+        if status in ("RESOLVED", "DISMISSED"):
+            if cur not in ("OPEN", "ACK"):
+                return False
+            a["status"] = status
+            a["resolved_by"] = who
+            a["resolved_at"] = ts
+            a["note"] = note
+            a.setdefault("acknowledged_by", None)
+            if a.get("acknowledged_by") is None:
+                a["acknowledged_by"] = who
+                a["acknowledged_at"] = ts
+            return True
+        return False
 
     def latest_zone_states(self) -> List[dict]:
         latest: Dict[str, dict] = {}

@@ -146,6 +146,9 @@ POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE,
 SNAPSHOT_RULES = {"R-02", "R-05", "R-06"}
 
 _latest_jpeg = {"buf": None}
+# Raw frame + render context so the MJPEG stream can re-annotate per-request with
+# a viewer's overlay toggles (the pre-encoded buf above is the all-layers default).
+_render = {"frame": None, "zones": None, "tracks": None, "occ": None, "meta": None}
 _lock = threading.Lock()
 
 
@@ -200,24 +203,32 @@ def _draw_dashed_poly(frame, pts, color, thickness=2, dash=14):
             cv2.line(frame, p0, p1, color, thickness)
 
 
-def annotate(frame, zones, tracks, occupancy, track_meta=None):
+# Overlay layers the live stream can toggle on/off (evidence always draws all).
+OVERLAY_DEFAULT = {"zones": True, "boxes": True, "ids": True, "feet": True, "dwell": True}
+
+
+def annotate(frame, zones, tracks, occupancy, track_meta=None, overlay=None):
     track_meta = track_meta or {}
-    for z in zones:
-        pts = [(int(x), int(y)) for x, y in z.polygon]
-        occ = occupancy.get(z.zone_id, 0)
-        if z.restricted:
-            # magenta dashed; flash red (solid overlay) when occupied = intrusion.
-            _draw_dashed_poly(frame, pts, BGR_RESTRICTED, 2)
-            if occ > 0:
-                cv2.polylines(frame, [np.array(pts, dtype=np.int32)], True, BGR_CRITICAL, 2)
-        else:
-            cv2.polylines(frame, [np.array(pts, dtype=np.int32)], True, BGR_ZONE, 2)
-        dens = density_per_sqm(occ, z.area_sqm)
-        label = f"{z.zone_name}: {occ}/{z.capacity_max}  {dens:.2f}/m2"
-        px, py = pts[0]
-        cv2.rectangle(frame, (px, py - 22), (px + 330, py), (14, 31, 41), -1)
-        cv2.putText(frame, label, (px + 4, py - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, BGR_TEXT, 1)
+    o = dict(OVERLAY_DEFAULT)
+    if overlay:
+        o.update(overlay)
+    if o["zones"]:
+        for z in zones:
+            pts = [(int(x), int(y)) for x, y in z.polygon]
+            occ = occupancy.get(z.zone_id, 0)
+            if z.restricted:
+                # magenta dashed; flash red (solid overlay) when occupied = intrusion.
+                _draw_dashed_poly(frame, pts, BGR_RESTRICTED, 2)
+                if occ > 0:
+                    cv2.polylines(frame, [np.array(pts, dtype=np.int32)], True, BGR_CRITICAL, 2)
+            else:
+                cv2.polylines(frame, [np.array(pts, dtype=np.int32)], True, BGR_ZONE, 2)
+            dens = density_per_sqm(occ, z.area_sqm)
+            label = f"{z.zone_name}: {occ}/{z.capacity_max}  {dens:.2f}/m2"
+            px, py = pts[0]
+            cv2.rectangle(frame, (px, py - 22), (px + 330, py), (14, 31, 41), -1)
+            cv2.putText(frame, label, (px + 4, py - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, BGR_TEXT, 1)
 
     restricted_ids = {z.zone_id for z in zones if z.restricted}
     for (tid, x1, y1, x2, y2) in tracks:
@@ -234,15 +245,18 @@ def annotate(frame, zones, tracks, occupancy, track_meta=None):
         else:
             box_color, tag = BGR_TRACK, ""
         thick = 3 if (in_restricted or loiter) else 2
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), box_color, thick)
-        cv2.circle(frame, (int(fx), int(fy)), 4, BGR_FOOT, -1)
-        label = f"ID {tid}"
-        if dwell >= 1:
-            label += f" {int(dwell)}s"
-        if tag:
-            label += f"  {tag}"
-        cv2.putText(frame, label, (int(x1), int(y1) - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
+        if o["boxes"]:
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), box_color, thick)
+        if o["feet"]:
+            cv2.circle(frame, (int(fx), int(fy)), 4, BGR_FOOT, -1)
+        if o["ids"] or (tag and o["boxes"]):
+            label = f"ID {tid}" if o["ids"] else ""
+            if o["ids"] and o["dwell"] and dwell >= 1:
+                label += f" {int(dwell)}s"
+            if tag:
+                label += f"  {tag}"
+            cv2.putText(frame, label.strip(), (int(x1), int(y1) - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
     return frame
 
 
@@ -570,6 +584,9 @@ def run(config_path, max_seconds=None):
         if okj:
             with _lock:
                 _latest_jpeg["buf"] = buf.tobytes()
+                # snapshot raw context for toggle-aware re-annotation in the stream
+                _render.update(frame=frame, zones=cfg.zones, tracks=list(tracks),
+                               occ=dict(occupancy), meta=track_meta)
 
         # Snapshot only the snapshot-worthy alerts (restricted / loitering /
         # critical-density) — not density-warning, capacity, or movement events.
@@ -651,10 +668,29 @@ def _serve(port=8080):
 
     @app.route("/stream")
     def stream():
+        from flask import request
+        # Overlay toggles: ?zones=0&ids=0&feet=0&dwell=0&boxes=0. Absent => default on.
+        # With all layers on we serve the pre-encoded default (cheap); any toggle
+        # re-annotates the raw frame per-request.
+        ov = {k: request.args.get(k, "1") not in ("0", "false", "off")
+              for k in OVERLAY_DEFAULT}
+        custom = ov != OVERLAY_DEFAULT
+
         def gen():
             while True:
-                with _lock:
-                    buf = _latest_jpeg["buf"]
+                buf = None
+                if custom:
+                    with _lock:
+                        r = dict(_render)
+                    if r.get("frame") is not None:
+                        img = annotate(r["frame"].copy(), r["zones"], r["tracks"],
+                                       r["occ"], r["meta"], overlay=ov)
+                        okj, enc = cv2.imencode(".jpg", img)
+                        if okj:
+                            buf = enc.tobytes()
+                else:
+                    with _lock:
+                        buf = _latest_jpeg["buf"]
                 if buf is not None:
                     yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf + b"\r\n")
                 time.sleep(0.05)

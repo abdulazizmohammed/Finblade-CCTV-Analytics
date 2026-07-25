@@ -126,6 +126,21 @@ class IngestService:
         return 200, {"acknowledged": True, "alert_id": alert_id,
                      "acknowledged_by": who, "acknowledged_at": ts}
 
+    def resolve(self, alert_id: str, action: str, who: str, ts: float,
+                note: str = None) -> Tuple[int, dict]:
+        """Close an alert: action 'RESOLVED' (handled) or 'DISMISSED' (false alarm),
+        with an optional operator note."""
+        action = (action or "").upper()
+        if action not in ("RESOLVED", "DISMISSED"):
+            return 400, {"ok": False, "error": "action must be RESOLVED or DISMISSED"}
+        if not who:
+            return 400, {"ok": False, "error": "resolved_by required"}
+        ok = self.store.update_alert(alert_id, action, who, ts, note)
+        if not ok:
+            return 409, {"ok": False, "error": "unknown or already-closed alert"}
+        return 200, {"ok": True, "alert_id": alert_id, "status": action,
+                     "resolved_by": who, "resolved_at": ts, "note": note}
+
     # -- dashboard reads --
     def zone_states(self) -> List[dict]:
         return self.store.latest_zone_states()

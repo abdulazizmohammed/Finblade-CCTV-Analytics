@@ -66,10 +66,11 @@ async def _offline_monitor():
                                      "camera_id": cid, "ts": now, "kind": "FIRE"})
                 elif silent <= OFFLINE_S and was:
                     _cam_offline[cid] = False
-                    # auto-ack the open offline alert so the health grid recovers
-                    for a in svc.list_alerts(unacked_only=True):
+                    # auto-resolve the open offline alert so it leaves the active feed
+                    for a in svc.list_alerts(unacked_only=False):
                         if a.get("rule_id") == "R-07" and a.get("camera_id") == cid:
-                            svc.acknowledge(str(a.get("alert_id")), "system-recovery", now)
+                            svc.resolve(str(a.get("alert_id")), "RESOLVED",
+                                        "system-recovery", now, note="camera recovered")
                     svc.raise_alert({"rule_id": "R-07", "severity": "INFO",
                                      "message": f"camera {cid} recovered",
                                      "camera_id": cid, "ts": now, "kind": "CLEAR"})
@@ -272,6 +273,16 @@ async def ack(alert_id: str, request: Request):
     return JSONResponse(status_code=code, content=resp)
 
 
+@app.post("/api/v1/alerts/{alert_id}/resolve")
+async def resolve(alert_id: str, request: Request):
+    """Close an alert as handled (RESOLVED) or a false alarm (DISMISSED) + note."""
+    body = await request.json()
+    code, resp = svc.resolve(alert_id, body.get("action", "RESOLVED"),
+                             body.get("resolved_by", ""), time.time(),
+                             note=body.get("note"))
+    return JSONResponse(status_code=code, content=resp)
+
+
 @app.get("/api/v1/reports/occupancy", response_class=HTMLResponse)
 async def occupancy_report():
     return render_report_html(svc.zone_states(), generated_at=time.time())
@@ -286,7 +297,9 @@ async def ws(websocket: WebSocket):
         while True:
             await websocket.send_json({
                 "zones": svc.zone_states(),
-                "alerts": svc.list_alerts(unacked_only=True),
+                # Active feed = OPEN + ACK (resolved/dismissed drop out); operators
+                # resolve acked alerts from here, so it can't be unacked-only.
+                "alerts": svc.list_alerts(unacked_only=False),
                 "ts": time.time(),
             })
             await asyncio.sleep(0.5)

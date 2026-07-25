@@ -32,7 +32,8 @@ CREATE INDEX IF NOT EXISTS ix_zst_zone_ts ON zone_state_ts(zone_id, ts);
 CREATE TABLE IF NOT EXISTS alerts(
   alert_id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id TEXT, severity TEXT, message TEXT,
   zone_id TEXT, camera_id TEXT, person_ref TEXT, ts REAL, frame TEXT, kind TEXT,
-  acknowledged_by TEXT, acknowledged_at REAL);
+  acknowledged_by TEXT, acknowledged_at REAL,
+  status TEXT DEFAULT 'OPEN', note TEXT, resolved_by TEXT, resolved_at REAL);
 CREATE INDEX IF NOT EXISTS ix_alerts_ts ON alerts(ts);
 
 CREATE TABLE IF NOT EXISTS cameras(
@@ -66,16 +67,22 @@ class SQLiteStore(Store):
 
     def _migrate(self) -> None:
         """Add columns introduced after a DB was first created (older files)."""
-        have = {r[1] for r in self._conn.execute("PRAGMA table_info(cameras)")}
-        add = {
+        cam = {r[1] for r in self._conn.execute("PRAGMA table_info(cameras)")}
+        cam_add = {
             "name": "TEXT", "state": "TEXT", "input_fps": "REAL", "resolution": "TEXT",
             "dropped_frames": "INTEGER", "reconnects": "INTEGER", "loops": "INTEGER",
             "frozen": "INTEGER", "enabled": "INTEGER", "stream_url": "TEXT",
             "health_ts": "REAL", "sim_failure": "INTEGER DEFAULT 0",
         }
-        for col, typ in add.items():
-            if col not in have:
+        for col, typ in cam_add.items():
+            if col not in cam:
                 self._conn.execute(f"ALTER TABLE cameras ADD COLUMN {col} {typ}")
+        al = {r[1] for r in self._conn.execute("PRAGMA table_info(alerts)")}
+        al_add = {"status": "TEXT DEFAULT 'OPEN'", "note": "TEXT",
+                  "resolved_by": "TEXT", "resolved_at": "REAL"}
+        for col, typ in al_add.items():
+            if col not in al:
+                self._conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} {typ}")
 
     # -- writes -------------------------------------------------------------
     def save_event(self, evt: dict) -> None:
@@ -111,7 +118,8 @@ class SQLiteStore(Store):
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO alerts(rule_id,severity,message,zone_id,camera_id,person_ref,"
-                "ts,frame,kind,acknowledged_by,acknowledged_at) VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL)",
+                "ts,frame,kind,acknowledged_by,acknowledged_at,status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,'OPEN')",
                 (a.get("rule_id"), a.get("severity"), a.get("message"), a.get("zone_id"),
                  a.get("camera_id"), a.get("person_ref"), float(a.get("ts", 0)),
                  a.get("frame"), a.get("kind", "FIRE")))
@@ -119,10 +127,31 @@ class SQLiteStore(Store):
             return str(cur.lastrowid)
 
     def acknowledge_alert(self, alert_id: str, who: str, ts: float) -> bool:
+        return self.update_alert(alert_id, "ACK", who, ts)
+
+    def update_alert(self, alert_id: str, status: str, who: str, ts: float,
+                     note: str = None) -> bool:
+        """Advance an alert through OPEN -> ACK -> RESOLVED/DISMISSED. A resolve or
+        dismiss also stamps acknowledgement if it wasn't acked first."""
+        try:
+            aid = int(alert_id)
+        except (TypeError, ValueError):
+            return False
         with self._lock:
-            cur = self._conn.execute(
-                "UPDATE alerts SET acknowledged_by=?, acknowledged_at=? "
-                "WHERE alert_id=? AND acknowledged_by IS NULL", (who, ts, int(alert_id)))
+            if status == "ACK":
+                cur = self._conn.execute(
+                    "UPDATE alerts SET acknowledged_by=?, acknowledged_at=?, status='ACK' "
+                    "WHERE alert_id=? AND COALESCE(status,'OPEN')='OPEN'",
+                    (who, ts, aid))
+            elif status in ("RESOLVED", "DISMISSED"):
+                cur = self._conn.execute(
+                    "UPDATE alerts SET status=?, resolved_by=?, resolved_at=?, note=?, "
+                    "acknowledged_by=COALESCE(acknowledged_by,?), "
+                    "acknowledged_at=COALESCE(acknowledged_at,?) "
+                    "WHERE alert_id=? AND COALESCE(status,'OPEN') IN ('OPEN','ACK')",
+                    (status, who, ts, note, who, ts, aid))
+            else:
+                return False
             self._conn.commit()
             return cur.rowcount > 0
 
@@ -197,11 +226,16 @@ class SQLiteStore(Store):
             self._conn.commit()
 
     # -- reads --------------------------------------------------------------
+    _ALERT_COLS = ("alert_id,rule_id,severity,message,zone_id,camera_id,person_ref,ts,"
+                   "frame,kind,acknowledged_by,acknowledged_at,"
+                   "COALESCE(status,'OPEN') AS status,note,resolved_by,resolved_at")
+
     def list_alerts(self, unacked_only: bool = False) -> List[dict]:
-        q = ("SELECT alert_id,rule_id,severity,message,zone_id,camera_id,person_ref,ts,"
-             "frame,kind,acknowledged_by,acknowledged_at FROM alerts WHERE kind!='CLEAR'")
+        # Active feed: fires that aren't yet resolved/dismissed (CLEAR is informational).
+        q = (f"SELECT {self._ALERT_COLS} FROM alerts WHERE kind!='CLEAR' "
+             "AND COALESCE(status,'OPEN') NOT IN ('RESOLVED','DISMISSED')")
         if unacked_only:
-            q += " AND acknowledged_by IS NULL"
+            q += " AND COALESCE(status,'OPEN')='OPEN'"
         q += " ORDER BY ts DESC LIMIT 200"
         with self._lock:
             return [self._alert_out(r) for r in _row(self._conn.execute(q))]
@@ -262,8 +296,7 @@ class SQLiteStore(Store):
 
     def list_alerts_history(self, t0: float, t1: float, camera_id=None, rule_id=None,
                             limit: int = 500) -> List[dict]:
-        q = ("SELECT alert_id,rule_id,severity,message,zone_id,camera_id,person_ref,ts,"
-             "frame,kind,acknowledged_by,acknowledged_at FROM alerts WHERE ts BETWEEN ? AND ?")
+        q = (f"SELECT {self._ALERT_COLS} FROM alerts WHERE ts BETWEEN ? AND ?")
         p: list = [t0, t1]
         if camera_id:
             q += " AND camera_id=?"; p.append(camera_id)

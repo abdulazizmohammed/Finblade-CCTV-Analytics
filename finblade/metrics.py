@@ -99,15 +99,16 @@ class FlowCounter:
 # Status labels are semantic, not colours. The dashboard maps these to theme
 # variables (NORMAL -> --fb-ok grey, never green/teal).
 STATUS_NORMAL = "NORMAL"
-STATUS_AMBER = "AMBER"
-STATUS_RED = "RED"
+STATUS_WARNING = "WARNING"
+STATUS_CRITICAL = "CRITICAL"
 
 
-def density_status(density: float, amber_on: float = 2.0, red_on: float = 4.0) -> str:
-    if density > red_on:
-        return STATUS_RED
-    if density > amber_on:
-        return STATUS_AMBER
+def density_status(density: float, warning_on: float = 2.0, critical_on: float = 4.0) -> str:
+    """Zone status by density, using per-zone thresholds. NORMAL is colourless."""
+    if density > critical_on:
+        return STATUS_CRITICAL
+    if density > warning_on:
+        return STATUS_WARNING
     return STATUS_NORMAL
 
 
@@ -143,6 +144,54 @@ class ZoneStateAggregator:
             capacity_pct=capacity_pct(occupancy, zone.capacity_max),
             inflow_per_min=flow.inflow_per_min(zone.zone_id, now),
             outflow_per_min=flow.outflow_per_min(zone.zone_id, now),
-            status=density_status(d),
+            status=density_status(d, getattr(zone, "warning_density", 2.0),
+                                  getattr(zone, "critical_density", 4.0)),
             ts=now,
         )
+
+
+class ZoneStats:
+    """Rolling per-zone occupancy stats over a window: peak, average, trend.
+
+    Peak is session-wide (max occupancy seen). Average + trend are over the last
+    ``window_s`` seconds. Trend compares the recent half of the window to the
+    older half, so a zone that is filling reads "rising".
+    """
+
+    def __init__(self, window_s: float = 300.0):
+        self.window_s = window_s
+        self._samples: Dict[str, Deque[Tuple[float, int]]] = {}
+        self._peak: Dict[str, int] = {}
+
+    def record(self, zone_id: str, occupancy: int, now: float) -> None:
+        dq = self._samples.setdefault(zone_id, deque())
+        dq.append((now, occupancy))
+        cutoff = now - self.window_s
+        while dq and dq[0][0] < cutoff:
+            dq.popleft()
+        self._peak[zone_id] = max(self._peak.get(zone_id, 0), occupancy)
+
+    def peak(self, zone_id: str) -> int:
+        return self._peak.get(zone_id, 0)
+
+    def average(self, zone_id: str) -> float:
+        dq = self._samples.get(zone_id)
+        if not dq:
+            return 0.0
+        return sum(o for _, o in dq) / len(dq)
+
+    def trend(self, zone_id: str, now: float) -> str:
+        dq = self._samples.get(zone_id)
+        if not dq or len(dq) < 4:
+            return "flat"
+        mid = now - self.window_s / 2
+        recent = [o for t, o in dq if t >= mid]
+        older = [o for t, o in dq if t < mid]
+        if not recent or not older:
+            return "flat"
+        r, o = sum(recent) / len(recent), sum(older) / len(older)
+        if r > o * 1.15:
+            return "rising"
+        if r < o * 0.85:
+            return "falling"
+        return "flat"

@@ -12,8 +12,8 @@ from typing import List
 
 _STATUS_PILL = {
     "NORMAL": "fb-pill--normal",
-    "AMBER": "fb-pill--warning",
-    "RED": "fb-pill--critical",
+    "WARNING": "fb-pill--warning",
+    "CRITICAL": "fb-pill--critical",
 }
 
 

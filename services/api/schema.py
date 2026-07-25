@@ -31,7 +31,7 @@ _ZONE_STATE_FIELDS = {
     "ts": _NUM,
 }
 
-_VALID_STATUS = {"NORMAL", "AMBER", "RED"}
+_VALID_STATUS = {"NORMAL", "WARNING", "CRITICAL"}
 
 
 def validate_ingest(payload: dict) -> Tuple[bool, List[str]]:

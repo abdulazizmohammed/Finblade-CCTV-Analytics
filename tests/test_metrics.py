@@ -4,6 +4,7 @@ from finblade.metrics import (
     DwellTracker,
     FlowCounter,
     ZoneStateAggregator,
+    ZoneStats,
     capacity_pct,
     density_per_sqm,
     density_status,
@@ -26,9 +27,15 @@ class TestDensityMath(unittest.TestCase):
 
     def test_density_status_bands(self):
         self.assertEqual(density_status(1.0), "NORMAL")
-        self.assertEqual(density_status(2.5), "AMBER")
-        self.assertEqual(density_status(4.5), "RED")
+        self.assertEqual(density_status(2.5), "WARNING")
+        self.assertEqual(density_status(4.5), "CRITICAL")
         self.assertEqual(density_status(2.0), "NORMAL")  # strictly greater than on
+
+    def test_density_status_per_zone_thresholds(self):
+        # A zone with a lower warning threshold trips WARNING sooner.
+        self.assertEqual(density_status(1.6, warning_on=1.5, critical_on=3.0), "WARNING")
+        self.assertEqual(density_status(1.4, warning_on=1.5, critical_on=3.0), "NORMAL")
+        self.assertEqual(density_status(3.5, warning_on=1.5, critical_on=3.0), "CRITICAL")
 
 
 class TestDwell(unittest.TestCase):
@@ -83,6 +90,42 @@ class TestFlow(unittest.TestCase):
         f.record_exit("Z1", now=2.0)
         self.assertAlmostEqual(f.inflow_per_min("Z1", now=3.0), 1.0)
         self.assertAlmostEqual(f.outflow_per_min("Z1", now=3.0), 1.0)
+
+
+class TestZoneStats(unittest.TestCase):
+    def test_peak_and_average(self):
+        s = ZoneStats(window_s=100.0)
+        for t, occ in [(0, 2), (10, 8), (20, 5), (30, 3)]:
+            s.record("Z1", occ, float(t))
+        self.assertEqual(s.peak("Z1"), 8)
+        self.assertAlmostEqual(s.average("Z1"), (2 + 8 + 5 + 3) / 4)
+
+    def test_peak_is_session_high(self):
+        s = ZoneStats(window_s=5.0)
+        s.record("Z1", 9, 0.0)
+        s.record("Z1", 1, 100.0)         # old high evicted from window...
+        self.assertEqual(s.peak("Z1"), 9)  # ...but peak is session-wide
+        self.assertAlmostEqual(s.average("Z1"), 1.0)  # avg only over recent window
+
+    def test_trend_rising_falling_flat(self):
+        s = ZoneStats(window_s=100.0)
+        # older half low, recent half high -> rising
+        for t in range(0, 40, 10):
+            s.record("Z1", 2, float(t))
+        for t in range(60, 100, 10):
+            s.record("Z1", 10, float(t))
+        self.assertEqual(s.trend("Z1", now=100.0), "rising")
+        s2 = ZoneStats(window_s=100.0)
+        for t in range(0, 40, 10):
+            s2.record("Z2", 10, float(t))
+        for t in range(60, 100, 10):
+            s2.record("Z2", 2, float(t))
+        self.assertEqual(s2.trend("Z2", now=100.0), "falling")
+
+    def test_trend_flat_when_insufficient_data(self):
+        s = ZoneStats()
+        s.record("Z1", 5, 0.0)
+        self.assertEqual(s.trend("Z1", now=1.0), "flat")
 
 
 class TestAggregator(unittest.TestCase):

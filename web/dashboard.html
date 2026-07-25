@@ -93,8 +93,8 @@ body{
 .zrow{display:flex;justify-content:space-between;margin-top:8px;font-family:var(--fb-font-data);font-size:12px;color:var(--fb-text-muted);}
 .meter{height:5px;border-radius:3px;background:var(--fb-line);margin-top:10px;overflow:hidden;}
 .meter>span{display:block;height:100%;background:var(--fb-ok);border-radius:3px;transition:width .4s;}
-.meter[data-s="AMBER"]>span{background:var(--fb-warning);}
-.meter[data-s="RED"]>span{background:var(--fb-critical);}
+.meter[data-s="WARNING"]>span{background:var(--fb-warning);}
+.meter[data-s="CRITICAL"]>span{background:var(--fb-critical);}
 .flow{display:flex;justify-content:space-between;margin-top:10px;}
 .flow .f{display:flex;flex-direction:column;gap:2px;}
 .flow .k{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--fb-text-faint);font-family:var(--fb-font-data);}
@@ -181,8 +181,10 @@ const $=id=>document.getElementById(id);
 const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
 const t0=Date.now();
 
-const SEVCLASS={NORMAL:'normal',AMBER:'warning',RED:'critical',CRITICAL:'critical',INFO:'normal'};
-const BRACK={AMBER:'warning',RED:'critical'};
+// zone status vocabulary (NORMAL/WARNING/CRITICAL); AMBER/RED kept for alert severities
+const SEVCLASS={NORMAL:'normal',WARNING:'warning',CRITICAL:'critical',AMBER:'warning',RED:'critical',INFO:'normal'};
+const BRACK={WARNING:'warning',CRITICAL:'critical'};
+const TREND={rising:'▲',falling:'▼',flat:'▬'};
 
 // live annotated feeds (best effort; each tile connects to its camera's port)
 (function mountFeeds(){
@@ -225,14 +227,18 @@ function renderZones(zones){
     const pillTxt=intrusion?'Intrusion':st;
     const cap=Math.min(100,+z.capacity_pct||0);
     const capMax=(z.capacity_pct>0)?Math.round(100*(+z.occupancy||0)/(+z.capacity_pct)):'—';
+    const trend=TREND[String(z.trend||'flat')]||'▬';
+    const peak=(z.peak_occupancy!=null)?`peak ${z.peak_occupancy}`:'';
     return `<div class="zcard fb-bracket"${dataStatus?` data-status="${dataStatus}"`:''}>
       <div class="zh"><h3>${esc(z.zone_name||z.zone_id)}</h3><span class="pill ${pill}">${esc(pillTxt)}</span></div>
-      <div class="zbig"><span class="n fb-num">${+z.occupancy||0}</span><span class="of">/ ${capMax}</span></div>
+      <div class="zbig"><span class="n fb-num">${+z.occupancy||0}</span><span class="of">/ ${capMax}</span>
+        <span class="of" title="occupancy trend" style="margin-left:auto">${trend} <span class="fb-num">${peak}</span></span></div>
       <div class="zrow"><span class="fb-num">${(+z.density||0).toFixed(2)} /m²</span><span>${z.restricted?'no-go zone':cap.toFixed(0)+'% capacity'}</span></div>
       <div class="meter" data-s="${z.restricted?'':st}"><span style="width:${cap}%"></span></div>
       <div class="flow">
         <div class="f"><span class="k">Inflow</span><span class="v">${(+z.inflow_per_min||0).toFixed(1)}/min</span></div>
         <div class="f"><span class="k">Outflow</span><span class="v">${(+z.outflow_per_min||0).toFixed(1)}/min</span></div>
+        <div class="f"><span class="k">Avg occ</span><span class="v">${(+z.avg_occupancy||0).toFixed(1)}</span></div>
       </div></div>`;
   }).join('');
 }

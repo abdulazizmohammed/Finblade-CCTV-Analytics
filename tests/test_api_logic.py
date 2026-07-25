@@ -145,7 +145,7 @@ class TestReport(unittest.TestCase):
     def test_report_html_has_no_hardcoded_hex(self):
         html_out = render_report_html(
             [{"zone_id": "Z1", "occupancy": 5, "density": 0.08, "capacity_pct": 12.5,
-              "inflow_per_min": 1.0, "outflow_per_min": 0.5, "status": "AMBER"}],
+              "inflow_per_min": 1.0, "outflow_per_min": 0.5, "status": "WARNING"}],
             generated_at=0.0)
         self.assertIn("finblade-theme.css", html_out)
         self.assertIn("fb-num", html_out)          # tabular numerals class

@@ -146,10 +146,28 @@ class RuleEngine:
             store[key] = latch
         return latch
 
-    def evaluate_zone(self, zone_id: str, density: float, capacity_pct: float, now: float) -> List[Alert]:
+    def evaluate_zone(self, zone_id: str, density: float, capacity_pct: float, now: float,
+                      warning_on: float = None, critical_on: float = None,
+                      hysteresis: float = 0.9) -> List[Alert]:
+        """Density (R-01/R-02) + capacity (R-03) rules with hysteresis + debounce.
+
+        warning_on/critical_on override the global density thresholds per zone
+        (from the zone's warning_density/critical_density); the clear-thresholds
+        are derived as ``on * hysteresis``. Falls back to the global thresholds
+        when not supplied.
+        """
         alerts: List[Alert] = []
 
-        red = self._latch(self._red, zone_id, self.t.red_on, self.t.red_off)
+        if critical_on is None:
+            r_on, r_off = self.t.red_on, self.t.red_off
+        else:
+            r_on, r_off = critical_on, critical_on * hysteresis
+        if warning_on is None:
+            a_on, a_off = self.t.amber_on, self.t.amber_off
+        else:
+            a_on, a_off = warning_on, warning_on * hysteresis
+
+        red = self._latch(self._red, zone_id, r_on, r_off)
         r = red.update(density, now)
         if r == "FIRE":
             alerts.append(Alert("R-02", SEV_RED,
@@ -159,7 +177,7 @@ class RuleEngine:
             alerts.append(Alert("R-02", SEV_INFO, f"density critical cleared in {zone_id}",
                                 now, zone_id=zone_id, kind="CLEAR"))
 
-        amber = self._latch(self._amber, zone_id, self.t.amber_on, self.t.amber_off)
+        amber = self._latch(self._amber, zone_id, a_on, a_off)
         a = amber.update(density, now)
         if a == "FIRE":
             alerts.append(Alert("R-01", SEV_AMBER,

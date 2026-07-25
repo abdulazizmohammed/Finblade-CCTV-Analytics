@@ -24,7 +24,8 @@ CREATE INDEX IF NOT EXISTS ix_events_type ON events(event_type);
 
 CREATE TABLE IF NOT EXISTS zone_state_ts(
   id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT, camera_id TEXT, zone_name TEXT,
-  restricted INTEGER, ts REAL, occupancy INTEGER, density REAL, capacity_pct REAL,
+  zone_type TEXT, restricted INTEGER, ts REAL, occupancy INTEGER, density REAL, capacity_pct REAL,
+  peak_occupancy INTEGER, avg_occupancy REAL, trend TEXT,
   inflow REAL, outflow REAL, status TEXT);
 CREATE INDEX IF NOT EXISTS ix_zst_zone_ts ON zone_state_ts(zone_id, ts);
 
@@ -75,12 +76,14 @@ class SQLiteStore(Store):
     def save_zone_state(self, s: dict) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO zone_state_ts(zone_id,camera_id,zone_name,restricted,ts,"
-                "occupancy,density,capacity_pct,inflow,outflow,status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (s["zone_id"], s.get("camera_id"), s.get("zone_name"),
+                "INSERT INTO zone_state_ts(zone_id,camera_id,zone_name,zone_type,restricted,ts,"
+                "occupancy,density,capacity_pct,peak_occupancy,avg_occupancy,trend,inflow,outflow,status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (s["zone_id"], s.get("camera_id"), s.get("zone_name"), s.get("zone_type"),
                  1 if s.get("restricted") else 0, float(s["ts"]), int(s["occupancy"]),
                  float(s["density"]), float(s["capacity_pct"]),
+                 int(s.get("peak_occupancy", s["occupancy"])), float(s.get("avg_occupancy", 0)),
+                 s.get("trend", "flat"),
                  float(s.get("inflow_per_min", 0)), float(s.get("outflow_per_min", 0)),
                  s.get("status")))
             self._conn.commit()
@@ -128,8 +131,9 @@ class SQLiteStore(Store):
     def latest_zone_states(self) -> List[dict]:
         with self._lock:
             cur = self._conn.execute(
-                "SELECT zone_id,camera_id,zone_name,restricted,ts,occupancy,density,"
-                "capacity_pct,inflow AS inflow_per_min,outflow AS outflow_per_min,status "
+                "SELECT zone_id,camera_id,zone_name,zone_type,restricted,ts,occupancy,density,"
+                "capacity_pct,peak_occupancy,avg_occupancy,trend,"
+                "inflow AS inflow_per_min,outflow AS outflow_per_min,status "
                 "FROM zone_state_ts WHERE id IN "
                 "(SELECT MAX(id) FROM zone_state_ts GROUP BY zone_id)")
             out = _row(cur)

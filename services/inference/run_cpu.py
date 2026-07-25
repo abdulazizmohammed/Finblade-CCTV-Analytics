@@ -53,8 +53,8 @@ from finblade.events import (                            # noqa: E402
 from finblade.geometry import foot_point                 # noqa: E402
 from finblade.identity import PersonRefHasher            # noqa: E402
 from finblade.metrics import (                           # noqa: E402
-    DwellTracker, FlowCounter, ZoneStateAggregator, density_per_sqm, capacity_pct,
-    density_status,
+    DwellTracker, FlowCounter, ZoneStateAggregator, ZoneStats, density_per_sqm,
+    capacity_pct, density_status,
 )
 from finblade.rules import RuleEngine                    # noqa: E402
 from finblade.tracking import TrackReaper                # noqa: E402
@@ -285,6 +285,7 @@ def run(config_path, max_seconds=None):
     dwell = DwellTracker()
     flow = FlowCounter()
     agg = ZoneStateAggregator(period_s=5.0)
+    zstats = ZoneStats()
     eng = RuleEngine()
     hasher = PersonRefHasher()
     reaper = TrackReaper(cfg.track_ttl_seconds)
@@ -432,18 +433,26 @@ def run(config_path, max_seconds=None):
                 occ = occupancy[z.zone_id]
                 dens = density_per_sqm(occ, z.area_sqm)
                 cap_pct = capacity_pct(occ, z.capacity_max)
+                zstats.record(z.zone_id, occ, vnow)
                 pending_events.append(new_event(
                     DENSITY_UPDATE, cfg.camera_id, cfg.site_id, vnow,
                     zone_id=z.zone_id, occupancy=occ, density=dens))
                 pending_states.append({
                     "zone_id": z.zone_id, "camera_id": cfg.camera_id,
                     "zone_name": z.zone_name, "restricted": z.restricted,
+                    "zone_type": z.zone_type,
                     "occupancy": occ, "density": dens, "capacity_pct": cap_pct,
                     "inflow_per_min": flow.inflow_per_min(z.zone_id, vnow),
                     "outflow_per_min": flow.outflow_per_min(z.zone_id, vnow),
-                    "status": density_status(dens), "ts": vnow,
+                    "peak_occupancy": zstats.peak(z.zone_id),
+                    "avg_occupancy": round(zstats.average(z.zone_id), 1),
+                    "trend": zstats.trend(z.zone_id, vnow),
+                    "status": density_status(dens, z.warning_density, z.critical_density),
+                    "ts": vnow,
                 })
-                for al in eng.evaluate_zone(z.zone_id, dens, cap_pct, vnow):
+                for al in eng.evaluate_zone(z.zone_id, dens, cap_pct, vnow,
+                                            warning_on=z.warning_density,
+                                            critical_on=z.critical_density):
                     pending_alerts.append(al.as_dict())
 
         # --- annotate once, then bookmark this moment if anything happened ---

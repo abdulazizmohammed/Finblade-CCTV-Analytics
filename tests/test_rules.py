@@ -64,6 +64,23 @@ class TestDensityRules(unittest.TestCase):
         a = eng.evaluate_zone("Z1", density=0.1, capacity_pct=92.0, now=0.0)
         self.assertTrue(any(al.rule_id == "R-03" for al in a))
 
+    def test_per_zone_density_thresholds(self):
+        eng = RuleEngine()
+        # Zone with a lower warning threshold (1.5) fires amber at 1.6 where the
+        # global 2.0 default would not.
+        a = eng.evaluate_zone("ZA", density=1.6, capacity_pct=10, now=0.0,
+                              warning_on=1.5, critical_on=3.0)
+        self.assertTrue(any(al.rule_id == "R-01" and al.severity == "AMBER" for al in a))
+        # A different zone keeps the global default (no amber at 1.6).
+        b = eng.evaluate_zone("ZB", density=1.6, capacity_pct=10, now=0.0)
+        self.assertFalse(any(al.rule_id == "R-01" for al in b))
+
+    def test_per_zone_critical_threshold(self):
+        eng = RuleEngine()
+        a = eng.evaluate_zone("ZC", density=3.2, capacity_pct=10, now=0.0,
+                              warning_on=1.5, critical_on=3.0)
+        self.assertTrue(any(al.rule_id == "R-02" and al.severity == "RED" for al in a))
+
     def test_capacity_hysteresis_87_does_not_clear(self):
         eng = RuleEngine()
         eng.evaluate_zone("Z1", density=0.1, capacity_pct=92.0, now=0.0)

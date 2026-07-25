@@ -132,6 +132,12 @@ _TOOLS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
 if os.path.isdir(_TOOLS_DIR):
     app.mount("/tools", StaticFiles(directory=_TOOLS_DIR, html=True), name="tools")
 
+# Serve reference stills (media/<camera>_frame.jpg) so the zone editor can load
+# the frame straight from the server instead of a manual file picker.
+_MEDIA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "media"))
+if os.path.isdir(_MEDIA_DIR):
+    app.mount("/media", StaticFiles(directory=_MEDIA_DIR), name="media")
+
 
 # --- history / logs (date-filterable) --------------------------------------
 @app.get("/api/v1/history/events")

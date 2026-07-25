@@ -88,8 +88,9 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
   <p class="eyebrow">Reference frame</p>
   <input type="file" accept="image/*" id="file">
   <p class="hint">
-    Existing zones for this camera load automatically. Load the reference still
-    (<code>media/&lt;camera&gt;_frame.jpg</code>) to see and position them on the frame.
+    This camera's saved zones <b>and</b> its reference frame load automatically.
+    (If the frame is missing, run the camera once to capture one, or pick it with
+    <b>Choose File</b> — <code>media/&lt;camera&gt;_frame.jpg</code>.)
     <b>Edit</b> a zone from the list to adjust it, or draw a new one:
     <b>left-click</b> to add corners, <b>drag</b> a point to move it,
     <b>right-click a point</b> to delete it, <b>right-click empty</b> to close the zone.
@@ -158,20 +159,31 @@ $('api').value = `http://${location.hostname}:8000`;
 function setStatus(t){ $('status').textContent=t; }
 function sizeCanvas(){ scale=Math.min(1, 900/nat.w); cv.width=Math.round(nat.w*scale); cv.height=Math.round(nat.h*scale); }
 
-$('file').onchange = e=>{
-  const f=e.target.files[0]; if(!f) return;
-  img=new Image();
-  img.onload=()=>{
-    nat={w:img.naturalWidth,h:img.naturalHeight};
+function useImage(src, okMsg){
+  const im=new Image();
+  im.onload=()=>{
+    img=im;
+    nat={w:im.naturalWidth,h:im.naturalHeight};
     sizeCanvas();
     // reposition any already-loaded zones onto this frame (norm is the source of truth)
     zones.forEach(z=> z.polygon=(z.norm||[]).map(n=>[Math.round(n[0]*nat.w),Math.round(n[1]*nat.h)]));
     draw();
     $('coord').innerHTML=`Frame <b>${nat.w}×${nat.h}</b> — left-click to place corners`;
-    setStatus(`frame ${nat.w}×${nat.h}`);
+    setStatus(okMsg||`frame ${nat.w}×${nat.h}`);
   };
-  img.src=URL.createObjectURL(f);
-};
+  im.onerror=()=>{};   // server frame may not exist yet — keep the placeholder
+  im.src=src;
+}
+$('file').onchange = e=>{ const f=e.target.files[0]; if(f) useImage(URL.createObjectURL(f)); };
+
+// The runner saves a still at media/<camera>_frame.jpg; the API serves it at
+// /media/. Auto-load it so editing shows the real frame without a file picker.
+function frameUrl(){
+  const cam=v('camera').trim().replace(/\//g,'_');
+  const api=v('api').replace(/\/$/,'');
+  return `${api}/media/${encodeURIComponent(cam)}_frame.jpg`;
+}
+function tryLoadFrame(){ if(v('camera').trim()) useImage(frameUrl(), 'frame loaded from server'); }
 
 function toNative(e){
   const r=cv.getBoundingClientRect();
@@ -347,13 +359,15 @@ async function loadServer(){
 // restricted-type auto-updates colour default
 $('ztype').onchange=()=>{ if(v('ztype')==='RESTRICTED') $('colour').value='#e0479e'; };
 
-// Reload the zone set whenever the camera changes.
-$('camera').addEventListener('change', loadServer);
+// Reload the zone set + reference frame whenever the camera changes.
+$('camera').addEventListener('change', ()=>{ loadServer(); tryLoadFrame(); });
 
-// On open: size the placeholder canvas and auto-load this camera's saved zones,
-// so existing zones are shown ready to edit / delete / extend immediately.
+// On open: size the placeholder canvas, auto-load this camera's saved zones AND
+// its reference frame from the server, so editing shows the real frame with zones
+// on it immediately (no manual file picker needed).
 sizeCanvas();
 draw();
 loadServer();
+tryLoadFrame();
 </script>
 </html>

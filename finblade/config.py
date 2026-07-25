@@ -26,6 +26,7 @@ class CameraConfig:
     process_fps: int
     imgsz: int
     track_ttl_seconds: float
+    offline_seconds: float
     zones: List[Zone]
 
 
@@ -50,5 +51,7 @@ def load_camera_config(path: str) -> CameraConfig:
         imgsz=int(cfg.get("imgsz", 640)),
         # Evict a track's per-track state this many seconds after it was last seen.
         track_ttl_seconds=float(cfg.get("track_ttl_seconds", 5.0)),
+        # Mark the camera OFFLINE after this many seconds without a valid frame.
+        offline_seconds=float(cfg.get("offline_seconds", 30.0)),
         zones=[zone_from_dict(z) for z in cfg.get("zones", [])],
     )

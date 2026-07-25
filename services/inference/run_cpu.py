@@ -59,6 +59,10 @@ from finblade.metrics import (                           # noqa: E402
 from finblade.rules import RuleEngine                    # noqa: E402
 from finblade.tracking import TrackReaper                # noqa: E402
 from finblade.zones import zone_of                       # noqa: E402
+from services.inference.camera_worker import CameraWorker  # noqa: E402
+
+# Shared handle so the MJPEG server can drive the demo simulate/restore controls.
+_worker = {"ref": None}
 
 try:
     import requests  # already present (ultralytics dep); used for live POSTs
@@ -221,12 +225,27 @@ def run(config_path, max_seconds=None):
     model = YOLO(cfg.model_path, task="detect")
 
     src = cfg.source
-    if src and not src.startswith("rtsp") and not os.path.isabs(src):
+    is_file = bool(src) and "://" not in str(src)
+    if is_file and not os.path.isabs(src):
         src = os.path.join(_REPO_ROOT, src)
-    cap = cv2.VideoCapture(src)
-    if not cap.isOpened():
-        print(f"[BLOCKER] cannot open source: {src}", file=sys.stderr)
-        sys.exit(2)
+
+    # Pace a file source at its native FPS so the capture thread behaves like a
+    # real camera (not spinning through the whole clip instantly). RTSP self-paces.
+    pace = None
+    if is_file:
+        probe = cv2.VideoCapture(src)
+        opened = probe.isOpened()
+        fps = probe.get(cv2.CAP_PROP_FPS) if opened else 0.0
+        probe.release()
+        if not opened:
+            print(f"[BLOCKER] cannot open source: {src}", file=sys.stderr)
+            sys.exit(2)
+        pace = fps if fps and fps > 0 else 25.0
+
+    worker = CameraWorker(src, cfg.camera_id, loop_file=True,
+                          offline_seconds=cfg.offline_seconds, pace_fps=pace)
+    _worker["ref"] = worker
+    worker.start()
 
     deb = BoundaryDebouncer(n=3)
     dwell = DwellTracker()
@@ -253,26 +272,44 @@ def run(config_path, max_seconds=None):
 
     interval = 1.0 / cfg.process_fps if cfg.process_fps and cfg.process_fps > 0 else 0
     last_proc = 0.0
+    last_seq = -1
+    last_state = None
+    last_health_log = 0.0
 
     while True:
-        ok, frame = cap.read()
-        if not ok:
-            # loop the file for a deterministic demo; reconnect for rtsp.
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ok, frame = cap.read()
-            if not ok:
-                break
-
-        if not last_still:
-            cv2.imwrite(os.path.join(_REPO_ROOT, "media", f"{slug}_frame.jpg"), frame)
-            last_still = True
-
         now = time.time()
+        elapsed = now - t_start
+        if max_seconds and elapsed >= max_seconds:
+            break
+
+        # Log camera state transitions (ingest health, independent of detection).
+        state = worker.state(now)
+        if state != last_state:
+            log.info("camera %s state -> %s (%s)", cfg.camera_id, state,
+                     worker.health(now))
+            last_state = state
+        if now - last_health_log >= 15.0:
+            last_health_log = now
+            log.debug("camera %s health %s", cfg.camera_id, worker.health(now))
+
+        # Pull the latest frame from the capture thread (non-blocking).
+        frame, fts, seq = worker.read_latest()
+        if frame is None or seq == last_seq:
+            time.sleep(0.01)                 # no fresh frame yet / camera down
+            continue
         if interval and (now - last_proc) < interval:
+            time.sleep(0.002)                # detection-rate throttle (decoupled)
             continue
         last_proc = now
-        elapsed = now - t_start   # for run-control (evidence cadence, --seconds)
-        vnow = now                # wall-clock epoch: stamps events/alerts/state
+        last_seq = seq
+        vnow = now                           # wall-clock epoch: stamps events/state
+
+        if not last_still:
+            try:
+                cv2.imwrite(os.path.join(_REPO_ROOT, "media", f"{slug}_frame.jpg"), frame)
+            except Exception:
+                log.warning("could not save reference still for %s", cfg.camera_id)
+            last_still = True
 
         res = model.track(frame, persist=True, classes=[cfg.person_class_id],
                           conf=cfg.conf_threshold, imgsz=cfg.imgsz,
@@ -410,10 +447,8 @@ def run(config_path, max_seconds=None):
             cv2.imwrite(p, annotated)
             frame_paths.append(p)
 
-        if max_seconds and elapsed >= max_seconds:
-            break
-
     # finalise evidence
+    worker.stop()
     events_fp.close()
     alerts_fp.close()
     build_contact_sheet(frame_paths, os.path.join(EVIDENCE, f"contact_{slug}.jpg"))
@@ -432,6 +467,7 @@ def run(config_path, max_seconds=None):
         },
         "unique_track_ids": len(seen_ids),
         "evidence_frames_saved": saved_frames,
+        "camera_health": worker.health(),
     }
     with open(os.path.join(EVIDENCE, f"metrics_{slug}.json"), "w") as f:
         json.dump(metrics, f, indent=2)
@@ -457,6 +493,26 @@ def _serve(port=8080):
                     yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf + b"\r\n")
                 time.sleep(0.05)
         return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+    @app.route("/health")
+    def health():
+        w = _worker["ref"]
+        return (w.health() if w else {"state": "UNKNOWN"})
+
+    # Demo controls (predictable camera failure/restore) — Req 1.
+    @app.route("/simulate-failure", methods=["POST", "GET"])
+    def simulate_failure():
+        w = _worker["ref"]
+        if w:
+            w.simulate_failure()
+        return {"ok": bool(w), "state": w.state() if w else None}
+
+    @app.route("/restore", methods=["POST", "GET"])
+    def restore():
+        w = _worker["ref"]
+        if w:
+            w.restore()
+        return {"ok": bool(w), "state": w.state() if w else None}
 
     app.run(host="0.0.0.0", port=port, threaded=True)
 

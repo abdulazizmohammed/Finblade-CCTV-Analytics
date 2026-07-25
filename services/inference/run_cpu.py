@@ -75,6 +75,7 @@ except Exception:
 # Live API sink (set by --api-url). When set, zone-states + alerts are POSTed so
 # the dashboard shows live data. Failures are swallowed so inference never stalls.
 _API = {"base": None}
+_STREAM = {"url": None}   # this runner's MJPEG stream URL (for the health screen)
 
 
 def _post(path, payload):
@@ -84,6 +85,17 @@ def _post(path, payload):
         requests.post(_API["base"] + path, json=payload, timeout=0.5)
     except Exception:
         pass  # dashboard is best-effort; never block the pipeline on it
+
+
+def _post_json(path, payload):
+    """POST and return the parsed JSON response, or None (best-effort)."""
+    if not _API["base"] or requests is None:
+        return None
+    try:
+        r = requests.post(_API["base"] + path, json=payload, timeout=0.5)
+        return r.json()
+    except Exception:
+        return None
 
 
 def _load_zones_from_api(camera_id, frame_width, frame_height):
@@ -330,6 +342,7 @@ def run(config_path, max_seconds=None):
     last_seq = -1
     last_state = None
     last_health_log = 0.0
+    last_health_post = 0.0
     ever_online = False
     restricted_zone_ids = {z.zone_id for z in cfg.zones if z.restricted}
     loiter_zone = {z.zone_id: z.loitering_threshold_sec for z in cfg.zones}
@@ -361,6 +374,23 @@ def run(config_path, max_seconds=None):
         if now - last_health_log >= 15.0:
             last_health_log = now
             log.debug("camera %s health %s", cfg.camera_id, worker.health(now))
+
+        # Push a health snapshot to the API every 5s so the camera-health screen
+        # reflects live state; the response carries the desired control state,
+        # which we apply here (central simulate/restore, no inbound socket needed).
+        if now - last_health_post >= 5.0:
+            last_health_post = now
+            hv = worker.health(now)
+            hv["stream_url"] = _STREAM["url"]
+            resp = _post_json("/api/v1/cameras/health",
+                              {"camera_id": cfg.camera_id, "site_id": cfg.site_id,
+                               "ts": now, "health": hv})
+            control = (resp or {}).get("control") or {}
+            want_sim = bool(control.get("simulate"))
+            if want_sim and not worker.simulating:
+                worker.simulate_failure()
+            elif not want_sim and worker.simulating:
+                worker.restore()
 
         # Pull the latest frame from the capture thread (non-blocking).
         frame, fts, seq = worker.read_latest()
@@ -665,6 +695,8 @@ if __name__ == "__main__":
     ap.add_argument("--no-serve", action="store_true")
     ap.add_argument("--port", type=int, default=8080,
                     help="MJPEG stream port (use a distinct port per camera)")
+    ap.add_argument("--stream-host", default="127.0.0.1",
+                    help="host the dashboard uses to reach this MJPEG stream")
     ap.add_argument("--api-url", default=None,
                     help="POST live zone-states + alerts to this API base "
                          "(e.g. http://127.0.0.1:8000) for the dashboard")
@@ -675,5 +707,6 @@ if __name__ == "__main__":
         print(f"[info] live-posting to {_API['base']}", flush=True)
 
     if not args.no_serve:
+        _STREAM["url"] = f"http://{args.stream_host}:{args.port}/stream"
         threading.Thread(target=lambda: _serve(args.port), daemon=True).start()
     run(args.config, max_seconds=args.seconds)

@@ -10,7 +10,12 @@ import re
 import unittest
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DASH = os.path.join(_REPO, "web", "dashboard.html")
+_WEB = os.path.join(_REPO, "web")
+DASH = os.path.join(_WEB, "dashboard.html")
+
+# Operator-facing pages that must all obey the brand rules (not the theme file
+# itself, which legitimately defines the hex tokens).
+_PAGES = ["dashboard.html", "cameras.html", "history.html", "report.html"]
 
 
 def _read(p):
@@ -52,6 +57,26 @@ class TestDashboardTheme(unittest.TestCase):
     def test_reduced_motion_and_system_only(self):
         # Theme file owns prefers-reduced-motion; dashboard must not fetch remote assets.
         self.assertNotIn("https://", self.html.replace("http://${location", ""))
+
+
+class TestAllPagesTheme(unittest.TestCase):
+    """The colour/CDN invariants apply to every operator page, not just the
+    dashboard, so new pages (camera health, reports) can't regress the brand."""
+
+    def test_every_page_is_hex_free_and_offline(self):
+        for name in _PAGES:
+            path = os.path.join(_WEB, name)
+            if not os.path.exists(path):
+                continue
+            html = _read(path)
+            with self.subTest(page=name):
+                self.assertEqual(re.findall(r"#[0-9a-fA-F]{6}\b", html), [],
+                                 f"{name} has hard-coded hex")
+                self.assertIn("finblade-theme.css", html)
+                self.assertNotIn("green", html.lower())
+                self.assertNotIn("fonts.googleapis", html)
+                self.assertNotIn("@import", html)
+                self.assertNotIn("https://", html.replace("http://${location", ""))
 
 
 if __name__ == "__main__":

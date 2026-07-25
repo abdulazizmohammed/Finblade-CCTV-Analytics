@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinBlade — Camera Health</title>
+<link rel="stylesheet" href="finblade-theme.css">
+<style>
+body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),transparent 60%),var(--fb-void);min-height:100vh;}
+.topbar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:10;}
+.brand-logo{height:28px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
+.tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.spacer{flex:1;}
+.wrap{max-width:1240px;margin:0 auto;padding:18px 22px 60px;}
+.eyebrow{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-text-faint);margin:0 0 12px;}
+
+/* summary strip */
+.summary{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 20px;}
+.stat{border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);background:var(--fb-surface);padding:8px 14px;min-width:96px;}
+.stat .n{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:22px;line-height:1;}
+.stat .l{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);margin-top:5px;}
+
+/* camera grid */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px;}
+.card{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:14px;}
+.card[data-sev="warning"]{border-color:var(--fb-warning);}
+.card[data-sev="critical"]{border-color:var(--fb-critical);}
+.chead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:2px;}
+.cid{font-weight:600;font-size:15px;}
+.cname{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);margin-bottom:12px;}
+/* state pill — colour is semantic, from theme vars only */
+.state{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:2px;border:1px solid currentColor;white-space:nowrap;}
+.state.ONLINE{color:var(--fb-ok);}
+.state.DEGRADED,.state.RECONNECTING{color:var(--fb-warning);background:var(--fb-warning-ghost);}
+.state.OFFLINE{color:var(--fb-critical);background:var(--fb-critical-ghost);}
+.state.DISABLED{color:var(--fb-text-faint);}
+
+.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin:12px 0;}
+.m{display:flex;flex-direction:column;}
+.m .v{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:15px;color:var(--fb-text);}
+.m .k{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--fb-text-faint);}
+.m .v.bad{color:var(--fb-critical);}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--fb-line);}
+.actions .fb-btn{font-size:12px;padding:6px 10px;}
+.stream{width:100%;height:150px;object-fit:cover;background:var(--fb-void);border:1px solid var(--fb-line);border-radius:var(--fb-r);margin-bottom:6px;display:block;}
+
+/* register form */
+.reg{margin-top:26px;}
+.form{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;}
+.field{display:flex;flex-direction:column;gap:5px;}
+.field label{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.field input{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:13px;padding:7px 9px;border-radius:var(--fb-r);min-width:150px;}
+.field input:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:22px;text-align:center;}
+.note{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);margin:6px 0 0;}
+:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <img class="brand-logo" src="logo.svg" alt="FinBlade">
+    <span class="tag">Camera Health</span>
+    <span class="spacer"></span>
+    <span class="fb-live" title="live"></span>
+    <a class="fb-btn fb-btn--primary" href="dashboard.html">← Live dashboard</a>
+  </div>
+
+  <div class="wrap">
+    <p class="eyebrow">Fleet status · refreshes every 3s</p>
+    <div class="summary" id="summary"></div>
+    <div class="grid" id="grid"><div class="empty">Loading cameras…</div></div>
+
+    <div class="reg fb-panel">
+      <p class="eyebrow">Register / update a camera</p>
+      <div class="form">
+        <div class="field"><label for="f_id">Camera ID</label><input id="f_id" placeholder="CAM-A-01"></div>
+        <div class="field"><label for="f_name">Name</label><input id="f_name" placeholder="Main concourse"></div>
+        <div class="field"><label for="f_site">Site</label><input id="f_site" placeholder="SITE-01"></div>
+        <div class="field"><label for="f_url">Stream URL</label><input id="f_url" placeholder="http://host:8080/stream"></div>
+        <button class="fb-btn fb-btn--primary" id="saveCam">Save camera</button>
+      </div>
+      <p class="note" id="regNote"></p>
+    </div>
+  </div>
+
+<script>
+const API=`http://${location.hostname}:8000`;
+const $=id=>document.getElementById(id);
+const SEV={OFFLINE:'critical',DEGRADED:'warning',RECONNECTING:'warning'};
+
+function fmtAge(s){ if(s==null) return '—'; if(s<60) return s.toFixed(0)+'s'; if(s<3600) return (s/60).toFixed(0)+'m'; return (s/3600).toFixed(1)+'h'; }
+
+async function post(path){ try{ await fetch(`${API}${path}`,{method:'POST'}); load(); }catch(e){} }
+async function del(id){ if(!confirm(`Delete ${id}?`)) return; try{ await fetch(`${API}/api/v1/cameras/${encodeURIComponent(id)}`,{method:'DELETE'}); load(); }catch(e){} }
+
+function card(c){
+  const st=c.effective_state||'OFFLINE';
+  const sev=SEV[st]||'';
+  const el=document.createElement('div');
+  el.className='card'; if(sev) el.dataset.sev=sev;
+  const drop=c.dropped_frames||0, rec=c.reconnects||0;
+  const stream = (st!=='OFFLINE'&&st!=='DISABLED'&&c.stream_url)
+    ? `<img class="stream" src="${c.stream_url}" alt="feed" onerror="this.style.display='none'">` : '';
+  el.innerHTML=`
+    ${stream}
+    <div class="chead">
+      <span class="cid">${c.camera_id}</span>
+      <span class="state ${st}">${st}</span>
+    </div>
+    <div class="cname">${c.name?c.name+' · ':''}${c.site_id||'—'}${c.sim_failure?' · <span style="color:var(--fb-warning)">SIMULATED</span>':''}</div>
+    <div class="metrics">
+      <div class="m"><span class="v">${(c.input_fps??0).toFixed?c.input_fps.toFixed(1):(c.input_fps||'—')}</span><span class="k">Input FPS</span></div>
+      <div class="m"><span class="v">${c.resolution||'—'}</span><span class="k">Resolution</span></div>
+      <div class="m"><span class="v">${fmtAge(c.seconds_since_seen)}</span><span class="k">Last seen</span></div>
+      <div class="m"><span class="v ${(drop||rec)?'bad':''}">${drop} / ${rec}</span><span class="k">Dropped / reconn</span></div>
+    </div>
+    <div class="actions">
+      ${c.sim_failure
+        ? `<button class="fb-btn" data-act="restore" data-id="${c.camera_id}">Restore</button>`
+        : `<button class="fb-btn" data-act="sim" data-id="${c.camera_id}">Simulate failure</button>`}
+      <button class="fb-btn fb-btn--danger" data-act="del" data-id="${c.camera_id}">Delete</button>
+    </div>`;
+  return el;
+}
+
+function summary(cams){
+  const by={ONLINE:0,DEGRADED:0,RECONNECTING:0,OFFLINE:0,DISABLED:0};
+  cams.forEach(c=>{by[c.effective_state]=(by[c.effective_state]||0)+1;});
+  const cells=[['Total',cams.length,'var(--fb-text)'],
+    ['Online',by.ONLINE,'var(--fb-ok)'],
+    ['Degraded',by.DEGRADED+by.RECONNECTING,'var(--fb-warning)'],
+    ['Offline',by.OFFLINE,'var(--fb-critical)']];
+  $('summary').innerHTML=cells.map(([l,n,col])=>
+    `<div class="stat"><div class="n" style="color:${col}">${n}</div><div class="l">${l}</div></div>`).join('');
+}
+
+async function load(){
+  let cams=[];
+  try{ cams=(await fetch(`${API}/api/v1/cameras`).then(r=>r.json())).cameras||[]; }
+  catch(e){ $('grid').innerHTML='<div class="empty">offline — is the API running on :8000?</div>'; return; }
+  summary(cams);
+  const g=$('grid'); g.innerHTML='';
+  if(!cams.length){ g.innerHTML='<div class="empty">No cameras registered yet. Start a runner with --api-url, or register one below.</div>'; return; }
+  cams.forEach(c=>g.appendChild(card(c)));
+}
+
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button[data-act]'); if(!b) return;
+  const id=b.dataset.id;
+  if(b.dataset.act==='sim') post(`/api/v1/cameras/${encodeURIComponent(id)}/simulate-failure`);
+  else if(b.dataset.act==='restore') post(`/api/v1/cameras/${encodeURIComponent(id)}/restore`);
+  else if(b.dataset.act==='del') del(id);
+});
+
+$('saveCam').addEventListener('click',async()=>{
+  const id=$('f_id').value.trim();
+  if(!id){ $('regNote').textContent='Camera ID is required.'; return; }
+  const body={camera_id:id,name:$('f_name').value.trim()||null,
+    site_id:$('f_site').value.trim()||null,stream_url:$('f_url').value.trim()||null};
+  try{
+    const r=await fetch(`${API}/api/v1/cameras`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    $('regNote').textContent=r.ok?`Saved ${id}.`:'Save failed.';
+    if(r.ok){ ['f_id','f_name','f_site','f_url'].forEach(i=>$(i).value=''); load(); }
+  }catch(e){ $('regNote').textContent='Save failed — API offline?'; }
+});
+
+load();
+setInterval(load,3000);
+</script>
+</body>
+</html>

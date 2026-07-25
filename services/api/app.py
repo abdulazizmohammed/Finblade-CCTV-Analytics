@@ -171,16 +171,62 @@ async def get_zones(camera_id: str = Query(None)):
     return {"zones": svc.list_zones(camera_id)}
 
 
+def _effective_state(c: dict, now: float) -> str:
+    """State to display: the worker's reported state, unless its health snapshot
+    has gone stale (runner died) — then the camera reads OFFLINE."""
+    if c.get("enabled") is False:
+        return "DISABLED"
+    hts = c.get("health_ts") or c.get("last_seen")
+    if hts is None or (now - hts) > OFFLINE_S:
+        return "OFFLINE"
+    return c.get("state") or "ONLINE"
+
+
 @app.get("/api/v1/cameras")
 async def cameras():
     now = time.time()
     out = []
     for c in svc.cameras():
-        last = c.get("last_seen")
         c = dict(c)
-        c["online"] = (last is not None and (now - last) <= OFFLINE_S)
+        c["effective_state"] = _effective_state(c, now)
+        c["online"] = c["effective_state"] not in ("OFFLINE", "DISABLED")
+        last = c.get("last_seen")
+        c["seconds_since_seen"] = round(now - last, 1) if last is not None else None
         out.append(c)
     return {"cameras": out}
+
+
+@app.post("/api/v1/cameras/health")
+async def camera_health(request: Request):
+    """Ingest a health snapshot from an inference runner; returns control state."""
+    code, body = svc.record_camera_health(await request.json())
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/cameras")
+async def create_camera(request: Request):
+    """Register or update a camera (name / site / stream URL / enabled)."""
+    code, body = svc.upsert_camera(await request.json())
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.delete("/api/v1/cameras/{camera_id}")
+async def delete_camera(camera_id: str):
+    code, body = svc.delete_camera(camera_id)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/cameras/{camera_id}/simulate-failure")
+async def camera_simulate(camera_id: str):
+    """Request a predictable camera failure (applied by the runner's next tick)."""
+    code, body = svc.set_camera_sim(camera_id, True)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/cameras/{camera_id}/restore")
+async def camera_restore(camera_id: str):
+    code, body = svc.set_camera_sim(camera_id, False)
+    return JSONResponse(status_code=code, content=body)
 
 
 @app.post("/api/v1/alerts")

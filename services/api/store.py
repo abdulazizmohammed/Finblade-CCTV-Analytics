@@ -24,6 +24,11 @@ class Store:
     # History + camera-liveness (default no-ops so any backend is usable).
     def mark_camera_seen(self, camera_id: str, ts: float, site_id: str = None) -> None: pass
     def list_cameras(self) -> List[dict]: return []
+    def record_camera_health(self, camera_id: str, health: dict, ts: float,
+                             site_id: str = None) -> None: pass
+    def upsert_camera(self, camera_id: str, **fields) -> None: pass
+    def delete_camera(self, camera_id: str) -> bool: return False
+    def set_camera_sim(self, camera_id: str, on: bool) -> None: pass
     def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
                     event_type=None, person_ref=None, limit: int = 500) -> List[dict]: return []
     def list_alerts_history(self, t0: float, t1: float, camera_id=None, rule_id=None,
@@ -98,7 +103,38 @@ class InMemoryStore(Store):
             c["site_id"] = site_id
 
     def list_cameras(self) -> List[dict]:
-        return list(self._cameras.values())
+        return [dict(c) for c in self._cameras.values()]
+
+    _HEALTH_FIELDS = ("state", "input_fps", "resolution", "dropped_frames",
+                      "reconnects", "frozen", "enabled", "stream_url", "loops")
+
+    def record_camera_health(self, camera_id: str, health: dict, ts: float,
+                             site_id: str = None) -> None:
+        if not camera_id:
+            return
+        c = self._cameras.setdefault(camera_id, {"camera_id": camera_id, "site_id": site_id})
+        c["last_seen"] = ts
+        c["health_ts"] = ts
+        if site_id:
+            c["site_id"] = site_id
+        for k in self._HEALTH_FIELDS:
+            if k in health:
+                c[k] = health[k]
+
+    def upsert_camera(self, camera_id: str, **fields) -> None:
+        if not camera_id:
+            return
+        c = self._cameras.setdefault(camera_id, {"camera_id": camera_id})
+        for k, v in fields.items():
+            if v is not None:
+                c[k] = v
+
+    def delete_camera(self, camera_id: str) -> bool:
+        return self._cameras.pop(camera_id, None) is not None
+
+    def set_camera_sim(self, camera_id: str, on: bool) -> None:
+        c = self._cameras.setdefault(camera_id, {"camera_id": camera_id})
+        c["sim_failure"] = bool(on)
 
     def list_events(self, t0, t1, camera_id=None, zone_id=None, event_type=None,
                     person_ref=None, limit=500):

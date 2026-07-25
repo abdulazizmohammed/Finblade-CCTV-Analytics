@@ -281,6 +281,10 @@ class CameraWorker:
         self._simulate_fail = False
         log.info("camera %s: restore requested", self.camera_id)
 
+    @property
+    def simulating(self) -> bool:
+        return self._simulate_fail
+
     def enable(self) -> None:
         self._enabled = True
 

@@ -179,5 +179,59 @@ class TestReport(unittest.TestCase):
         self.assertEqual(re.findall(r"#[0-9a-fA-F]{6}", html_out), [])
 
 
+class TestCameraHealth(unittest.TestCase):
+    def test_health_snapshot_stored_and_listed(self):
+        svc = _svc()
+        health = {"state": "ONLINE", "input_fps": 18.0, "resolution": (640, 480),
+                  "dropped_frames": 3, "reconnects": 1, "frozen": False,
+                  "enabled": True, "stream_url": "http://h:8080/stream"}
+        code, body = svc.record_camera_health(
+            {"camera_id": "CAM-A-01", "site_id": "SITE-1", "ts": 100.0, "health": health})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["control"]["simulate"])   # default: no simulate
+        cams = {c["camera_id"]: c for c in svc.cameras()}
+        c = cams["CAM-A-01"]
+        self.assertEqual(c["state"], "ONLINE")
+        self.assertEqual(c["input_fps"], 18.0)
+        self.assertEqual(c["last_seen"], 100.0)
+
+    def test_missing_camera_id_rejected(self):
+        svc = _svc()
+        code, body = svc.record_camera_health({"health": {"state": "ONLINE"}})
+        self.assertEqual(code, 422)
+        self.assertFalse(body["ok"])
+
+    def test_simulate_flag_returned_as_control(self):
+        svc = _svc()
+        svc.record_camera_health({"camera_id": "CAM-A-01", "ts": 1.0,
+                                  "health": {"state": "ONLINE"}})
+        svc.set_camera_sim("CAM-A-01", True)
+        _, body = svc.record_camera_health({"camera_id": "CAM-A-01", "ts": 2.0,
+                                            "health": {"state": "ONLINE"}})
+        self.assertTrue(body["control"]["simulate"])     # runner should fail-over
+        svc.set_camera_sim("CAM-A-01", False)
+        _, body = svc.record_camera_health({"camera_id": "CAM-A-01", "ts": 3.0,
+                                            "health": {"state": "ONLINE"}})
+        self.assertFalse(body["control"]["simulate"])
+
+    def test_upsert_and_delete(self):
+        svc = _svc()
+        code, _ = svc.upsert_camera({"camera_id": "CAM-B-02", "name": "Dock",
+                                     "site_id": "SITE-1"})
+        self.assertEqual(code, 200)
+        self.assertIn("CAM-B-02", {c["camera_id"] for c in svc.cameras()})
+        code, body = svc.delete_camera("CAM-B-02")
+        self.assertEqual(code, 200)
+        self.assertNotIn("CAM-B-02", {c["camera_id"] for c in svc.cameras()})
+        code, _ = svc.delete_camera("CAM-B-02")   # already gone
+        self.assertEqual(code, 404)
+
+    def test_upsert_requires_camera_id(self):
+        svc = _svc()
+        code, body = svc.upsert_camera({"name": "no id"})
+        self.assertEqual(code, 422)
+
+
 if __name__ == "__main__":
     unittest.main()

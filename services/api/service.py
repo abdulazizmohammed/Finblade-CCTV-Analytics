@@ -4,6 +4,7 @@ All the API's business logic lives here so it is unit-testable without FastAPI,
 Redis, or Postgres. app.py is a thin HTTP adapter over this class.
 """
 
+import time
 from typing import List, Optional, Tuple
 
 from .schema import validate_ingest, validate_zone_state, validate_zones
@@ -47,6 +48,41 @@ class IngestService:
 
     def cameras(self):
         return self.store.list_cameras()
+
+    def record_camera_health(self, payload: dict) -> Tuple[int, dict]:
+        """Ingest a health snapshot from an inference runner (Req 4/5).
+
+        Returns the desired control state so the runner can drive simulate/restore
+        centrally on its next heartbeat (no inbound connection to the runner needed).
+        """
+        cid = payload.get("camera_id")
+        if not cid:
+            return 422, {"ok": False, "errors": ["camera_id required"]}
+        health = payload.get("health") or payload
+        ts = payload.get("ts") or payload.get("timestamp") or time.time()
+        self.store.record_camera_health(cid, health, ts, site_id=payload.get("site_id"))
+        cam = next((c for c in self.store.list_cameras()
+                    if c.get("camera_id") == cid), {})
+        return 200, {"ok": True, "control": {"simulate": bool(cam.get("sim_failure"))}}
+
+    def set_camera_sim(self, camera_id: str, on: bool) -> Tuple[int, dict]:
+        self.store.set_camera_sim(camera_id, on)
+        return 200, {"ok": True, "camera_id": camera_id, "simulate": bool(on)}
+
+    def upsert_camera(self, payload: dict) -> Tuple[int, dict]:
+        cid = (payload.get("camera_id") or "").strip()
+        if not cid:
+            return 422, {"ok": False, "errors": ["camera_id required"]}
+        self.store.upsert_camera(cid, site_id=payload.get("site_id"),
+                                 name=payload.get("name"),
+                                 stream_url=payload.get("stream_url"),
+                                 enabled=(None if payload.get("enabled") is None
+                                          else (1 if payload.get("enabled") else 0)))
+        return 200, {"ok": True, "camera_id": cid}
+
+    def delete_camera(self, camera_id: str) -> Tuple[int, dict]:
+        ok = self.store.delete_camera(camera_id)
+        return (200 if ok else 404), {"ok": ok, "camera_id": camera_id}
 
     def movement(self, t0, t1, camera_id=None):
         """Aggregate zone->zone transitions in a window into from/to counts."""

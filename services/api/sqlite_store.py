@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS alerts(
 CREATE INDEX IF NOT EXISTS ix_alerts_ts ON alerts(ts);
 
 CREATE TABLE IF NOT EXISTS cameras(
-  camera_id TEXT PRIMARY KEY, site_id TEXT, last_seen REAL);
+  camera_id TEXT PRIMARY KEY, site_id TEXT, last_seen REAL,
+  name TEXT, state TEXT, input_fps REAL, resolution TEXT, dropped_frames INTEGER,
+  reconnects INTEGER, loops INTEGER, frozen INTEGER, enabled INTEGER,
+  stream_url TEXT, health_ts REAL, sim_failure INTEGER DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS zones(
   camera_id TEXT, zone_id TEXT, zone_name TEXT, zone_type TEXT, restricted INTEGER,
@@ -57,8 +60,22 @@ class SQLiteStore(Store):
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
         self._lock = threading.Lock()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a DB was first created (older files)."""
+        have = {r[1] for r in self._conn.execute("PRAGMA table_info(cameras)")}
+        add = {
+            "name": "TEXT", "state": "TEXT", "input_fps": "REAL", "resolution": "TEXT",
+            "dropped_frames": "INTEGER", "reconnects": "INTEGER", "loops": "INTEGER",
+            "frozen": "INTEGER", "enabled": "INTEGER", "stream_url": "TEXT",
+            "health_ts": "REAL", "sim_failure": "INTEGER DEFAULT 0",
+        }
+        for col, typ in add.items():
+            if col not in have:
+                self._conn.execute(f"ALTER TABLE cameras ADD COLUMN {col} {typ}")
 
     # -- writes -------------------------------------------------------------
     def save_event(self, evt: dict) -> None:
@@ -118,6 +135,65 @@ class SQLiteStore(Store):
                 "ON CONFLICT(camera_id) DO UPDATE SET last_seen=excluded.last_seen, "
                 "site_id=COALESCE(excluded.site_id, cameras.site_id)",
                 (camera_id, site_id, ts))
+            self._conn.commit()
+
+    def record_camera_health(self, camera_id: str, health: dict, ts: float,
+                             site_id: str = None) -> None:
+        if not camera_id:
+            return
+        res = health.get("resolution")
+        if isinstance(res, (list, tuple)):
+            res = "x".join(str(int(v)) for v in res)
+        vals = (
+            camera_id, site_id, ts, ts, health.get("state"), health.get("input_fps"),
+            res, health.get("dropped_frames"), health.get("reconnects"),
+            health.get("loops"), 1 if health.get("frozen") else 0,
+            1 if health.get("enabled", True) else 0, health.get("stream_url"),
+        )
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO cameras(camera_id,site_id,last_seen,health_ts,state,input_fps,"
+                "resolution,dropped_frames,reconnects,loops,frozen,enabled,stream_url) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(camera_id) DO UPDATE SET last_seen=excluded.last_seen, "
+                "health_ts=excluded.health_ts, state=excluded.state, "
+                "input_fps=excluded.input_fps, resolution=excluded.resolution, "
+                "dropped_frames=excluded.dropped_frames, reconnects=excluded.reconnects, "
+                "loops=excluded.loops, frozen=excluded.frozen, enabled=excluded.enabled, "
+                "stream_url=COALESCE(excluded.stream_url, cameras.stream_url), "
+                "site_id=COALESCE(excluded.site_id, cameras.site_id)",
+                vals)
+            self._conn.commit()
+
+    def upsert_camera(self, camera_id: str, **fields) -> None:
+        if not camera_id:
+            return
+        cols = [k for k in ("site_id", "name", "stream_url", "enabled")
+                if fields.get(k) is not None]
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO cameras(camera_id) VALUES (?)", (camera_id,))
+            if cols:
+                sets = ",".join(f"{c}=?" for c in cols)
+                self._conn.execute(
+                    f"UPDATE cameras SET {sets} WHERE camera_id=?",
+                    [fields[c] for c in cols] + [camera_id])
+            self._conn.commit()
+
+    def delete_camera(self, camera_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM cameras WHERE camera_id=?", (camera_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def set_camera_sim(self, camera_id: str, on: bool) -> None:
+        if not camera_id:
+            return
+        with self._lock:
+            self._conn.execute("INSERT OR IGNORE INTO cameras(camera_id) VALUES (?)",
+                               (camera_id,))
+            self._conn.execute("UPDATE cameras SET sim_failure=? WHERE camera_id=?",
+                               (1 if on else 0, camera_id))
             self._conn.commit()
 
     # -- reads --------------------------------------------------------------
@@ -199,8 +275,15 @@ class SQLiteStore(Store):
 
     def list_cameras(self) -> List[dict]:
         with self._lock:
-            return _row(self._conn.execute(
-                "SELECT camera_id,site_id,last_seen FROM cameras ORDER BY camera_id"))
+            rows = _row(self._conn.execute(
+                "SELECT camera_id,site_id,last_seen,name,state,input_fps,resolution,"
+                "dropped_frames,reconnects,loops,frozen,enabled,stream_url,health_ts,"
+                "sim_failure FROM cameras ORDER BY camera_id"))
+        for r in rows:                       # store booleans as bools, not 0/1
+            for k in ("frozen", "enabled", "sim_failure"):
+                if r.get(k) is not None:
+                    r[k] = bool(r[k])
+        return rows
 
     def zone_state_stats(self, t0: float, t1: float, camera_id=None,
                          zone_id=None) -> List[dict]:

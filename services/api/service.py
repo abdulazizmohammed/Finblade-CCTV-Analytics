@@ -97,6 +97,40 @@ class IngestService:
     def occupancy_stats(self, t0, t1, **f):
         return self.store.zone_state_stats(t0, t1, **f)
 
+    def occupancy_report(self, t0, t1, camera_id=None, zone_id=None, generated_at=None):
+        """Windowed occupancy report: per-zone stats enriched with alert counts,
+        plus totals. Shared by the JSON/CSV endpoints and the R-08 scheduler."""
+        from collections import Counter
+        zones = self.store.zone_state_stats(t0, t1, camera_id=camera_id, zone_id=zone_id)
+        alerts = self.store.list_alerts_history(t0, t1, camera_id=camera_id, limit=5000)
+        by_zone = Counter(a.get("zone_id") for a in alerts if a.get("zone_id"))
+        for z in zones:
+            z["alert_count"] = by_zone.get(z.get("zone_id"), 0)
+        return {
+            "from": t0, "to": t1,
+            "generated_at": time.time() if generated_at is None else generated_at,
+            "zones": zones,
+            "totals": {
+                "zones": len(zones),
+                "peak_total_occupancy": sum(int(z.get("peak_occupancy") or 0) for z in zones),
+                "peak_density": max((float(z.get("peak_density") or 0) for z in zones),
+                                    default=0.0),
+                "total_alerts": len(alerts),
+            },
+        }
+
+    def generate_report(self, t0, t1, kind="ondemand", camera_id=None) -> dict:
+        rep = self.occupancy_report(t0, t1, camera_id=camera_id)
+        rep["kind"] = kind
+        rep["report_id"] = self.store.save_report(rep)
+        return rep
+
+    def list_reports(self, limit=100):
+        return self.store.list_reports(limit)
+
+    def get_report(self, report_id):
+        return self.store.get_report(report_id)
+
     # -- zones (editor save/load) --
     def save_zones(self, payload: dict) -> Tuple[int, dict]:
         ok, errors = validate_zones(payload)

@@ -14,14 +14,14 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .service import IngestService
 from .store import InMemoryStore
 from .bus import InMemoryBus
-from .report import render_report_html
+from .report import render_report_html, render_report_csv
 
 # Backend selection: durable SQLite by default (survives restarts, date-queryable).
 # DATABASE_URL -> Postgres; FINBLADE_INMEMORY=1 -> in-memory (tests/ephemeral).
@@ -80,11 +80,30 @@ async def _offline_monitor():
             pass  # never let the monitor kill the app
 
 
+# R-08: generate an occupancy report on a fixed cadence (hourly by default; set
+# FINBLADE_REPORT_INTERVAL short for demos). In-process — no external scheduler.
+REPORT_INTERVAL = float(os.environ.get("FINBLADE_REPORT_INTERVAL", "3600"))
+
+
+async def _report_scheduler():
+    while True:
+        try:
+            await asyncio.sleep(REPORT_INTERVAL)
+            now = time.time()
+            svc.generate_report(now - REPORT_INTERVAL, now, kind="scheduled")
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            pass  # a failed report must never kill the scheduler
+
+
 @asynccontextmanager
 async def lifespan(app):
-    task = asyncio.create_task(_offline_monitor())
+    tasks = [asyncio.create_task(_offline_monitor()),
+             asyncio.create_task(_report_scheduler())]
     yield
-    task.cancel()
+    for t in tasks:
+        t.cancel()
 
 
 app = FastAPI(title="FinBlade CCTV API", version="1.0", lifespan=lifespan)
@@ -147,16 +166,45 @@ async def history_alerts(frm: float = Query(0, alias="from"),
 async def occupancy_report_json(frm: float = Query(0, alias="from"),
                                 to: float = Query(9_000_000_000_000.0, alias="to"),
                                 camera_id: str = Query(None), zone_id: str = Query(None)):
-    zones = svc.occupancy_stats(frm, to, camera_id=camera_id, zone_id=zone_id)
-    return {
-        "from": frm, "to": to, "generated_at": time.time(),
-        "zones": zones,
-        "totals": {
-            "zones": len(zones),
-            "peak_total_occupancy": sum(int(z.get("peak_occupancy", 0)) for z in zones),
-            "peak_density": max((float(z.get("peak_density", 0)) for z in zones), default=0.0),
-        },
-    }
+    return svc.occupancy_report(frm, to, camera_id=camera_id, zone_id=zone_id)
+
+
+@app.get("/api/v1/reports/occupancy.csv")
+async def occupancy_report_csv(frm: float = Query(0, alias="from"),
+                               to: float = Query(9_000_000_000_000.0, alias="to"),
+                               camera_id: str = Query(None), zone_id: str = Query(None)):
+    rep = svc.occupancy_report(frm, to, camera_id=camera_id, zone_id=zone_id)
+    csv_text = render_report_csv(rep["zones"])
+    return Response(content=csv_text, media_type="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="finblade_occupancy.csv"'})
+
+
+@app.get("/api/v1/reports")
+async def list_reports(limit: int = Query(100)):
+    """R-08 scheduled + on-demand occupancy reports (most recent first)."""
+    return {"reports": svc.list_reports(limit)}
+
+
+@app.post("/api/v1/reports/generate")
+async def generate_report(request: Request):
+    """On-demand R-08 report over a window (defaults to the last hour)."""
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    now = time.time()
+    frm = float(body.get("from", now - 3600))
+    to = float(body.get("to", now))
+    return svc.generate_report(frm, to, kind="ondemand", camera_id=body.get("camera_id"))
+
+
+@app.get("/api/v1/reports/{report_id:int}")
+async def get_report(report_id: int):
+    rep = svc.get_report(str(report_id))
+    if rep is None:
+        return JSONResponse(status_code=404, content={"error": "unknown report"})
+    return rep
 
 
 @app.post("/api/v1/zones")

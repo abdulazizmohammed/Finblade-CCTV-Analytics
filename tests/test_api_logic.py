@@ -222,6 +222,50 @@ class TestZones(unittest.TestCase):
         self.assertEqual(code, 422)
 
 
+class TestOccupancyReport(unittest.TestCase):
+    def _seed(self):
+        svc = _svc()
+        # two zone-state samples + one alert in Z1
+        for occ, ts in ((3, 10.0), (5, 20.0)):
+            svc.record_zone_state({"zone_id": "Z1", "camera_id": "CAM-A-01",
+                                   "occupancy": occ, "density": occ * 0.1,
+                                   "capacity_pct": occ * 5.0, "inflow_per_min": 1.0,
+                                   "outflow_per_min": 0.5, "status": "NORMAL", "ts": ts})
+        svc.raise_alert({"rule_id": "R-01", "severity": "AMBER", "message": "x",
+                         "zone_id": "Z1", "camera_id": "CAM-A-01", "ts": 15.0})
+        return svc
+
+    def test_report_enriches_with_alert_count(self):
+        svc = self._seed()
+        rep = svc.occupancy_report(0, 1e12)
+        z1 = next(z for z in rep["zones"] if z["zone_id"] == "Z1")
+        self.assertEqual(z1["alert_count"], 1)
+        self.assertEqual(z1["peak_occupancy"], 5)
+        self.assertEqual(rep["totals"]["total_alerts"], 1)
+        self.assertEqual(rep["totals"]["peak_total_occupancy"], 5)
+
+    def test_generate_and_fetch_report(self):
+        svc = self._seed()
+        rep = svc.generate_report(0, 1e12, kind="ondemand")
+        rid = rep["report_id"]
+        listed = svc.list_reports()
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["kind"], "ondemand")
+        fetched = svc.get_report(rid)
+        self.assertEqual(fetched["totals"]["total_alerts"], 1)
+
+    def test_csv_export_shape(self):
+        from services.api.report import render_report_csv
+        svc = self._seed()
+        rep = svc.occupancy_report(0, 1e12)
+        csv_text = render_report_csv(rep["zones"])
+        lines = csv_text.strip().splitlines()
+        self.assertIn("Zone ID", lines[0])
+        self.assertIn("Alerts", lines[0])
+        self.assertTrue(any("Z1" in ln for ln in lines[1:]))
+        self.assertNotIn("None", csv_text)   # missing values render blank
+
+
 class TestReport(unittest.TestCase):
     def test_report_html_has_no_hardcoded_hex(self):
         html_out = render_report_html(

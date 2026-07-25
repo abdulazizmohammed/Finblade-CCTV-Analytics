@@ -94,6 +94,21 @@ class TestSQLiteCameraHealth(unittest.TestCase):
         self.assertEqual(feed[0]["status"], "OPEN")               # back-filled default
         self.assertTrue(s.update_alert(feed[0]["alert_id"], "DISMISSED", "op", 9.0))
 
+    def test_report_save_list_get(self):
+        s = SQLiteStore(self.db)
+        rep = {"kind": "scheduled", "generated_at": 100.0, "from": 0.0, "to": 100.0,
+               "zones": [{"zone_id": "Z1", "peak_occupancy": 7}],
+               "totals": {"peak_total_occupancy": 7, "total_alerts": 3}}
+        rid = s.save_report(rep)
+        listed = s.list_reports()
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["kind"], "scheduled")
+        self.assertEqual(listed[0]["peak_occupancy"], 7)
+        self.assertEqual(listed[0]["total_alerts"], 3)
+        got = s.get_report(rid)
+        self.assertEqual(got["zones"][0]["zone_id"], "Z1")
+        self.assertIsNone(s.get_report("999"))     # unknown
+
     def test_event_payload_extra_survives_roundtrip(self):
         # Phase 7 regression: duration lives only in the payload JSON.
         s = SQLiteStore(self.db)

@@ -6,7 +6,9 @@ colour and keeps all numerals tabular (.fb-num). Status maps by rule:
 NORMAL -> --fb-ok (grey, no green), AMBER -> --fb-warning, RED -> --fb-critical.
 """
 
+import csv
 import html
+import io
 import time
 from typing import List
 
@@ -15,6 +17,31 @@ _STATUS_PILL = {
     "WARNING": "fb-pill--warning",
     "CRITICAL": "fb-pill--critical",
 }
+
+# Windowed occupancy-report columns (zone_state_stats + per-zone alert_count).
+_CSV_COLUMNS = [
+    ("zone_id", "Zone ID"), ("zone_name", "Zone"), ("samples", "Samples"),
+    ("avg_occupancy", "Avg occupancy"), ("peak_occupancy", "Peak occupancy"),
+    ("avg_density", "Avg density /m2"), ("peak_density", "Peak density /m2"),
+    ("avg_capacity_pct", "Avg capacity %"), ("alert_count", "Alerts"),
+]
+
+
+def render_report_csv(zone_stats: List[dict]) -> str:
+    """Windowed occupancy report as CSV (Req 21). Numeric cells rounded for
+    readability; missing values render blank, not 'None'."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([label for _, label in _CSV_COLUMNS])
+    for z in sorted(zone_stats, key=lambda z: str(z.get("zone_id", ""))):
+        row = []
+        for key, _ in _CSV_COLUMNS:
+            v = z.get(key)
+            if isinstance(v, float):
+                v = round(v, 2)
+            row.append("" if v is None else v)
+        w.writerow(row)
+    return buf.getvalue()
 
 
 def render_report_html(zone_states: List[dict], generated_at: float,

@@ -20,16 +20,18 @@ for i in $(seq 1 20); do
 done
 echo "[demo] API up."
 echo "[demo]   Dashboard -> http://localhost:8000/web/dashboard.html"
+echo "[demo]   Cameras   -> http://localhost:8000/web/cameras.html"
 echo "[demo]   History   -> http://localhost:8000/web/history.html"
+echo "[demo]   Report    -> http://localhost:8000/web/report.html"
 
 echo "[demo] starting Camera A (:8080, synthetic scenario) ..."
 .venv/bin/python services/inference/run_cpu.py --config config/cameras.synthetic.yaml \
-  --port 8080 --api-url http://127.0.0.1:8000 > scripts/camA.log 2>&1 &
+  --port 8080 --stream-host localhost --api-url http://127.0.0.1:8000 > scripts/camA.log 2>&1 &
 CAMA_PID=$!
 
 echo "[demo] starting Camera B (:8081, terminal clip) ..."
 .venv/bin/python services/inference/run_cpu.py --config config/cameras.cam2.yaml \
-  --port 8081 --api-url http://127.0.0.1:8000 > scripts/camB.log 2>&1 &
+  --port 8081 --stream-host localhost --api-url http://127.0.0.1:8000 > scripts/camB.log 2>&1 &
 CAMB_PID=$!
 
 echo "[demo] running.  Camera A pid=$CAMA_PID   Camera B pid=$CAMB_PID"

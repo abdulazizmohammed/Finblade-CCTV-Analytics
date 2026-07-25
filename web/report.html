@@ -24,7 +24,16 @@ body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),tr
 .rhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:1px solid var(--fb-line);padding-bottom:14px;margin-bottom:14px;}
 .rhead h1{margin:6px 0 0;font-size:18px;font-weight:600;}
 .rhead .meta{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);text-align:right;line-height:1.7;}
-.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:6px 0 18px;}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:6px 0 18px;}
+.recent{margin-top:22px;}
+.recent h2{font-size:13px;font-weight:600;margin:0 0 10px;}
+.rlist{display:flex;flex-direction:column;gap:6px;}
+.ritem{display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r);font-family:var(--fb-font-data);font-size:12px;}
+.ritem .k{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:1px 6px;}
+.ritem .g{color:var(--fb-text-muted);}
+.ritem .s{color:var(--fb-text-muted);margin-left:auto;}
+.ritem a{color:var(--fb-teal);text-decoration:none;}
+.ritem a:hover{text-decoration:underline;}
 .kpi{border:1px solid var(--fb-line);border-radius:var(--fb-r);padding:10px 12px;}
 .kpi .v{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:24px;margin-top:6px;}
 .kpi .v .u{font-size:12px;color:var(--fb-text-muted);margin-left:4px;}
@@ -58,6 +67,8 @@ td.num{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;}
     <img class="brand-logo" src="logo.svg" alt="FinBlade">
     <span class="tag">Occupancy Report</span>
     <span class="spacer"></span>
+    <button class="fb-btn" id="csv">Export CSV</button>
+    <button class="fb-btn" id="save">Save report</button>
     <button class="fb-btn" id="print">Print / Save PDF</button>
     <a class="fb-btn fb-btn--primary" href="dashboard.html">← Live dashboard</a>
   </div>
@@ -74,6 +85,11 @@ td.num{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;}
     </div>
 
     <div class="report" id="report"><div class="empty">Choose a range and Generate.</div></div>
+
+    <div class="recent noprint" id="recentWrap" style="display:none">
+      <div class="recent"><h2>Saved reports <span class="eyebrow" style="display:inline">· R-08 scheduled &amp; on-demand</span></h2>
+      <div class="rlist" id="rlist"></div></div>
+    </div>
   </div>
 
 <script>
@@ -126,8 +142,9 @@ function render(d){
       <td class="num">${(+z.avg_density||0).toFixed(2)}</td>
       <td class="num">${(+z.peak_density||0).toFixed(2)}</td>
       <td class="num">${(+z.avg_capacity_pct||0).toFixed(0)}%</td>
+      <td class="num">${+z.alert_count||0}</td>
       <td class="num">${+z.samples||0}</td></tr>`).join('')
-    : '<tr><td colspan="9"><div class="empty">No zone data in this range.</div></td></tr>';
+    : '<tr><td colspan="10"><div class="empty">No zone data in this range.</div></td></tr>';
 
   $('report').innerHTML=`
     <div class="rhead">
@@ -142,21 +159,58 @@ function render(d){
       <div class="kpi"><p class="eyebrow">Zones</p><div class="v">${t.zones||0}</div></div>
       <div class="kpi"><p class="eyebrow">Peak total occupancy</p><div class="v">${t.peak_total_occupancy||0}<span class="u">people</span></div></div>
       <div class="kpi"><p class="eyebrow">Peak density</p><div class="v">${(+t.peak_density||0).toFixed(2)}<span class="u">/m²</span></div></div>
+      <div class="kpi"><p class="eyebrow">Alerts in period</p><div class="v">${t.total_alerts||0}</div></div>
     </div>
     <div class="tablewrap"><table>
       <thead><tr><th>Zone</th><th>Name</th><th>Camera</th><th>Avg occ</th><th>Peak occ</th>
-        <th>Avg /m²</th><th>Peak /m²</th><th>Avg cap</th><th>Samples</th></tr></thead>
+        <th>Avg /m²</th><th>Peak /m²</th><th>Avg cap</th><th>Alerts</th><th>Samples</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <p class="foot">Occupancy aggregated from 5-second zone-state samples over the selected period.</p>`;
+}
+
+function filteredQuery(){
+  const {from,to}=bounds();
+  const q=new URLSearchParams({from,to});
+  if($('cam').value)q.set('camera_id',$('cam').value);
+  if($('zone').value)q.set('zone_id',$('zone').value);
+  return q;
+}
+
+function exportCsv(){ window.open(`${API}/api/v1/reports/occupancy.csv?${filteredQuery()}`,'_blank'); }
+
+async function saveReport(){
+  const {from,to}=bounds();
+  try{
+    await fetch(`${API}/api/v1/reports/generate`,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({from,to,camera_id:$('cam').value||null})});
+    loadRecent();
+  }catch(e){}
+}
+
+async function loadRecent(){
+  let reports=[];
+  try{ reports=(await fetch(`${API}/api/v1/reports`).then(r=>r.json())).reports||[]; }catch(e){ return; }
+  if(!reports.length){ $('recentWrap').style.display='none'; return; }
+  $('recentWrap').style.display='block';
+  $('rlist').innerHTML=reports.map(r=>`<div class="ritem">
+    <span class="k">${esc(r.kind||'report')}</span>
+    <span class="g">${fmt(r.generated_at)}</span>
+    <span>peak ${r.peak_occupancy||0} · ${r.total_alerts||0} alerts</span>
+    <span class="s"><a href="${API}/api/v1/reports/${esc(r.report_id)}" target="_blank">view JSON</a></span>
+  </div>`).join('');
 }
 
 // init
 const today=new Date().toISOString().slice(0,10);
 $('from').value=today; $('to').value=today;
 $('gen').addEventListener('click', generate);
+$('csv').addEventListener('click', exportCsv);
+$('save').addEventListener('click', saveReport);
 $('print').addEventListener('click', ()=>window.print());
 loadFilters().then(generate);
+loadRecent();
 </script>
 </body>
 </html>

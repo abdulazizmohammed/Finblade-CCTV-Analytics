@@ -39,6 +39,9 @@ class Store:
                          zone_id=None) -> List[dict]: return []
     def save_zones(self, camera_id: str, zones: List[dict]) -> None: pass
     def list_zones(self, camera_id: str = None) -> List[dict]: return []
+    def save_report(self, report: dict) -> str: return ""
+    def list_reports(self, limit: int = 100) -> List[dict]: return []
+    def get_report(self, report_id: str) -> dict: return None
 
 
 class InMemoryStore(Store):
@@ -49,6 +52,8 @@ class InMemoryStore(Store):
         self._alert_seq = 0
         self._cameras: Dict[str, dict] = {}
         self._zones: Dict[str, List[dict]] = {}
+        self._reports: List[dict] = []
+        self._report_seq = 0
 
     def save_event(self, evt: dict) -> None:
         self._events.append(dict(evt))
@@ -196,6 +201,29 @@ class InMemoryStore(Store):
             out.append(a)
         out.sort(key=lambda a: a.get("ts", 0), reverse=True)
         return out[:limit]
+
+    def save_report(self, report: dict) -> str:
+        self._report_seq += 1
+        rid = str(self._report_seq)
+        rec = dict(report)
+        rec["report_id"] = rid
+        self._reports.append(rec)
+        return rid
+
+    def list_reports(self, limit: int = 100) -> List[dict]:
+        out = sorted(self._reports, key=lambda r: r.get("generated_at", 0), reverse=True)
+        keep = ("report_id", "kind", "generated_at", "from", "to")
+        rows = []
+        for r in out[:limit]:
+            row = {k: r.get(k) for k in keep}
+            row["from_ts"], row["to_ts"] = r.get("from"), r.get("to")
+            row["peak_occupancy"] = r.get("totals", {}).get("peak_total_occupancy", 0)
+            row["total_alerts"] = r.get("totals", {}).get("total_alerts", 0)
+            rows.append(row)
+        return rows
+
+    def get_report(self, report_id: str) -> dict:
+        return next((r for r in self._reports if r.get("report_id") == report_id), None)
 
     def save_zones(self, camera_id, zones):
         # Replace the whole zone set for a camera (the editor saves all at once).

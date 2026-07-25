@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS cameras(
   reconnects INTEGER, loops INTEGER, frozen INTEGER, enabled INTEGER,
   stream_url TEXT, health_ts REAL, sim_failure INTEGER DEFAULT 0);
 
+CREATE TABLE IF NOT EXISTS reports(
+  report_id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, generated_at REAL,
+  from_ts REAL, to_ts REAL, peak_occupancy INTEGER, total_alerts INTEGER, payload TEXT);
+CREATE INDEX IF NOT EXISTS ix_reports_gen ON reports(generated_at);
+
 CREATE TABLE IF NOT EXISTS zones(
   camera_id TEXT, zone_id TEXT, zone_name TEXT, zone_type TEXT, restricted INTEGER,
   capacity_max INTEGER, area_sqm REAL, warning_density REAL, critical_density REAL,
@@ -333,6 +338,41 @@ class SQLiteStore(Store):
         q += " GROUP BY zone_id ORDER BY zone_id"
         with self._lock:
             return _row(self._conn.execute(q, p))
+
+    # -- reports (R-08 scheduled + on-demand) -------------------------------
+    def save_report(self, report: dict) -> str:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO reports(kind,generated_at,from_ts,to_ts,peak_occupancy,"
+                "total_alerts,payload) VALUES (?,?,?,?,?,?,?)",
+                (report.get("kind", "scheduled"), float(report.get("generated_at", 0)),
+                 float(report.get("from", 0)), float(report.get("to", 0)),
+                 int(report.get("totals", {}).get("peak_total_occupancy", 0)),
+                 int(report.get("totals", {}).get("total_alerts", 0)),
+                 json.dumps(report)))
+            self._conn.commit()
+            return str(cur.lastrowid)
+
+    def list_reports(self, limit: int = 100) -> List[dict]:
+        with self._lock:
+            return _row(self._conn.execute(
+                "SELECT report_id,kind,generated_at,from_ts,to_ts,peak_occupancy,"
+                "total_alerts FROM reports ORDER BY generated_at DESC LIMIT ?", (limit,)))
+
+    def get_report(self, report_id: str) -> dict:
+        try:
+            rid = int(report_id)
+        except (TypeError, ValueError):
+            return None
+        with self._lock:
+            rows = _row(self._conn.execute(
+                "SELECT payload FROM reports WHERE report_id=?", (rid,)))
+        if not rows:
+            return None
+        try:
+            return json.loads(rows[0]["payload"])
+        except (ValueError, TypeError):
+            return None
 
     # -- zones (editor-defined, persisted per camera) -----------------------
     def save_zones(self, camera_id: str, zones: List[dict]) -> None:

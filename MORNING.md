@@ -1,118 +1,95 @@
-# Morning report — 2026-07-24
+# Morning report — 2026-07-24 (architect phases 1a–10)
 
-## UPDATE (later session, you were awake and authorised installs)
-**The vision path now RUNS end-to-end on your clip.** I installed a CPU-only
-stack (no sudo: bootstrapped pip into ~/.local, made `.venv`, installed the
-pinned deps + CPU torch), downloaded `models/yolov8n.pt`, and ran real detection.
+## TL;DR
+The full stack is built and green. On top of the earlier overnight core, I worked
+through a 10-phase architect plan — one phase per commit, tests + a live run after
+each. **164 unit/integration tests pass** (`python3 -m unittest discover -s tests`,
+~1.4s). The vision path runs on the **NVIDIA RTX PRO 2000 (Blackwell)** GPU at
+~23 FPS on the synthetic clip. **I still cannot see** — bounding-box / zone-polygon
+placement is unverified by me and needs your eyes (see NEEDS YOUR EYES).
 
-Visually confirmed from `evidence/frames/*.jpg` (I could view them this session):
-- boxes land on people, orange foot-point dots at the feet, teal Lobby zone +
-  **magenta-dashed** Restricted Bay drawn per the theme, live occupancy label
-  (`Lobby: 5/40 0.08/m²`).
-- Your clip is a wide-angle terminal (Hamad/Doha). At YOLO's default imgsz=640
-  recall was terrible (**0.32 people/frame** — most are small/distant). I wired
-  `imgsz` into config (UC-07) and set **1280**, which took it to **8.9/frame
-  (max 17)** at 4.75 FPS on CPU. See `evidence/metrics.json`.
-
-Still needs your eyes/hands: **zone polygons are placeholders** (the Restricted
-Bay rectangle currently sits over the skylight, not a floor). Draw real ones from
-`media/cam1_frame.jpg` into `config/cameras.yaml` + `config/cameras.dev.yaml`.
-For even better far-field recall, drop in `yolov8s.pt`/`yolov8m.pt`.
-
-Run it yourself: `.venv/bin/python services/inference/run_cpu.py --config
-config/cameras.dev.yaml --seconds 60 --no-serve` (drop `--no-serve` to watch the
-annotated MJPEG on http://localhost:8080).
-
-The original overnight report follows (some blockers below are now resolved —
-B-1 is DONE; B-2/B-3 notes still stand).
-
----
-
-## TL;DR (original overnight run)
-The deterministic brain of the system is **built and verified**: metrics, events,
-schema, rule engine, API logic, dashboard — **84 unit/integration tests, all
-green**, runnable in 0.005s with `python3 -m unittest discover -s tests`.
-The **vision front-end could not run** at the time (no model weights, and cv2/
-ultralytics/torch not installed; no-download rule). I did NOT fake it — I built
-the CPU runner ready to go and left a blocker. *(Now resolved — see UPDATE above.)*
+Skipped **Phase 11 (ReID/VLM)** on purpose — you told me to, and it collides with
+CLAUDE.md's "no cross-camera ReID" cut and the no-network rule anyway.
 
 ## Status
-Slices complete: **2, 3, 5 fully; 4 (logic) fully; 6 (build+theme) fully.**
-Slice **1 (spine) code-complete but UNRUN** — blocked on weights + detection deps.
-Vision correctness: **unverified by design** (I have no eyes; see NEEDS YOUR EYES).
+Phases complete: **1a, 1b, 2, 3, 4, 5, 6, 7, 8, 9, 10** — all committed
+(latest `f73799b`). Phase 11 intentionally skipped. Vision correctness:
+**unverified by design.**
 
-## What runs (verified tonight)
-- `finblade/` core, pure stdlib, **84 tests green**:
-  - point-in-polygon (inside/outside/on-edge/on-vertex/concave), foot point
-  - restricted-zone-wins assignment
-  - N-frame boundary debounce (N-1 no-fire, N fires; flicker doesn't flip)
-  - density, capacity %, dwell (accumulate + reset), inflow/outflow windowed
-  - anonymous person_ref (salted hash, PII-guarded, verified opaque)
-  - 6 event types + schema validation (valid accepted, malformed rejected)
-  - **rule engine R-01/02/03/05/06/07/08** with hysteresis (1.9 does NOT clear)
-    + 10s debounce (oscillation → exactly one alert) + camera offline 29s/31s/recover
-  - API ingest/ack/zone-state logic via in-memory store+bus (no DB/HTTP needed)
-  - themed occupancy report renders with zero hard-coded colours
-- Synthetic scenario replay (`scripts/gen_synthetic_evidence.py`) drove the REAL
-  rule engine to fire R-03→R-01→R-02(+clear)→R-06 intrusion→R-07 offline. Output
-  in `evidence/`. This is UC-57 (density-critical on demand, no crowd).
+## What runs (verified live this session)
+One command brings it all up: `bash scripts/demo.sh` (API + two camera feeds), then
+open http://localhost:8000/web/dashboard.html.
+- **GPU detection + ByteTrack** on the synthetic clip, ~23 FPS, non-blocking capture
+  thread (a slow consumer never stalls the camera).
+- **Zones**: editor at `/tools/zone-editor.html` → save to server → runner loads them
+  (normalized polygons, per-zone thresholds/loiter/type/colour).
+- **Metrics/events**: occupancy, density, capacity %, dwell, inflow/outflow +
+  net/5m/15m windows, the full event set incl. restricted entry/exit (with dwell
+  duration), loitering start/end, camera online/offline/recovered.
+- **Rule engine** R-01/02/03/05/06/07/08 with **sustained-duration** density
+  hysteresis (must hold >threshold for 10s to fire — brief spikes no longer alert).
+- **Alert lifecycle**: OPEN → ACK → RESOLVED/DISMISSED + operator note; feed +
+  history reflect it.
+- **Camera health screen** (`/web/cameras.html`): live state/fps/resolution, central
+  simulate-failure / restore, register/delete.
+- **Dashboard**: live feeds with **overlay toggles** (zones/boxes/ids/feet/dwell),
+  zone cards with occupancy **sparklines**, alert feed, KPIs.
+- **Reports**: enriched occupancy (per-zone peak/avg + alert counts), **CSV export**,
+  and an in-process **R-08 scheduler** (hourly; on-demand + saved-report list).
+- Automated end-to-end proof: `bash scripts/demo_pass.sh` walks events → alert
+  resolve → camera sim/restore → on-demand report → CSV → scheduled report → health.
 
-## What does NOT run (and why)
-- **Detection / tracking / annotated feed** — `models/yolov8n.pt` absent and
-  `opencv`/`ultralytics`/`torch` not installed. `run_cpu.py` exits with a BLOCKER
-  rather than fake a detector. → BLOCKERS.md B-1.
-- **API over HTTP + Postgres + Redis** — fastapi/uvicorn/redis/psycopg2 not
-  installed; no redis-server/postgres/docker present. Logic is tested via
-  in-memory backends; only the network/DB plumbing is unexercised. → BLOCKERS.md B-3.
+## NEEDS YOUR EYES (do this first, ~10 min)
+1. Open `evidence/contact_CAM-SYN-01.jpg` — are boxes on people? Do the zone
+   polygons sit on the floor where you expect? (The synthetic clip's polygons are
+   demo placeholders, not surveyed floor coordinates.)
+2. Open `evidence/metrics_CAM-SYN-01.json` — is avg detections/frame plausible for
+   the scene? Any wild track-ID count?
+3. For your REAL terminal clip (`config/cameras.dev.yaml` /
+   `media/1903279-uhd_1920_1440_30fps.mp4`): draw real zone polygons in the editor
+   and save them; the placeholders won't match your floor.
 
-## NEEDS YOUR EYES / HANDS (do this first, ~15 min)
-1. **There is NO contact_sheet.jpg yet** — it needs real detection. To get it:
-   - Place weights at `models/yolov8n.pt` (COCO, person=0).
-   - `python3 -m venv .venv && source .venv/bin/activate`
-   - `pip install ultralytics==8.3.40 opencv-python-headless==4.10.0.84 numpy==1.26.4 pyyaml==6.0.2 torch`
-     (requirements.txt pins untouched; NO OpenVINO/GPU — CPU per rule 4)
-   - `python services/inference/run_cpu.py --config config/cameras.dev.yaml --seconds 60 --no-serve`
-   - **Then** open `evidence/contact_sheet.jpg`: are boxes on people? do the zone
-     polygons sit on the floor? (polygons are still the placeholder rectangles.)
-2. Your clip is present but named `media/1903279-uhd_1920_1440_30fps.mp4`, not
-   `clip.mp4`. The dev config already points at the real name, so no rename needed
-   — but confirm that IS the intended clip. → BLOCKERS.md B-2.
-3. Open `evidence/metrics.json` — note `detection_ran: false`. After step 1 it will
-   carry real avg-detections/frame; sanity-check that number is plausible.
+## Blockers (could not resolve)
+- **App-level HTTP endpoints aren't in the unittest suite.** FastAPI's TestClient
+  needs `httpx`, which isn't installed and I can't fetch (no-network rule). I cover
+  the endpoints with the **live** `scripts/demo_pass.sh` instead — that's how I
+  caught a real 500 (a missing `Response` import) in Phase 10. If you `pip install
+  httpx`, I can add a proper TestClient smoke suite.
+- **Zone polygons are placeholders** for both the synthetic and the real clip —
+  a human-judgement task I won't guess at (CLAUDE.md rule 3).
 
-## Blockers (could not resolve unattended)
-- **B-1** detection deps + weights absent → whole vision path unrun.
-- **B-2** clip misnamed vs config/README (`clip.mp4`).
-- **B-3** Redis/Postgres/Docker absent → API/bus/persistence unrun end-to-end.
-Full detail, what I tried, and fixes in **BLOCKERS.md**.
-
-## Decisions I made without you (all reversible — see DECISIONS.md)
-- Built the core stdlib-only + `unittest` so tests actually RUN tonight (no pytest
-  installed, no downloads). Pytest-compatible naming if you add it later.
-- CPU-only: **did NOT touch** `config/cameras.yaml` (GPU/OpenVINO) or `main.py`.
-  Added `config/cameras.dev.yaml` + `services/inference/run_cpu.py` instead.
-- Network was UP; I still downloaded nothing, per your instruction.
-- Did NOT rename your clip; pointed config at its real filename.
+## Decisions I made without you (reversible)
+- **GPU**: used the NVIDIA RTX PRO 2000 (CUDA, torch 2.11+cu128), NOT the Intel Arc
+  iGPU (WSL passthrough is the known time-sink CLAUDE.md warns off). Configs default
+  to `device: cuda` with a clean CPU fallback (`_resolve_device`).
+- **R-08 scheduler** runs in-process (asyncio), interval via
+  `FINBLADE_REPORT_INTERVAL` (default 3600s) — no external scheduler/cron, per the
+  no-external-infra rule.
+- **Sustained-duration hysteresis**: changed the density latch from fire-on-crossing
+  to hold-for-10s (Req 9). This makes density alerts appear more slowly by design;
+  the sustain window is configurable if you want the demo snappier.
+- Did **not** touch `config/cameras.yaml` (your GPU/OpenVINO zones) or `main.py`.
+  Added variant configs (`cameras.synthetic.yaml`, `cameras.cam2.yaml`, etc.).
+- Skipped Phase 11 (ReID/VLM) per your instruction + the cut-scope/no-network rules.
 
 ## Tests
-**84 passed / 0 failed.** `python3 -m unittest discover -s tests` (0.005s).
-Coverage maps to CLAUDE.md's required list: PIP incl. on-edge & restricted-overlap,
-foot point, N-frame debounce, hysteresis (1.9 no-clear), 10s debounce
-one-alert, camera 29/31/recover, density/capacity/dwell, event schema valid+
-malformed, person_ref no-PII, plus a headless post-detection integration test.
+**164 passed / 0 failed.** `python3 -m unittest discover -s tests` (~1.4s, stdlib
+only). New since the overnight 84: TrackReaper/registry, CameraWorker, per-zone
+rule thresholds, sustained hysteresis, ZoneStats/flow windows, camera-health +
+SQLite store (incl. old-DB migrations), alert lifecycle, occupancy-report
+enrichment + CSV + reports persistence, and all-pages theme compliance.
 
 ## Suggested next steps (ordered)
-1. Do the 15-min unblock above; eyeball the contact sheet + metrics.
-2. Draw real zone polygons into `config/cameras.yaml` from `media/cam1_frame.jpg`,
-   copy them into `cameras.dev.yaml`; re-run; confirm occupancy vs head-count (UC-13).
-3. Stand up Redis + Postgres (add to docker-compose), `pip install fastapi uvicorn
-   redis psycopg2-binary`, apply `services/api/ddl.sql`, run
-   `uvicorn services.api.app:app --port 8000`, open `web/dashboard.html`.
-4. Wire `run_cpu.py` to POST events to the API (currently writes evidence jsonl;
-   the HTTP client call is a ~10-line addition once the API is up).
-5. Write the demo runsheet (UC-60, your task) once the feed is visually confirmed.
+1. Eyeball the contact sheet + metrics (above); draw real zone polygons for your clip.
+2. `pip install httpx` → I add a FastAPI TestClient smoke suite so the HTTP layer
+   is covered by unit tests, not just the live demo pass.
+3. If you want cross-camera ReID or a VLM scene-description feature (the cut items),
+   place the model weights in `models/` and say so — I'll wire it then, not before.
+4. Optionally lower the density-hysteresis sustain window for a snappier live demo.
 
 ## Where things are
-- Core: `finblade/`  · Tests: `tests/`  · CPU runner: `services/inference/run_cpu.py`
-- API: `services/api/`  · Dashboard: `web/dashboard.html`  · Evidence: `evidence/`
+- Core: `finblade/` · Tests: `tests/` · Runner: `services/inference/run_cpu.py`
+- API: `services/api/` · UIs: `web/` (dashboard, cameras, history, report) +
+  `tools/zone-editor.html` · Evidence: `evidence/`
+- Demos: `scripts/demo.sh` (interactive), `scripts/demo_pass.sh` (automated)
 - Logs: `BLOCKERS.md`, `DECISIONS.md`

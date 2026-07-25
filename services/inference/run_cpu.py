@@ -323,6 +323,7 @@ def run(config_path, max_seconds=None):
     last_still = False
     last_evidence_t = 0.0
     prev_zone = {}
+    restricted_since = {}   # tid -> vnow when the track entered its restricted zone
 
     interval = 1.0 / cfg.process_fps if cfg.process_fps and cfg.process_fps > 0 else 0
     last_proc = 0.0
@@ -424,13 +425,15 @@ def run(config_path, max_seconds=None):
                             flow.record_exit(old, vnow)
                     # restricted-zone entry / exit events
                     if confirmed in restricted_zone_ids:
+                        restricted_since[tid] = vnow
                         pending_events.append(new_event(
                             RESTRICTED_ZONE_ENTRY, cfg.camera_id, cfg.site_id, vnow,
                             zone_id=confirmed, person_ref=pr))
                     if old in restricted_zone_ids and confirmed not in restricted_zone_ids:
                         pending_events.append(new_event(
                             RESTRICTED_ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
-                            zone_id=old, person_ref=pr))
+                            zone_id=old, person_ref=pr,
+                            duration=round(vnow - restricted_since.pop(tid, vnow), 2)))
                     # loitering ended: left a zone they were loitering in
                     if old and (pr, old) in loiter_started and confirmed != old:
                         pending_events.append(new_event(
@@ -472,7 +475,8 @@ def run(config_path, max_seconds=None):
             if gone_zone in restricted_zone_ids:
                 pending_events.append(new_event(
                     RESTRICTED_ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
-                    zone_id=gone_zone, person_ref=pr))
+                    zone_id=gone_zone, person_ref=pr,
+                    duration=round(vnow - restricted_since.pop(tid, vnow), 2)))
             if gone_zone and (pr, gone_zone) in loiter_started:
                 pending_events.append(new_event(
                     LOITERING_END, cfg.camera_id, cfg.site_id, vnow,
@@ -482,6 +486,7 @@ def run(config_path, max_seconds=None):
             dwell.drop(tid)
             eng.drop_person(pr)
             prev_zone.pop(tid, None)
+            restricted_since.pop(tid, None)
             done = registry.complete(tid)          # final per-track summary
             if done is not None:
                 completed_tracks += 1

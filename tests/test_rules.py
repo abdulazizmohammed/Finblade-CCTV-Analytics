@@ -8,85 +8,100 @@ from finblade.rules import (
 
 
 class TestHysteresisLatch(unittest.TestCase):
-    def test_arms_on_threshold(self):
-        latch = HysteresisLatch(on_threshold=2.0, off_threshold=1.8, debounce_s=10.0)
-        self.assertEqual(latch.update(2.0, now=0.0), "FIRE")
+    def test_arms_after_sustained_duration(self):
+        latch = HysteresisLatch(2.0, 1.8, sustain_s=10.0)
+        self.assertIsNone(latch.update(2.0, now=0.0))          # condition begins
+        self.assertIsNone(latch.update(2.1, now=9.0))          # <10s, not yet
+        self.assertEqual(latch.update(2.0, now=10.0), "FIRE")  # 10s sustained -> FIRE
+
+    def test_brief_spike_does_not_fire(self):
+        latch = HysteresisLatch(2.0, 1.8, sustain_s=10.0)
+        latch.update(2.5, now=0.0)
+        self.assertIsNone(latch.update(1.0, now=3.0))          # dropped -> timer reset
+        self.assertIsNone(latch.update(2.5, now=6.0))          # restart timer
+        self.assertIsNone(latch.update(2.5, now=15.0))         # only 9s from t=6
+        self.assertEqual(latch.update(2.5, now=16.0), "FIRE")  # 10s from t=6
 
     def test_1_9_does_not_clear(self):
         latch = HysteresisLatch(2.0, 1.8, 10.0)
-        latch.update(2.0, now=0.0)                       # armed
-        self.assertIsNone(latch.update(1.9, now=20.0))   # above off -> stays armed
+        latch.update(2.0, 0.0); latch.update(2.0, 10.0)        # armed
+        self.assertIsNone(latch.update(1.9, now=25.0))         # 1.9 > off 1.8 -> stays
         self.assertTrue(latch.armed)
 
-    def test_falling_below_off_clears(self):
+    def test_clears_after_sustained_below_off(self):
         latch = HysteresisLatch(2.0, 1.8, 10.0)
-        latch.update(2.0, now=0.0)
-        self.assertEqual(latch.update(1.7, now=20.0), "CLEAR")
+        latch.update(2.0, 0.0); latch.update(2.0, 10.0)        # armed
+        self.assertIsNone(latch.update(1.7, now=20.0))         # below off, pending
+        self.assertEqual(latch.update(1.7, now=30.0), "CLEAR")  # 10s sustained
 
     def test_no_refire_while_armed(self):
         latch = HysteresisLatch(2.0, 1.8, 10.0)
+        latch.update(2.0, 0.0)
+        self.assertEqual(latch.update(2.0, now=10.0), "FIRE")
+        self.assertIsNone(latch.update(3.0, now=25.0))         # already armed
+        self.assertIsNone(latch.update(2.5, now=45.0))
+
+    def test_immediate_mode(self):
+        latch = HysteresisLatch(2.0, 1.8, sustain_s=0.0)
         self.assertEqual(latch.update(2.0, now=0.0), "FIRE")
-        self.assertIsNone(latch.update(3.0, now=20.0))   # already armed
-        self.assertIsNone(latch.update(2.5, now=40.0))
 
 
-class TestTenSecondDebounce(unittest.TestCase):
-    def test_rapid_oscillation_one_alert(self):
-        latch = HysteresisLatch(2.0, 1.8, debounce_s=10.0)
-        fires = 0
-        clears = 0
-        # Oscillate hard across BOTH thresholds every 1s for 8s.
-        seq = [2.5, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5, 1.0]
-        for i, v in enumerate(seq):
-            r = latch.update(v, now=float(i))  # times 0..7, all within 10s
-            fires += (r == "FIRE")
-            clears += (r == "CLEAR")
-        self.assertEqual(fires, 1, "should fire exactly once despite oscillation")
-        self.assertEqual(clears, 0, "clear within debounce window is suppressed")
+class TestSustainedNoFlap(unittest.TestCase):
+    def test_rapid_oscillation_never_fires(self):
+        latch = HysteresisLatch(2.0, 1.8, sustain_s=10.0)
+        fires = sum(1 for i, v in enumerate([2.5, 1.0] * 6)
+                    if latch.update(v, now=float(i)) == "FIRE")
+        self.assertEqual(fires, 0)   # condition never holds 10s -> no alert
 
-    def test_clear_allowed_after_debounce_window(self):
-        latch = HysteresisLatch(2.0, 1.8, debounce_s=10.0)
-        self.assertEqual(latch.update(2.5, now=0.0), "FIRE")
-        self.assertIsNone(latch.update(1.0, now=5.0))     # too soon -> suppressed
-        self.assertEqual(latch.update(1.0, now=11.0), "CLEAR")  # >10s later
+    def test_sustained_fires_exactly_once(self):
+        latch = HysteresisLatch(2.0, 1.8, sustain_s=10.0)
+        fires = sum(1 for i in range(25)
+                    if latch.update(2.5, now=float(i)) == "FIRE")
+        self.assertEqual(fires, 1)   # one FIRE at t=10, none after
 
 
 class TestDensityRules(unittest.TestCase):
+    def _sustain(self, eng, zone, dens, cap, t0, dur=10.0, **kw):
+        eng.evaluate_zone(zone, dens, cap, t0, **kw)
+        return eng.evaluate_zone(zone, dens, cap, t0 + dur, **kw)
+
     def test_amber_then_red(self):
         eng = RuleEngine()
-        a = eng.evaluate_zone("Z1", density=2.5, capacity_pct=10, now=0.0)
+        a = self._sustain(eng, "Z1", 2.5, 10, 0.0)
         self.assertTrue(any(al.rule_id == "R-01" and al.severity == "AMBER" for al in a))
-        b = eng.evaluate_zone("Z1", density=4.5, capacity_pct=10, now=100.0)
+        b = self._sustain(eng, "Z1", 4.5, 10, 100.0)
         self.assertTrue(any(al.rule_id == "R-02" and al.severity == "RED" for al in b))
 
     def test_capacity_rule(self):
         eng = RuleEngine()
-        a = eng.evaluate_zone("Z1", density=0.1, capacity_pct=92.0, now=0.0)
+        a = self._sustain(eng, "Z1", 0.1, 92.0, 0.0)
         self.assertTrue(any(al.rule_id == "R-03" for al in a))
+
+    def test_brief_density_spike_does_not_fire(self):
+        eng = RuleEngine()
+        eng.evaluate_zone("Z1", density=3.0, capacity_pct=10, now=0.0)   # spike
+        a = eng.evaluate_zone("Z1", density=0.5, capacity_pct=10, now=3.0)  # gone
+        self.assertFalse(any(al.rule_id in ("R-01", "R-02") for al in a))
 
     def test_per_zone_density_thresholds(self):
         eng = RuleEngine()
-        # Zone with a lower warning threshold (1.5) fires amber at 1.6 where the
-        # global 2.0 default would not.
-        a = eng.evaluate_zone("ZA", density=1.6, capacity_pct=10, now=0.0,
-                              warning_on=1.5, critical_on=3.0)
+        a = self._sustain(eng, "ZA", 1.6, 10, 0.0, warning_on=1.5, critical_on=3.0)
         self.assertTrue(any(al.rule_id == "R-01" and al.severity == "AMBER" for al in a))
-        # A different zone keeps the global default (no amber at 1.6).
-        b = eng.evaluate_zone("ZB", density=1.6, capacity_pct=10, now=0.0)
+        b = self._sustain(eng, "ZB", 1.6, 10, 0.0)          # global default 2.0
         self.assertFalse(any(al.rule_id == "R-01" for al in b))
 
     def test_per_zone_critical_threshold(self):
         eng = RuleEngine()
-        a = eng.evaluate_zone("ZC", density=3.2, capacity_pct=10, now=0.0,
-                              warning_on=1.5, critical_on=3.0)
+        a = self._sustain(eng, "ZC", 3.2, 10, 0.0, warning_on=1.5, critical_on=3.0)
         self.assertTrue(any(al.rule_id == "R-02" and al.severity == "RED" for al in a))
 
     def test_capacity_hysteresis_87_does_not_clear(self):
         eng = RuleEngine()
-        eng.evaluate_zone("Z1", density=0.1, capacity_pct=92.0, now=0.0)
-        a = eng.evaluate_zone("Z1", density=0.1, capacity_pct=87.0, now=100.0)
+        self._sustain(eng, "Z1", 0.1, 92.0, 0.0)                            # armed R-03
+        a = eng.evaluate_zone("Z1", 0.1, 87.0, now=100.0)                   # 87 > off 85
         self.assertFalse(any(al.rule_id == "R-03" and al.kind == "CLEAR" for al in a))
-        a = eng.evaluate_zone("Z1", density=0.1, capacity_pct=80.0, now=200.0)
+        eng.evaluate_zone("Z1", 0.1, 80.0, now=200.0)                       # below off
+        a = eng.evaluate_zone("Z1", 0.1, 80.0, now=210.0)                   # sustained
         self.assertTrue(any(al.rule_id == "R-03" and al.kind == "CLEAR" for al in a))
 
 

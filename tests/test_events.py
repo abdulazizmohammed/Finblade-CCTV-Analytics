@@ -58,7 +58,7 @@ class TestValidation(unittest.TestCase):
         self.assertTrue(ok(new_event(RESTRICTED_ZONE_ENTRY, "C", "S", 1.0,
                                      zone_id="Z2", person_ref=PR)))
         self.assertTrue(ok(new_event(RESTRICTED_ZONE_EXIT, "C", "S", 1.0,
-                                     zone_id="Z2", person_ref=PR)))
+                                     zone_id="Z2", person_ref=PR, duration=12.5)))
         self.assertTrue(ok(new_event(LOITERING_START, "C", "S", 1.0,
                                      zone_id="Z1", person_ref=PR, dwell_time=42.0)))
         self.assertTrue(ok(new_event(LOITERING_END, "C", "S", 1.0,

@@ -60,41 +60,55 @@ class RuleThresholds:
     debounce_seconds: float = 10.0
 
 
-# --- generic hysteresis + debounce latch -----------------------------------
+# --- sustained-duration hysteresis latch -----------------------------------
 class HysteresisLatch:
-    """One armed/disarmed latch with hysteresis and a debounce guard.
+    """One armed/disarmed latch with hysteresis + a sustained-duration gate.
 
-    ``update(value, now)`` returns "FIRE", "CLEAR", or None.
+    ``update(value, now)`` returns "FIRE", "CLEAR", or None. A transition only
+    happens once the triggering condition has held CONTINUOUSLY for ``sustain_s``
+    (Req 9: "density remains above 2.0 for 10 seconds" to enter; "below 1.8 for
+    10 seconds" to clear):
 
-    * Arms (FIRE) when value >= on_threshold while disarmed.
-    * Disarms (CLEAR) only when value <= off_threshold while armed.
-    * A state change within ``debounce_s`` of the previous change is suppressed
-      (the latch's internal state does not flip), so oscillation yields one alert.
+    * Arms (FIRE) when value >= on_threshold sustained for ``sustain_s``.
+    * Disarms (CLEAR) when value <= off_threshold sustained for ``sustain_s``.
+    * If the condition breaks before the time elapses, the timer resets — so
+      brief spikes and oscillation never fire.
+
+    ``sustain_s = 0`` fires immediately on crossing.
     """
 
-    def __init__(self, on_threshold: float, off_threshold: float, debounce_s: float = 10.0):
+    def __init__(self, on_threshold: float, off_threshold: float, sustain_s: float = 10.0):
         self.on = on_threshold
         self.off = off_threshold
-        self.debounce_s = debounce_s
+        self.sustain_s = sustain_s
         self.armed = False
-        self._last_change: Optional[float] = None
+        self._pending_since: Optional[float] = None
 
     def update(self, value: float, now: float) -> Optional[str]:
         if not self.armed:
-            target = value >= self.on
+            cond = value >= self.on          # condition to arm (enter warning)
+            target = True
         else:
-            target = not (value <= self.off)  # stay armed unless we fall to/below off
+            cond = value <= self.off         # condition to disarm (clear)
+            target = False
 
-        if target == self.armed:
-            return None  # no desired transition
+        if not cond:
+            self._pending_since = None       # condition broke -> reset the timer
+            return None
 
-        # A transition is desired; enforce debounce.
-        if self._last_change is not None and (now - self._last_change) < self.debounce_s:
-            return None  # suppressed flap
+        if self._pending_since is None:
+            self._pending_since = now
+            if self.sustain_s <= 0:          # immediate mode
+                self.armed = target
+                self._pending_since = None
+                return "FIRE" if target else "CLEAR"
+            return None
 
-        self.armed = target
-        self._last_change = now
-        return "FIRE" if target else "CLEAR"
+        if now - self._pending_since >= self.sustain_s:
+            self.armed = target
+            self._pending_since = None
+            return "FIRE" if target else "CLEAR"
+        return None
 
 
 # --- camera offline monitor (R-07) -----------------------------------------

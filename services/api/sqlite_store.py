@@ -158,7 +158,7 @@ class SQLiteStore(Store):
     def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
                     event_type=None, person_ref=None, limit: int = 500) -> List[dict]:
         q = ("SELECT event_id,event_type,camera_id,site_id,zone_id,zone_from,zone_to,"
-             "person_ref,ts,frame FROM events WHERE ts BETWEEN ? AND ?")
+             "person_ref,ts,frame,payload FROM events WHERE ts BETWEEN ? AND ?")
         p: list = [t0, t1]
         if camera_id:
             q += " AND camera_id=?"; p.append(camera_id)
@@ -170,7 +170,19 @@ class SQLiteStore(Store):
             q += " AND person_ref=?"; p.append(person_ref)
         q += " ORDER BY ts DESC LIMIT ?"; p.append(limit)
         with self._lock:
-            return _row(self._conn.execute(q, p))
+            rows = _row(self._conn.execute(q, p))
+        # Merge any extra payload fields (e.g. duration, dwell_time) that have no
+        # dedicated column, without overwriting the columns we already selected.
+        for r in rows:
+            payload = r.pop("payload", None)
+            if payload:
+                try:
+                    for k, v in json.loads(payload).items():
+                        if r.get(k) is None:
+                            r[k] = v
+                except (ValueError, TypeError):
+                    pass
+        return rows
 
     def list_alerts_history(self, t0: float, t1: float, camera_id=None, rule_id=None,
                             limit: int = 500) -> List[dict]:

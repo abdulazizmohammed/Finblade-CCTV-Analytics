@@ -41,7 +41,7 @@ _SCHEMA = {
     DENSITY_UPDATE: {"zone_id": str, "occupancy": int, "density": _NUM},
     CAPACITY_WARNING: {"zone_id": str, "occupancy": int, "capacity_pct": _NUM},
     RESTRICTED_ZONE_ENTRY: {"zone_id": str, "person_ref": str},
-    RESTRICTED_ZONE_EXIT: {"zone_id": str, "person_ref": str},
+    RESTRICTED_ZONE_EXIT: {"zone_id": str, "person_ref": str, "duration": _NUM},
     LOITERING_START: {"zone_id": str, "person_ref": str, "dwell_time": _NUM},
     LOITERING_END: {"zone_id": str, "person_ref": str, "dwell_time": _NUM},
     CAMERA_HEARTBEAT: {},

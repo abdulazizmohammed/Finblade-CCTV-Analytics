@@ -18,4 +18,5 @@ __all__ = [
     "rules",
     "config",
     "tracking",
+    "tracks",
 ]

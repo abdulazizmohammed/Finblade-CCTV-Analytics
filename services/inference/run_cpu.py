@@ -58,6 +58,7 @@ from finblade.metrics import (                           # noqa: E402
 )
 from finblade.rules import RuleEngine                    # noqa: E402
 from finblade.tracking import TrackReaper                # noqa: E402
+from finblade.tracks import TrackRegistry                # noqa: E402
 from finblade.zones import zone_of                       # noqa: E402
 from services.inference.camera_worker import CameraWorker  # noqa: E402
 
@@ -254,6 +255,8 @@ def run(config_path, max_seconds=None):
     eng = RuleEngine()
     hasher = PersonRefHasher()
     reaper = TrackReaper(cfg.track_ttl_seconds)
+    registry = TrackRegistry()
+    completed_tracks = 0
 
     os.makedirs(BOOKMARKS_DIR, exist_ok=True)
     slug = cfg.camera_id.replace("/", "_")   # namespace evidence per camera
@@ -312,8 +315,8 @@ def run(config_path, max_seconds=None):
             last_still = True
 
         res = model.track(frame, persist=True, classes=[cfg.person_class_id],
-                          conf=cfg.conf_threshold, imgsz=cfg.imgsz,
-                          tracker="bytetrack.yaml",
+                          conf=cfg.conf_threshold, iou=cfg.iou, imgsz=cfg.imgsz,
+                          max_det=cfg.max_det, tracker="bytetrack.yaml",
                           device=device, verbose=False)[0]
 
         # --- pass 1: detect -> zone -> occupancy; collect events/alerts ------
@@ -325,7 +328,8 @@ def run(config_path, max_seconds=None):
         if res.boxes is not None and res.boxes.id is not None:
             xyxy = res.boxes.xyxy.cpu().numpy()
             ids = res.boxes.id.cpu().numpy().astype(int)
-            for (x1, y1, x2, y2), tid in zip(xyxy, ids):
+            confs = res.boxes.conf.cpu().numpy()
+            for (x1, y1, x2, y2), tid, conf in zip(xyxy, ids, confs):
                 tid = int(tid)
                 seen_ids.add(tid)
                 reaper.see(tid, vnow)
@@ -354,6 +358,11 @@ def run(config_path, max_seconds=None):
                             flow.record_exit(old, vnow)
                     prev_zone[tid] = confirmed
                 d = dwell.update(tid, confirmed, vnow)
+                # Consolidated per-track record (age/zones/dwell/confidence) for
+                # live overlays, movement records and completed-track summaries.
+                registry.observe(tid, cfg.camera_id,
+                                 (float(x1), float(y1), float(x2), float(y2)),
+                                 float(conf), confirmed, changed, d, pr, vnow)
                 zobj = next((z for z in cfg.zones if z.zone_id == confirmed), None)
                 if zobj:
                     intr = eng.evaluate_intrusion(pr, confirmed, zobj.restricted, vnow)
@@ -373,6 +382,10 @@ def run(config_path, max_seconds=None):
             dwell.drop(tid)
             eng.drop_person(hasher.ref(tid))
             prev_zone.pop(tid, None)
+            done = registry.complete(tid)          # final per-track summary
+            if done is not None:
+                completed_tracks += 1
+                log.debug("track %s completed: %s", tid, done.summary())
         if stale:
             log.debug("evicted %d stale track(s); active=%d", len(stale),
                       reaper.active_count())
@@ -466,6 +479,8 @@ def run(config_path, max_seconds=None):
             "max": max(det_counts) if det_counts else 0,
         },
         "unique_track_ids": len(seen_ids),
+        "active_tracks": len(registry),
+        "completed_tracks": completed_tracks,
         "evidence_frames_saved": saved_frames,
         "camera_health": worker.health(),
     }

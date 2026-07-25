@@ -117,6 +117,7 @@ BGR_FOOT       = (41, 160, 240)   # #f0a029 foot point
 BGR_ZONE       = (224, 220, 79)   # #4fdce0 monitored zone edge
 BGR_RESTRICTED = (158, 71, 224)   # #e0479e restricted edge (magenta)
 BGR_CRITICAL   = (75, 75, 239)    # #ef4b4b live intrusion (red)
+BGR_WARNING    = (41, 160, 240)   # #f0a029 loitering highlight (amber)
 BGR_TEXT       = (240, 236, 220)  # #dcecf0
 
 EVIDENCE = os.path.join(_REPO_ROOT, "evidence")
@@ -128,9 +129,9 @@ ZONE_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION}
 POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE,
                     CAPACITY_WARNING, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
                     LOITERING_START, LOITERING_END}
-# Only these alert severities get a saved frame (bookmark): R-06 intrusion
-# (CRITICAL) and R-02 density-critical (RED). Amber alerts do not.
-CRITICAL_SEVERITIES = {"CRITICAL", "RED"}
+# Alerts that get a saved snapshot (Req 17): restricted intrusion (R-06),
+# loitering (R-05), critical density (R-02). Density-warning/capacity do NOT.
+SNAPSHOT_RULES = {"R-02", "R-05", "R-06"}
 
 _latest_jpeg = {"buf": None}
 _lock = threading.Lock()
@@ -187,7 +188,8 @@ def _draw_dashed_poly(frame, pts, color, thickness=2, dash=14):
             cv2.line(frame, p0, p1, color, thickness)
 
 
-def annotate(frame, zones, tracks, occupancy):
+def annotate(frame, zones, tracks, occupancy, track_meta=None):
+    track_meta = track_meta or {}
     for z in zones:
         pts = [(int(x), int(y)) for x, y in z.polygon]
         occ = occupancy.get(z.zone_id, 0)
@@ -208,14 +210,25 @@ def annotate(frame, zones, tracks, occupancy):
     restricted_ids = {z.zone_id for z in zones if z.restricted}
     for (tid, x1, y1, x2, y2) in tracks:
         fx, fy = foot_point(x1, y1, x2, y2)
-        # Person standing in a restricted zone -> red box (critical, live state).
-        # Everyone else -> teal track box.
+        meta = track_meta.get(tid, {})
+        dwell = meta.get("dwell", 0.0)
+        loiter = meta.get("loiter", False)
         in_restricted = zone_of((fx, fy), zones) in restricted_ids
-        box_color = BGR_CRITICAL if in_restricted else BGR_TRACK
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)),
-                      box_color, 3 if in_restricted else 2)
+        # Priority: restricted intrusion (red) > loitering (amber) > normal (teal).
+        if in_restricted:
+            box_color, tag = BGR_CRITICAL, "INTRUSION"
+        elif loiter:
+            box_color, tag = BGR_WARNING, "LOITERING"
+        else:
+            box_color, tag = BGR_TRACK, ""
+        thick = 3 if (in_restricted or loiter) else 2
+        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), box_color, thick)
         cv2.circle(frame, (int(fx), int(fy)), 4, BGR_FOOT, -1)
-        label = f"ID {tid}  INTRUSION" if in_restricted else f"ID {tid}"
+        label = f"ID {tid}"
+        if dwell >= 1:
+            label += f" {int(dwell)}s"
+        if tag:
+            label += f"  {tag}"
         cv2.putText(frame, label, (int(x1), int(y1) - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
     return frame
@@ -512,18 +525,23 @@ def run(config_path, max_seconds=None):
                             zone_id=z.zone_id, occupancy=occ, capacity_pct=cap_pct))
 
         # --- annotate once, then bookmark this moment if anything happened ---
-        annotated = annotate(frame.copy(), cfg.zones, tracks, occupancy)
+        # per-track dwell + loiter flags for the feed overlay (Req 13/20)
+        track_meta = {t.track_id: {
+            "dwell": t.dwell_time,
+            "loiter": (t.person_ref, t.current_zone_id) in loiter_started,
+        } for t in registry.active()}
+        annotated = annotate(frame.copy(), cfg.zones, tracks, occupancy, track_meta)
         okj, buf = cv2.imencode(".jpg", annotated)
         if okj:
             with _lock:
                 _latest_jpeg["buf"] = buf.tobytes()
 
-        # Bookmark a frame ONLY for critical alerts (R-06 intrusion, R-02 density
-        # critical) — not for every alert or movement event.
-        crit_alerts = [a for a in pending_alerts
-                       if str(a.get("severity", "")).upper() in CRITICAL_SEVERITIES]
+        # Snapshot only the snapshot-worthy alerts (restricted / loitering /
+        # critical-density) — not density-warning, capacity, or movement events.
+        snap_alerts = [a for a in pending_alerts
+                       if a.get("rule_id") in SNAPSHOT_RULES and a.get("kind") == "FIRE"]
         frame_ref = None
-        if crit_alerts:
+        if snap_alerts:
             bookmark_seq += 1
             bname = f"bm_{cfg.camera_id}_{bookmark_seq:05d}.jpg"
             cv2.imwrite(os.path.join(BOOKMARKS_DIR, bname), annotated)
@@ -542,7 +560,7 @@ def run(config_path, max_seconds=None):
             # Rule engine is zone-centric; stamp which camera this alert came from.
             if al.get("camera_id") is None:
                 al["camera_id"] = cfg.camera_id
-            if frame_ref and str(al.get("severity", "")).upper() in CRITICAL_SEVERITIES:
+            if frame_ref and al.get("rule_id") in SNAPSHOT_RULES and al.get("kind") == "FIRE":
                 al["frame"] = frame_ref
             alerts_fp.write(json.dumps(al) + "\n")
             _post("/api/v1/alerts", al)

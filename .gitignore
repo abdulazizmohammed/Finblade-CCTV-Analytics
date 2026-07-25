@@ -13,7 +13,7 @@ media/*_frame.jpg
 evidence/frames/
 evidence/bookmarks/
 evidence/*.jsonl
-evidence/redbox_check.jpg
+evidence/*_check.jpg
 evidence/scenario_first_frame.jpg
 evidence/metrics_*.json
 evidence/contact_*.jpg

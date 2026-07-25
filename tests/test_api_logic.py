@@ -96,6 +96,51 @@ class TestAlertsAck(unittest.TestCase):
         self.assertEqual(code, 400)
 
 
+class TestZones(unittest.TestCase):
+    def _payload(self, **over):
+        base = {"camera_id": "CAM-A", "zones": [
+            {"zone_id": "Z1", "zone_name": "Lobby", "zone_type": "MONITORED",
+             "capacity_max": 40, "area_sqm": 60.0,
+             "normalized_polygon": [[0.1, 0.3], [0.9, 0.3], [0.9, 0.7], [0.1, 0.7]]},
+            {"zone_id": "Z2", "zone_name": "Bay", "zone_type": "RESTRICTED",
+             "restricted": True, "area_sqm": 12.0,
+             "normalized_polygon": [[0.7, 0.1], [0.9, 0.1], [0.9, 0.3]]},
+        ]}
+        base.update(over)
+        return base
+
+    def test_save_and_list_roundtrip(self):
+        svc = _svc()
+        code, body = svc.save_zones(self._payload())
+        self.assertEqual(code, 200)
+        self.assertEqual(body["count"], 2)
+        zones = svc.list_zones("CAM-A")
+        self.assertEqual(len(zones), 2)
+        self.assertEqual({z["zone_id"] for z in zones}, {"Z1", "Z2"})
+        self.assertEqual(zones[0]["camera_id"], "CAM-A")
+
+    def test_save_replaces_previous(self):
+        svc = _svc()
+        svc.save_zones(self._payload())
+        svc.save_zones(self._payload(zones=[
+            {"zone_id": "Z9", "zone_name": "New", "zone_type": "MONITORED",
+             "normalized_polygon": [[0.1, 0.1], [0.2, 0.1], [0.2, 0.2]]}]))
+        zones = svc.list_zones("CAM-A")
+        self.assertEqual([z["zone_id"] for z in zones], ["Z9"])
+
+    def test_reject_bad_zone(self):
+        svc = _svc()
+        code, body = svc.save_zones({"camera_id": "CAM-A", "zones": [
+            {"zone_id": "Zx", "zone_type": "BOGUS", "normalized_polygon": [[0, 0]]}]})
+        self.assertEqual(code, 422)
+        self.assertFalse(body["saved"])
+
+    def test_reject_missing_camera(self):
+        svc = _svc()
+        code, _ = svc.save_zones({"zones": []})
+        self.assertEqual(code, 422)
+
+
 class TestReport(unittest.TestCase):
     def test_report_html_has_no_hardcoded_hex(self):
         html_out = render_report_html(

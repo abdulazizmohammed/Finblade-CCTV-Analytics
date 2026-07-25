@@ -83,6 +83,31 @@ def _post(path, payload):
     except Exception:
         pass  # dashboard is best-effort; never block the pipeline on it
 
+
+def _load_zones_from_api(camera_id, frame_width, frame_height):
+    """Fetch editor-saved zones for this camera (normalized -> pixel at our res).
+
+    Returns a list of Zone or None. Prefers normalized polygons so zones scale to
+    this runner's frame size regardless of the resolution they were drawn at.
+    """
+    if requests is None or not _API["base"]:
+        return None
+    try:
+        r = requests.get(_API["base"] + "/api/v1/zones",
+                         params={"camera_id": camera_id}, timeout=1.0)
+        data = r.json().get("zones", [])
+    except Exception:
+        return None
+    if not data:
+        return None
+    from finblade.zones import zone_from_dict
+    out = []
+    for z in data:
+        if z.get("normalized_polygon"):
+            z = dict(z); z.pop("polygon", None)   # force normalized -> pixel scaling
+        out.append(zone_from_dict(z, frame_width, frame_height))
+    return out
+
 # --- theme-matched overlay colours (BGR = hex channels reversed) -----------
 # Source of truth: web/finblade-theme.css :root overlay block.
 BGR_TRACK      = (194, 189, 24)   # #18bdc2 person box
@@ -217,6 +242,14 @@ def run(config_path, max_seconds=None):
     cfg = load_camera_config(config_path)
 
     device = _resolve_device(cfg.device)
+
+    # Prefer editor-saved zones from the API (source of truth); YAML is the seed.
+    api_zones = _load_zones_from_api(cfg.camera_id, cfg.frame_width, cfg.frame_height)
+    if api_zones:
+        cfg.zones = api_zones
+        log.info("loaded %d zone(s) from API for %s", len(api_zones), cfg.camera_id)
+    else:
+        log.info("using %d zone(s) from config for %s", len(cfg.zones), cfg.camera_id)
 
     if not os.path.exists(cfg.model_path):
         print(f"[BLOCKER] weights not found: {cfg.model_path} (see BLOCKERS.md B-1)",

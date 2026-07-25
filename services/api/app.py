@@ -107,6 +107,11 @@ _BOOKMARKS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "
 os.makedirs(_BOOKMARKS_DIR, exist_ok=True)
 app.mount("/bookmarks", StaticFiles(directory=_BOOKMARKS_DIR), name="bookmarks")
 
+# Serve the zone editor tool.
+_TOOLS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tools"))
+if os.path.isdir(_TOOLS_DIR):
+    app.mount("/tools", StaticFiles(directory=_TOOLS_DIR, html=True), name="tools")
+
 
 # --- history / logs (date-filterable) --------------------------------------
 @app.get("/api/v1/history/events")
@@ -141,6 +146,19 @@ async def occupancy_report_json(frm: float = Query(0, alias="from"),
             "peak_density": max((float(z.get("peak_density", 0)) for z in zones), default=0.0),
         },
     }
+
+
+@app.post("/api/v1/zones")
+async def save_zones(request: Request):
+    """Persist the zone set for a camera (from the zone editor)."""
+    payload = await request.json()
+    code, body = svc.save_zones(payload)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.get("/api/v1/zones")
+async def get_zones(camera_id: str = Query(None)):
+    return {"zones": svc.list_zones(camera_id)}
 
 
 @app.get("/api/v1/cameras")

@@ -36,6 +36,13 @@ CREATE INDEX IF NOT EXISTS ix_alerts_ts ON alerts(ts);
 
 CREATE TABLE IF NOT EXISTS cameras(
   camera_id TEXT PRIMARY KEY, site_id TEXT, last_seen REAL);
+
+CREATE TABLE IF NOT EXISTS zones(
+  camera_id TEXT, zone_id TEXT, zone_name TEXT, zone_type TEXT, restricted INTEGER,
+  capacity_max INTEGER, area_sqm REAL, warning_density REAL, critical_density REAL,
+  loitering_threshold_sec REAL, colour TEXT, enabled INTEGER,
+  normalized_polygon TEXT, polygon TEXT, adjacency_list TEXT, updated_at REAL,
+  PRIMARY KEY (camera_id, zone_id));
 """
 
 
@@ -184,6 +191,47 @@ class SQLiteStore(Store):
         q += " GROUP BY zone_id ORDER BY zone_id"
         with self._lock:
             return _row(self._conn.execute(q, p))
+
+    # -- zones (editor-defined, persisted per camera) -----------------------
+    def save_zones(self, camera_id: str, zones: List[dict]) -> None:
+        import time as _t
+        with self._lock:
+            self._conn.execute("DELETE FROM zones WHERE camera_id=?", (camera_id,))
+            for z in zones:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO zones(camera_id,zone_id,zone_name,zone_type,"
+                    "restricted,capacity_max,area_sqm,warning_density,critical_density,"
+                    "loitering_threshold_sec,colour,enabled,normalized_polygon,polygon,"
+                    "adjacency_list,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (camera_id, z.get("zone_id"), z.get("zone_name"), z.get("zone_type", "MONITORED"),
+                     1 if z.get("restricted") else 0, int(z.get("capacity_max", 0)),
+                     float(z.get("area_sqm", 0.0)), float(z.get("warning_density", 2.0)),
+                     float(z.get("critical_density", 4.0)), float(z.get("loitering_threshold_sec", 30.0)),
+                     z.get("colour"), 1 if z.get("enabled", True) else 0,
+                     json.dumps(z.get("normalized_polygon") or []),
+                     json.dumps(z.get("polygon") or []),
+                     json.dumps(z.get("adjacency_list") or []), _t.time()))
+            self._conn.commit()
+
+    def list_zones(self, camera_id: str = None) -> List[dict]:
+        q = ("SELECT camera_id,zone_id,zone_name,zone_type,restricted,capacity_max,area_sqm,"
+             "warning_density,critical_density,loitering_threshold_sec,colour,enabled,"
+             "normalized_polygon,polygon,adjacency_list,updated_at FROM zones")
+        p = []
+        if camera_id is not None:
+            q += " WHERE camera_id=?"; p.append(camera_id)
+        q += " ORDER BY zone_id"
+        with self._lock:
+            rows = _row(self._conn.execute(q, p))
+        for r in rows:
+            r["restricted"] = bool(r["restricted"])
+            r["enabled"] = bool(r["enabled"])
+            for k in ("normalized_polygon", "polygon", "adjacency_list"):
+                try:
+                    r[k] = json.loads(r[k]) if r[k] else []
+                except Exception:
+                    r[k] = []
+        return rows
 
     @staticmethod
     def _alert_out(r: dict) -> dict:

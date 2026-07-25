@@ -3,206 +3,112 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FinBlade — Zone Editor</title>
-
-<!-- Tokens are inlined so this file works opened directly from disk.
-     Canonical source: web/finblade-theme.css — keep the two in sync. -->
+<!-- Tokens inlined so this works opened directly from disk. Canonical source:
+     web/finblade-theme.css — keep in sync. -->
 <style>
 :root{
   --fb-void:#08131a; --fb-surface:#0e1f29; --fb-surface-2:#142c38;
   --fb-line:#1d3d4b; --fb-line-bright:#2a5568;
   --fb-teal:#18bdc2; --fb-teal-bright:#4fdce0; --fb-teal-ghost:rgba(24,189,194,.12);
   --fb-text:#dcecf0; --fb-text-muted:#7d9aa5; --fb-text-faint:#4e6a76;
-  --fb-warning:#f0a029; --fb-critical:#ef4b4b; --fb-restricted:#e0479e;
-  --fb-ok:#7d9aa5;
+  --fb-warning:#f0a029; --fb-critical:#ef4b4b; --fb-restricted:#e0479e; --fb-ok:#7d9aa5;
   --fb-restricted-ghost:rgba(224,71,158,.12);
   --fb-font-ui:'Inter Tight','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,system-ui,sans-serif;
   --fb-font-data:ui-monospace,'SF Mono','Cascadia Mono','Segoe UI Mono',Menlo,Consolas,monospace;
   --fb-r:4px; --fb-r-lg:6px;
 }
 *{box-sizing:border-box;}
-body{
-  margin:0; background:var(--fb-void); color:var(--fb-text);
-  font-family:var(--fb-font-ui); font-size:14px; line-height:1.5;
-  -webkit-font-smoothing:antialiased;
-  display:grid; grid-template-columns:1fr 360px; height:100vh;
-}
-
-/* --- header strip --------------------------------------------------- */
-header{
-  grid-column:1/-1; display:flex; align-items:center; gap:14px;
-  padding:0 18px; height:48px;
-  background:var(--fb-surface); border-bottom:1px solid var(--fb-line);
-}
-.mark{
-  font-family:var(--fb-font-data); font-size:13px; letter-spacing:.16em;
-  text-transform:uppercase; color:var(--fb-teal); font-weight:600;
-}
+body{margin:0;background:var(--fb-void);color:var(--fb-text);font-family:var(--fb-font-ui);
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;
+  display:grid;grid-template-columns:1fr 380px;height:100vh;}
+header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 18px;height:48px;
+  background:var(--fb-surface);border-bottom:1px solid var(--fb-line);}
+.mark{font-family:var(--fb-font-data);font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-teal);font-weight:600;}
 .mark span{color:var(--fb-text-faint);}
 .sep{flex:1;}
-.live{
-  display:inline-block; width:6px; height:6px; border-radius:50%;
-  background:var(--fb-teal); animation:pulse 2.4s ease-in-out infinite;
-}
-@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.25;}}
-.timecode{
-  font-family:var(--fb-font-data); font-variant-numeric:tabular-nums;
-  font-size:12px; color:var(--fb-teal); letter-spacing:.04em;
-}
-
-/* --- columns -------------------------------------------------------- */
-#stage{padding:18px; overflow:auto;}
-#side{
-  background:var(--fb-surface); border-left:1px solid var(--fb-line);
-  padding:18px; overflow:auto;
-}
-
-.eyebrow{
-  font-family:var(--fb-font-data); font-size:10px; letter-spacing:.14em;
-  text-transform:uppercase; color:var(--fb-text-faint);
-  margin:0 0 10px; font-weight:500;
-}
-
-/* --- canvas with corner brackets (the framing motif) ---------------- */
-.frame{position:relative; display:inline-block; margin-top:12px;}
-.frame::before,.frame::after{
-  content:''; position:absolute; width:14px; height:14px;
-  border:1px solid var(--fb-teal); opacity:.6; pointer-events:none;
-}
-.frame::before{top:-1px; left:-1px; border-right:0; border-bottom:0;}
-.frame::after{bottom:-1px; right:-1px; border-left:0; border-top:0;}
-canvas{display:block; border:1px solid var(--fb-line); cursor:crosshair; max-width:100%;}
-
-.readout{
-  font-family:var(--fb-font-data); font-variant-numeric:tabular-nums;
-  font-size:12px; color:var(--fb-text-muted); margin-top:10px;
-}
-.readout b{color:var(--fb-teal); font-weight:500;}
-
-.hint{font-size:12px; color:var(--fb-text-muted); margin-top:8px; max-width:64ch;}
-.hint code{
-  font-family:var(--fb-font-data); font-size:11px;
-  color:var(--fb-teal); background:var(--fb-teal-ghost);
-  padding:1px 5px; border-radius:3px;
-}
-
-/* --- controls ------------------------------------------------------- */
-label.lbl{
-  display:block; font-family:var(--fb-font-data); font-size:10px;
-  letter-spacing:.1em; text-transform:uppercase;
-  color:var(--fb-text-muted); margin:12px 0 4px;
-}
-input[type=text],input[type=number]{
-  width:100%; background:var(--fb-void); border:1px solid var(--fb-line);
-  color:var(--fb-text); font-family:var(--fb-font-data); font-size:13px;
-  padding:7px 9px; border-radius:var(--fb-r);
-}
-input:focus{outline:none; border-color:var(--fb-teal); box-shadow:0 0 0 3px var(--fb-teal-ghost);}
-.pair{display:flex; gap:10px;}
-.pair>div{flex:1;}
-
-.toggle{
-  display:flex; align-items:center; gap:9px; margin:14px 0 4px;
-  padding:9px 11px; border-radius:var(--fb-r);
-  border:1px solid var(--fb-line); background:var(--fb-void);
-  cursor:pointer; user-select:none;
-}
-.toggle.on{border-color:var(--fb-restricted); background:var(--fb-restricted-ghost);}
-.toggle input{accent-color:var(--fb-restricted); margin:0;}
-.toggle .t{font-size:12px;}
-.toggle.on .t{color:var(--fb-restricted);}
-
-.btns{display:flex; gap:8px; margin-top:14px; flex-wrap:wrap;}
-button{
-  background:var(--fb-surface-2); border:1px solid var(--fb-line-bright);
-  color:var(--fb-text); font-family:var(--fb-font-ui); font-size:13px;
-  padding:8px 12px; border-radius:var(--fb-r); cursor:pointer;
-  transition:border-color .12s, background .12s;
-}
+.status{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);}
+#stage{padding:18px;overflow:auto;}
+#side{background:var(--fb-surface);border-left:1px solid var(--fb-line);padding:18px;overflow:auto;}
+.eyebrow{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fb-text-faint);margin:0 0 10px;font-weight:500;}
+.frame{position:relative;display:inline-block;margin-top:12px;}
+.frame::before,.frame::after{content:'';position:absolute;width:14px;height:14px;border:1px solid var(--fb-teal);opacity:.6;pointer-events:none;}
+.frame::before{top:-1px;left:-1px;border-right:0;border-bottom:0;}
+.frame::after{bottom:-1px;right:-1px;border-left:0;border-top:0;}
+canvas{display:block;border:1px solid var(--fb-line);cursor:crosshair;max-width:100%;}
+.readout{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:12px;color:var(--fb-text-muted);margin-top:10px;}
+.readout b{color:var(--fb-teal);font-weight:500;}
+.hint{font-size:12px;color:var(--fb-text-muted);margin-top:8px;max-width:70ch;}
+.hint code{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-teal);background:var(--fb-teal-ghost);padding:1px 5px;border-radius:3px;}
+label.lbl{display:block;font-family:var(--fb-font-data);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-muted);margin:12px 0 4px;}
+input[type=text],input[type=number],select{width:100%;background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:13px;padding:7px 9px;border-radius:var(--fb-r);}
+input[type=color]{width:100%;height:34px;background:var(--fb-void);border:1px solid var(--fb-line);border-radius:var(--fb-r);padding:2px;}
+input:focus,select:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.pair{display:flex;gap:10px;}.pair>div{flex:1;}
+.btns{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;}
+button{background:var(--fb-surface-2);border:1px solid var(--fb-line-bright);color:var(--fb-text);font-family:var(--fb-font-ui);font-size:13px;padding:8px 12px;border-radius:var(--fb-r);cursor:pointer;transition:border-color .12s,background .12s;}
 button:hover{border-color:var(--fb-teal);}
-button:focus-visible{outline:2px solid var(--fb-teal-bright); outline-offset:2px;}
-button.primary{background:var(--fb-teal); border-color:var(--fb-teal); color:#04141a; font-weight:600;}
-button.primary:hover{background:var(--fb-teal-bright); border-color:var(--fb-teal-bright);}
-
-/* --- zone list ------------------------------------------------------ */
-.zone{
-  position:relative; border:1px solid var(--fb-line);
-  border-left:2px solid var(--fb-teal);
-  border-radius:var(--fb-r); padding:10px 11px; margin-top:9px;
-  background:var(--fb-void);
-}
+button:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+button.primary{background:var(--fb-teal);border-color:var(--fb-teal);color:var(--fb-void);font-weight:600;}
+button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal-bright);}
+.zone{position:relative;border:1px solid var(--fb-line);border-left:2px solid var(--fb-teal);border-radius:var(--fb-r);padding:10px 11px;margin-top:9px;background:var(--fb-void);}
 .zone.nogo{border-left-color:var(--fb-restricted);}
-.zone .id{font-family:var(--fb-font-data); font-size:12px; color:var(--fb-text);}
-.zone .meta{
-  font-family:var(--fb-font-data); font-variant-numeric:tabular-nums;
-  font-size:11px; color:var(--fb-text-faint); margin-top:3px;
-}
-.pill{
-  font-family:var(--fb-font-data); font-size:9px; letter-spacing:.1em;
-  text-transform:uppercase; padding:2px 6px; border-radius:2px;
-  border:1px solid currentColor; margin-left:6px;
-}
-.pill.nogo{color:var(--fb-restricted); background:var(--fb-restricted-ghost);}
+.zone .id{font-family:var(--fb-font-data);font-size:12px;color:var(--fb-text);}
+.zone .meta{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:11px;color:var(--fb-text-faint);margin-top:3px;}
+.pill{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:2px 6px;border-radius:2px;border:1px solid currentColor;margin-left:6px;}
+.pill.nogo{color:var(--fb-restricted);background:var(--fb-restricted-ghost);}
 .pill.mon{color:var(--fb-ok);}
-.rm{
-  position:absolute; top:8px; right:9px; cursor:pointer;
-  color:var(--fb-text-faint); font-size:14px; line-height:1;
-  background:none; border:0; padding:2px 4px;
-}
+.rm{position:absolute;top:8px;right:9px;cursor:pointer;color:var(--fb-text-faint);font-size:14px;line-height:1;background:none;border:0;padding:2px 4px;}
 .rm:hover{color:var(--fb-critical);}
-
-pre{
-  background:var(--fb-void); border:1px solid var(--fb-line);
-  border-radius:var(--fb-r); padding:11px; font-size:11px;
-  font-family:var(--fb-font-data); white-space:pre-wrap; word-break:break-all;
-  color:var(--fb-text-muted); max-height:260px; overflow:auto; margin:0;
-}
-.empty{color:var(--fb-text-faint); font-size:12px; padding:14px 0;}
-
-@media (prefers-reduced-motion:reduce){ .live{animation:none;} *{transition:none !important;} }
+.empty{color:var(--fb-text-faint);font-size:12px;padding:14px 0;}
 </style>
 
 <header>
   <div class="mark">FinBlade <span>/ Zone Editor</span></div>
   <div class="sep"></div>
-  <span class="live" aria-hidden="true"></span>
-  <span class="timecode" id="tc">--:--:--</span>
+  <span class="status" id="status">load a frame to begin</span>
 </header>
 
 <main id="stage">
   <p class="eyebrow">Reference frame</p>
   <input type="file" accept="image/*" id="file">
   <p class="hint">
-    Load <code>media/cam1_frame.jpg</code>, saved on the first run of the inference
-    service. Click to place corners on the floor. Right-click or Close zone to finish.
+    Load the still saved on first run (<code>media/&lt;camera&gt;_frame.jpg</code>).
+    <b>Left-click</b> to add corners, <b>drag</b> a point to move it,
+    <b>right-click a point</b> to delete it, <b>right-click empty</b> to close the zone.
   </p>
   <div class="frame"><canvas id="c" width="640" height="360"></canvas></div>
   <p class="readout" id="coord">Awaiting frame</p>
 </main>
 
 <aside id="side">
-  <p class="eyebrow">Define zone</p>
+  <p class="eyebrow">Camera</p>
+  <label class="lbl" for="camera">Camera ID (zones save under this)</label>
+  <input type="text" id="camera" value="CAM-SYN-01">
+  <label class="lbl" for="api">API base</label>
+  <input type="text" id="api" value="">
 
-  <label class="lbl" for="zid">Zone ID</label>
-  <input type="text" id="zid" value="ZONE-02">
-
-  <label class="lbl" for="zname">Name</label>
-  <input type="text" id="zname" value="Restricted Bay">
-
-  <div class="toggle on" id="rtoggle">
-    <input type="checkbox" id="restricted" checked>
-    <span class="t">Restricted — no-go zone</span>
-  </div>
-
+  <p class="eyebrow" style="margin-top:22px">Define zone</p>
+  <label class="lbl" for="zid">Zone ID</label><input type="text" id="zid" value="ZONE-01">
+  <label class="lbl" for="zname">Name</label><input type="text" id="zname" value="Lobby">
+  <label class="lbl" for="ztype">Type</label>
+  <select id="ztype">
+    <option>MONITORED</option><option>RESTRICTED</option><option>ENTRANCE</option>
+    <option>EXIT</option><option>TRANSITION</option><option>UNMONITORED</option>
+  </select>
   <div class="pair">
-    <div>
-      <label class="lbl" for="cap">Capacity</label>
-      <input type="number" id="cap" value="12" min="1">
-    </div>
-    <div>
-      <label class="lbl" for="area">Area m²</label>
-      <input type="number" id="area" value="3" step="0.1" min="0.1">
-    </div>
+    <div><label class="lbl" for="cap">Capacity</label><input type="number" id="cap" value="40" min="0"></div>
+    <div><label class="lbl" for="area">Area m²</label><input type="number" id="area" value="60" step="0.1" min="0.1"></div>
   </div>
+  <div class="pair">
+    <div><label class="lbl" for="warn">Warn /m²</label><input type="number" id="warn" value="2.0" step="0.1" min="0"></div>
+    <div><label class="lbl" for="crit">Crit /m²</label><input type="number" id="crit" value="4.0" step="0.1" min="0"></div>
+  </div>
+  <div class="pair">
+    <div><label class="lbl" for="loiter">Loiter s</label><input type="number" id="loiter" value="30" min="0"></div>
+    <div><label class="lbl" for="colour">Colour</label><input type="color" id="colour" value="#4fdce0"></div>
+  </div>
+  <label class="lbl" for="adj">Adjacent zone IDs (comma-separated)</label>
+  <input type="text" id="adj" placeholder="ZONE-02, ZONE-03">
 
   <div class="btns">
     <button class="primary" id="btn-close">Close zone</button>
@@ -213,28 +119,26 @@ pre{
   <p class="eyebrow" style="margin-top:26px">Zones</p>
   <div id="zones"><p class="empty">No zones defined.</p></div>
 
-  <p class="eyebrow" style="margin-top:26px">cameras.yaml</p>
-  <pre id="out">Define a zone to generate config.</pre>
-  <div class="btns"><button id="btn-copy">Copy YAML</button></div>
+  <div class="btns" style="margin-top:16px">
+    <button class="primary" id="btn-save">Save to server</button>
+    <button id="btn-load">Load from server</button>
+    <button id="btn-copy">Copy YAML</button>
+  </div>
+  <p class="eyebrow" style="margin-top:22px">cameras.yaml (pixel + normalized)</p>
+  <pre id="out" style="background:var(--fb-void);border:1px solid var(--fb-line);border-radius:var(--fb-r);padding:11px;font-size:11px;font-family:var(--fb-font-data);white-space:pre-wrap;word-break:break-all;color:var(--fb-text-muted);max-height:220px;overflow:auto;margin:0;">Define a zone to generate config.</pre>
 </aside>
 
 <script>
-const C = {
-  track:'#18bdc2', zone:'#4fdce0', restricted:'#e0479e',
-  draft:'#f0a029', faint:'#4e6a76'
-};
-
+const C = { zone:'#4fdce0', restricted:'#e0479e', draft:'#f0a029' };
 const cv=document.getElementById('c'), ctx=cv.getContext('2d');
 let img=null, nat={w:0,h:0}, scale=1, pts=[], zones=[];
+let down=false, moved=false, dragIdx=-1;
+const $=id=>document.getElementById(id);
+const v=id=>$(id).value;
+$('api').value = `http://${location.hostname}:8000`;
+function setStatus(t){ $('status').textContent=t; }
 
-/* header timecode — surveillance vernacular, and a live signal that
-   the page is actually running */
-setInterval(()=>{
-  document.getElementById('tc').textContent =
-    new Date().toTimeString().slice(0,8);
-},1000);
-
-document.getElementById('file').onchange = e=>{
+$('file').onchange = e=>{
   const f=e.target.files[0]; if(!f) return;
   img=new Image();
   img.onload=()=>{
@@ -242,24 +146,11 @@ document.getElementById('file').onchange = e=>{
     scale=Math.min(1, 900/nat.w);
     cv.width=Math.round(nat.w*scale); cv.height=Math.round(nat.h*scale);
     draw();
-    document.getElementById('coord').innerHTML=
-      `Frame <b>${nat.w}×${nat.h}</b> — click to place corners`;
+    $('coord').innerHTML=`Frame <b>${nat.w}×${nat.h}</b> — left-click to place corners`;
+    setStatus(`frame ${nat.w}×${nat.h}`);
   };
   img.src=URL.createObjectURL(f);
 };
-
-cv.addEventListener('click', e=>{
-  if(!img) return;
-  const p=toNative(e); pts.push(p); draw();
-});
-cv.addEventListener('contextmenu', e=>{ e.preventDefault(); closeZone(); });
-cv.addEventListener('mousemove', e=>{
-  if(!img) return;
-  const p=toNative(e);
-  document.getElementById('coord').innerHTML=
-    `x <b>${String(p[0]).padStart(4,' ')}</b>   y <b>${String(p[1]).padStart(4,' ')}</b>` +
-    `   ·   points <b>${pts.length}</b>`;
-});
 
 function toNative(e){
   const r=cv.getBoundingClientRect();
@@ -267,65 +158,79 @@ function toNative(e){
   const y=(e.clientY-r.top )*(cv.height/r.height)/scale;
   return [Math.round(x),Math.round(y)];
 }
+function nearestPointIdx(p){
+  const thr=12/scale; let best=-1, bd=thr;
+  pts.forEach((q,i)=>{const d=Math.hypot(q[0]-p[0],q[1]-p[1]); if(d<bd){bd=d;best=i;}});
+  return best;
+}
+cv.addEventListener('mousedown', e=>{
+  if(!img || e.button!==0) return;
+  const p=toNative(e); down=true; moved=false; dragIdx=nearestPointIdx(p);
+});
+cv.addEventListener('mousemove', e=>{
+  if(!img) return; const p=toNative(e);
+  if(down){ moved=true; if(dragIdx>=0){ pts[dragIdx]=p; draw(); } }
+  $('coord').innerHTML=`x <b>${String(p[0]).padStart(4,' ')}</b>  y <b>${String(p[1]).padStart(4,' ')}</b>  ·  points <b>${pts.length}</b>`;
+});
+cv.addEventListener('mouseup', e=>{
+  if(!img || !down) return;
+  const p=toNative(e);
+  if(dragIdx<0 && !moved){ pts.push(p); draw(); }  // clean click on empty -> add
+  down=false; moved=false; dragIdx=-1;
+});
+cv.addEventListener('contextmenu', e=>{
+  e.preventDefault(); if(!img) return;
+  const p=toNative(e); const idx=nearestPointIdx(p);
+  if(idx>=0){ pts.splice(idx,1); draw(); }         // right-click a point -> delete
+  else { closeZone(); }                            // right-click empty -> close
+});
 
 function draw(){
   if(!img) return;
   ctx.clearRect(0,0,cv.width,cv.height);
   ctx.drawImage(img,0,0,cv.width,cv.height);
-  zones.forEach(z=> poly(z.polygon, z.restricted?C.restricted:C.zone, z.restricted, z.zone_name));
+  zones.forEach(z=> poly(z.polygon, z.colour || (z.restricted?C.restricted:C.zone), z.restricted, z.zone_name));
   poly(pts, C.draft, false, null, true);
 }
-
 function poly(p,color,dashed,label,open){
   if(!p.length) return;
-  ctx.save();
-  ctx.lineWidth=2; ctx.strokeStyle=color;
-  ctx.fillStyle=color+'22';
-  if(dashed) ctx.setLineDash([9,6]);          /* restricted reads as dashed */
+  ctx.save(); ctx.lineWidth=2; ctx.strokeStyle=color; ctx.fillStyle=color+'22';
+  if(dashed) ctx.setLineDash([9,6]);
   ctx.beginPath();
   p.forEach((pt,i)=>{const x=pt[0]*scale,y=pt[1]*scale; i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
   if(!open){ ctx.closePath(); ctx.fill(); }
-  ctx.stroke();
-  ctx.setLineDash([]);
-  p.forEach(pt=>{
-    ctx.fillStyle=color;
-    ctx.beginPath(); ctx.arc(pt[0]*scale,pt[1]*scale,3.5,0,Math.PI*2); ctx.fill();
-  });
-  if(label){
-    ctx.fillStyle=color;
-    ctx.font='11px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillText(label.toUpperCase(), p[0][0]*scale+7, p[0][1]*scale-7);
-  }
+  ctx.stroke(); ctx.setLineDash([]);
+  p.forEach((pt,i)=>{ ctx.fillStyle=(open&&i===dragIdx)?'#fff':color;
+    ctx.beginPath(); ctx.arc(pt[0]*scale,pt[1]*scale,4,0,Math.PI*2); ctx.fill(); });
+  if(label){ ctx.fillStyle=color; ctx.font='11px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillText(label.toUpperCase(), p[0][0]*scale+7, p[0][1]*scale-7); }
   ctx.restore();
 }
 
-/* restricted toggle drives its own styling so the state is unmissable */
-const rt=document.getElementById('rtoggle'), rc=document.getElementById('restricted');
-rt.onclick=e=>{ if(e.target!==rc) rc.checked=!rc.checked; rt.classList.toggle('on',rc.checked); };
-
-document.getElementById('btn-undo').onclick =()=>{pts.pop(); draw();};
-document.getElementById('btn-clear').onclick=()=>{pts=[]; draw();};
-document.getElementById('btn-close').onclick=closeZone;
-document.getElementById('btn-copy').onclick =()=>navigator.clipboard.writeText(yaml());
+$('btn-undo').onclick=()=>{pts.pop(); draw();};
+$('btn-clear').onclick=()=>{pts=[]; draw();};
+$('btn-close').onclick=closeZone;
+$('btn-copy').onclick=()=>navigator.clipboard.writeText(yaml());
+$('btn-save').onclick=saveServer;
+$('btn-load').onclick=loadServer;
 
 function closeZone(){
-  if(pts.length<3){
-    document.getElementById('coord').innerHTML=
-      `<b style="color:${C.draft}">Needs at least 3 points</b>`;
-    return;
-  }
+  if(pts.length<3){ $('coord').innerHTML=`<b style="color:${C.draft}">Needs at least 3 points</b>`; return; }
+  const ztype=v('ztype');
   zones.push({
-    zone_id:v('zid'), zone_name:v('zname'),
-    restricted:rc.checked,
+    zone_id:v('zid'), zone_name:v('zname'), zone_type:ztype,
+    restricted: ztype==='RESTRICTED',
     capacity_max:+v('cap'), area_sqm:+v('area'),
-    polygon:pts.slice()
+    warning_density:+v('warn'), critical_density:+v('crit'),
+    loitering_threshold_sec:+v('loiter'), colour:v('colour'),
+    adjacency_list: v('adj').split(',').map(s=>s.trim()).filter(Boolean),
+    polygon:pts.slice(),
   });
   pts=[]; draw(); render();
 }
-function v(id){return document.getElementById(id).value;}
 
 function render(){
-  const box=document.getElementById('zones');
+  const box=$('zones');
   if(!zones.length){ box.innerHTML='<p class="empty">No zones defined.</p>'; }
   else{
     box.innerHTML='';
@@ -334,32 +239,65 @@ function render(){
       d.className='zone'+(z.restricted?' nogo':'');
       d.innerHTML=
         `<button class="rm" title="Remove" data-i="${i}">✕</button>`+
-        `<div class="id">${z.zone_id}<span class="pill ${z.restricted?'nogo':'mon'}">`+
-        `${z.restricted?'No-go':'Monitored'}</span></div>`+
-        `<div class="meta">${z.zone_name} · ${z.polygon.length} pts · `+
-        `cap ${z.capacity_max} · ${z.area_sqm} m² · `+
-        `amber at ${Math.ceil(2*z.area_sqm)} people</div>`;
+        `<div class="id">${z.zone_id}<span class="pill ${z.restricted?'nogo':'mon'}">${z.zone_type}</span></div>`+
+        `<div class="meta">${z.zone_name} · ${z.polygon.length} pts · cap ${z.capacity_max} · ${z.area_sqm} m² · warn ${z.warning_density}/crit ${z.critical_density} · loiter ${z.loitering_threshold_sec}s</div>`;
       box.appendChild(d);
     });
-    box.querySelectorAll('.rm').forEach(b=>
-      b.onclick=()=>{zones.splice(+b.dataset.i,1); draw(); render();});
+    box.querySelectorAll('.rm').forEach(b=> b.onclick=()=>{zones.splice(+b.dataset.i,1); draw(); render();});
   }
-  document.getElementById('out').textContent=yaml();
+  $('out').textContent=yaml();
 }
+
+function norm(p){ return [ +(p[0]/nat.w).toFixed(5), +(p[1]/nat.h).toFixed(5) ]; }
 
 function yaml(){
   if(!zones.length) return 'Define a zone to generate config.';
   return zones.map(z=>{
     const px='['+z.polygon.map(p=>`[${p[0]}, ${p[1]}]`).join(', ')+']';
-    const nm=z.polygon.map(p=>`[${(p[0]/nat.w).toFixed(4)}, ${(p[1]/nat.h).toFixed(4)}]`).join(', ');
-    return `  - zone_id: ${z.zone_id}\n`+
-           `    zone_name: ${z.zone_name}\n`+
-           `    restricted: ${z.restricted}\n`+
-           `    capacity_max: ${z.capacity_max}\n`+
-           `    area_sqm: ${z.area_sqm}\n`+
-           `    polygon: ${px}\n`+
-           `    # normalized: [${nm}]`;
+    const nm='['+z.polygon.map(p=>`[${norm(p)[0]}, ${norm(p)[1]}]`).join(', ')+']';
+    return `  - zone_id: ${z.zone_id}\n    zone_name: ${z.zone_name}\n    zone_type: ${z.zone_type}\n`+
+           `    restricted: ${z.restricted}\n    capacity_max: ${z.capacity_max}\n    area_sqm: ${z.area_sqm}\n`+
+           `    warning_density: ${z.warning_density}\n    critical_density: ${z.critical_density}\n`+
+           `    loitering_threshold_sec: ${z.loitering_threshold_sec}\n    colour: "${z.colour}"\n`+
+           `    adjacency_list: [${z.adjacency_list.join(', ')}]\n    polygon: ${px}\n    normalized_polygon: ${nm}`;
   }).join('\n');
 }
+
+async function saveServer(){
+  const cam=v('camera').trim(), api=v('api').replace(/\/$/,'');
+  if(!cam){ setStatus('set a Camera ID first'); return; }
+  if(!zones.length){ setStatus('define at least one zone'); return; }
+  const payload={camera_id:cam, zones: zones.map(z=>({
+    zone_id:z.zone_id, zone_name:z.zone_name, zone_type:z.zone_type, restricted:z.restricted,
+    capacity_max:z.capacity_max, area_sqm:z.area_sqm, warning_density:z.warning_density,
+    critical_density:z.critical_density, loitering_threshold_sec:z.loitering_threshold_sec,
+    colour:z.colour, adjacency_list:z.adjacency_list, enabled:true,
+    normalized_polygon: z.polygon.map(norm),
+  }))};
+  try{
+    const r=await fetch(`${api}/api/v1/zones`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const b=await r.json();
+    setStatus(r.ok ? `saved ${b.count} zone(s) to ${cam} — restart the camera to apply` : `save failed: ${(b.errors||[]).join('; ')}`);
+  }catch(e){ setStatus('save failed — is the API running on :8000?'); }
+}
+
+async function loadServer(){
+  const cam=v('camera').trim(), api=v('api').replace(/\/$/,'');
+  try{
+    const {zones:zs}=await fetch(`${api}/api/v1/zones?camera_id=${encodeURIComponent(cam)}`).then(r=>r.json());
+    if(!zs || !zs.length){ setStatus(`no saved zones for ${cam}`); return; }
+    zones = zs.map(z=>({
+      zone_id:z.zone_id, zone_name:z.zone_name, zone_type:z.zone_type, restricted:!!z.restricted,
+      capacity_max:z.capacity_max, area_sqm:z.area_sqm, warning_density:z.warning_density,
+      critical_density:z.critical_density, loitering_threshold_sec:z.loitering_threshold_sec,
+      colour:z.colour||'#4fdce0', adjacency_list:z.adjacency_list||[],
+      polygon:(z.normalized_polygon||[]).map(n=>[Math.round(n[0]*nat.w), Math.round(n[1]*nat.h)]),
+    }));
+    draw(); render(); setStatus(`loaded ${zones.length} zone(s) for ${cam}`);
+  }catch(e){ setStatus('load failed — is the API running on :8000?'); }
+}
+
+// restricted-type auto-updates colour default
+$('ztype').onchange=()=>{ if(v('ztype')==='RESTRICTED') $('colour').value='#e0479e'; };
 </script>
 </html>

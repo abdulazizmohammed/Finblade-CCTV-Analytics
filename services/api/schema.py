@@ -14,6 +14,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from finblade.events import validate_event  # noqa: E402
+from finblade.zones import ZONE_TYPES        # noqa: E402
 
 _NUM = (int, float)
 
@@ -35,6 +36,34 @@ _VALID_STATUS = {"NORMAL", "AMBER", "RED"}
 
 def validate_ingest(payload: dict) -> Tuple[bool, List[str]]:
     return validate_event(payload)
+
+
+def validate_zones(payload: dict) -> Tuple[bool, List[str]]:
+    """Validate an editor 'save zones' payload: {camera_id, zones: [...]}."""
+    errors: List[str] = []
+    if not isinstance(payload, dict):
+        return False, ["payload is not an object"]
+    if not isinstance(payload.get("camera_id"), str) or not payload["camera_id"]:
+        errors.append("camera_id must be a non-empty string")
+    zones = payload.get("zones")
+    if not isinstance(zones, list):
+        return False, errors + ["zones must be a list"]
+    for i, z in enumerate(zones):
+        if not isinstance(z, dict):
+            errors.append(f"zones[{i}] must be an object"); continue
+        if not z.get("zone_id"):
+            errors.append(f"zones[{i}] missing zone_id")
+        zt = str(z.get("zone_type", "MONITORED")).upper()
+        if zt not in ZONE_TYPES:
+            errors.append(f"zones[{i}] zone_type must be one of {sorted(ZONE_TYPES)}")
+        poly = z.get("normalized_polygon") or z.get("polygon")
+        if not isinstance(poly, list) or len(poly) < 3:
+            errors.append(f"zones[{i}] needs a polygon with >= 3 points")
+        for k in ("area_sqm", "capacity_max", "warning_density", "critical_density"):
+            v = z.get(k)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, _NUM) or v < 0):
+                errors.append(f"zones[{i}].{k} must be a non-negative number")
+    return (len(errors) == 0), errors
 
 
 def validate_zone_state(payload: dict) -> Tuple[bool, List[str]]:

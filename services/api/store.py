@@ -30,6 +30,8 @@ class Store:
                             limit: int = 500) -> List[dict]: return []
     def zone_state_stats(self, t0: float, t1: float, camera_id=None,
                          zone_id=None) -> List[dict]: return []
+    def save_zones(self, camera_id: str, zones: List[dict]) -> None: pass
+    def list_zones(self, camera_id: str = None) -> List[dict]: return []
 
 
 class InMemoryStore(Store):
@@ -39,6 +41,7 @@ class InMemoryStore(Store):
         self._alerts: Dict[str, dict] = {}
         self._alert_seq = 0
         self._cameras: Dict[str, dict] = {}
+        self._zones: Dict[str, List[dict]] = {}
 
     def save_event(self, evt: dict) -> None:
         self._events.append(dict(evt))
@@ -126,6 +129,18 @@ class InMemoryStore(Store):
             out.append(a)
         out.sort(key=lambda a: a.get("ts", 0), reverse=True)
         return out[:limit]
+
+    def save_zones(self, camera_id, zones):
+        # Replace the whole zone set for a camera (the editor saves all at once).
+        self._zones[camera_id] = [dict(z, camera_id=camera_id) for z in zones]
+
+    def list_zones(self, camera_id=None):
+        if camera_id is not None:
+            return [dict(z) for z in self._zones.get(camera_id, [])]
+        out = []
+        for zs in self._zones.values():
+            out.extend(dict(z) for z in zs)
+        return out
 
     def zone_state_stats(self, t0, t1, camera_id=None, zone_id=None):
         groups = {}

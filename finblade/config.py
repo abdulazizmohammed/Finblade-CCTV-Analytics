@@ -38,13 +38,15 @@ def load_camera_config(path: str) -> CameraConfig:
 
     # Accept either 'source' (dev/file) or 'rtsp_url' (compose) — no config edit.
     source = cfg.get("source") or cfg.get("rtsp_url")
+    fw = int(cfg.get("frame_width", 1280))
+    fh = int(cfg.get("frame_height", 720))
 
     return CameraConfig(
         camera_id=cfg.get("camera_id", "CAM-A-01"),
         site_id=cfg.get("site_id", "SITE-UNKNOWN"),
         source=source,
-        frame_width=int(cfg.get("frame_width", 1280)),
-        frame_height=int(cfg.get("frame_height", 720)),
+        frame_width=fw,
+        frame_height=fh,
         model_path=cfg.get("model_path", "/models/yolov8n.pt"),
         device=cfg.get("device", "CPU"),
         conf_threshold=float(cfg.get("conf_threshold", 0.35)),
@@ -57,5 +59,5 @@ def load_camera_config(path: str) -> CameraConfig:
         track_ttl_seconds=float(cfg.get("track_ttl_seconds", 5.0)),
         # Mark the camera OFFLINE after this many seconds without a valid frame.
         offline_seconds=float(cfg.get("offline_seconds", 30.0)),
-        zones=[zone_from_dict(z) for z in cfg.get("zones", [])],
+        zones=[zone_from_dict(z, fw, fh) for z in cfg.get("zones", [])],
     )

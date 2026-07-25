@@ -6,7 +6,7 @@ Redis, or Postgres. app.py is a thin HTTP adapter over this class.
 
 from typing import List, Optional, Tuple
 
-from .schema import validate_ingest, validate_zone_state
+from .schema import validate_ingest, validate_zone_state, validate_zones
 from .store import Store
 
 
@@ -50,6 +50,18 @@ class IngestService:
 
     def occupancy_stats(self, t0, t1, **f):
         return self.store.zone_state_stats(t0, t1, **f)
+
+    # -- zones (editor save/load) --
+    def save_zones(self, payload: dict) -> Tuple[int, dict]:
+        ok, errors = validate_zones(payload)
+        if not ok:
+            return 422, {"saved": False, "errors": errors}
+        self.store.save_zones(payload["camera_id"], payload["zones"])
+        return 200, {"saved": True, "camera_id": payload["camera_id"],
+                     "count": len(payload["zones"])}
+
+    def list_zones(self, camera_id=None):
+        return self.store.list_zones(camera_id)
 
     # -- alerts --
     def raise_alert(self, alert: dict) -> str:

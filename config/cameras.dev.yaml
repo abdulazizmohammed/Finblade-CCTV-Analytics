@@ -16,7 +16,7 @@ site_id: SITE-DXB-01
 # Local file source (no RTSP/MediaMTX needed for CPU shake-out).
 # NOTE: points at the file actually present in media/. If you rename it to
 # clip.mp4 (see BLOCKERS.md B-2), update this line too.
-source: media/1903279-uhd_1920_1440_30fps.mp4
+source: media/CAM01_S01_normal_entry_exit.mp4
 frame_width: 1280
 frame_height: 720
 

@@ -293,10 +293,27 @@ def build_contact_sheet(frame_paths, out_path, cols=4):
     cv2.imwrite(out_path, sheet)
 
 
-def run(config_path, max_seconds=None):
+def run(config_path, max_seconds=None, source=None):
     _die_if_missing_deps()
     os.makedirs(FRAMES_DIR, exist_ok=True)
     cfg = load_camera_config(config_path)
+    if source:
+        cfg.source = source                       # --source overrides the YAML clip
+        log.info("source overridden to %s", source)
+
+    # Auto-detect the real frame size from the source so normalized editor zones
+    # scale correctly to ANY clip, regardless of the config's frame_width/height.
+    try:
+        import cv2 as _cv2
+        _cap = _cv2.VideoCapture(cfg.source)
+        _w, _h = int(_cap.get(3)), int(_cap.get(4))
+        _cap.release()
+        if _w > 0 and _h > 0 and (_w, _h) != (cfg.frame_width, cfg.frame_height):
+            log.info("source is %dx%d; overriding config frame size %dx%d",
+                     _w, _h, cfg.frame_width, cfg.frame_height)
+            cfg.frame_width, cfg.frame_height = _w, _h
+    except Exception:
+        pass
 
     device = _resolve_device(cfg.device)
 
@@ -758,6 +775,9 @@ if __name__ == "__main__":
     )
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/cameras.dev.yaml")
+    ap.add_argument("--source", default=None,
+                    help="override the config's video source (file path or RTSP URL), "
+                         "e.g. media/CAM01_S01_normal_entry_exit.mp4")
     ap.add_argument("--seconds", type=float, default=None,
                     help="stop after N seconds of video (evidence run)")
     ap.add_argument("--no-serve", action="store_true")
@@ -777,4 +797,4 @@ if __name__ == "__main__":
     if not args.no_serve:
         _STREAM["url"] = f"http://{args.stream_host}:{args.port}/stream"
         threading.Thread(target=lambda: _serve(args.port), daemon=True).start()
-    run(args.config, max_seconds=args.seconds)
+    run(args.config, max_seconds=args.seconds, source=args.source)

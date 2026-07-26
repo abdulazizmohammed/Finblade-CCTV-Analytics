@@ -546,6 +546,9 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                             RESTRICTED_ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
                             zone_id=old, person_ref=pr,
                             duration=round(vnow - restricted_since.pop(tid, vnow), 2)))
+                        # a "visit" ended -> re-entry (incl. across a looping clip)
+                        # must re-alert R-06, so clear the one-per-visit latch here.
+                        eng.clear_intrusion(pr, old)
                     # loitering ended: left a zone they were loitering in
                     if old and (pr, old) in loiter_started and confirmed != old:
                         pending_events.append(new_event(

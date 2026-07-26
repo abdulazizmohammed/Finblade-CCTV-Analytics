@@ -42,6 +42,21 @@ else:
 
 svc = IngestService(store, bus)
 
+# Manages detection pipelines for UI-provisioned cameras (Add camera + a source).
+from .camera_manager import CameraManager                       # noqa: E402
+_SELF_URL = os.environ.get("FINBLADE_SELF_URL", "http://127.0.0.1:8000")
+cam_mgr = CameraManager(api_url=_SELF_URL)
+
+
+def _valid_source(src: str) -> bool:
+    if not isinstance(src, str) or not src.strip():
+        return False
+    s = src.strip()
+    if s.startswith(("rtsp://", "http://", "https://")):
+        return True
+    return os.path.exists(os.path.join(os.path.dirname(__file__), "..", "..", s))
+
+
 # --- server-side camera-offline monitor (R-07) -----------------------------
 OFFLINE_S = 30.0
 _cam_offline: dict = {}
@@ -104,6 +119,7 @@ async def lifespan(app):
     yield
     for t in tasks:
         t.cancel()
+    cam_mgr.stop_all()                            # stop any UI-launched pipelines
 
 
 app = FastAPI(title="FinBlade CCTV API", version="1.0", lifespan=lifespan)
@@ -260,15 +276,56 @@ async def camera_health(request: Request):
 
 @app.post("/api/v1/cameras")
 async def create_camera(request: Request):
-    """Register or update a camera (name / site / stream URL / enabled)."""
-    code, body = svc.upsert_camera(await request.json())
+    """Register a camera. If a `source` (RTSP URL or file) is given, ALSO launch a
+    detection pipeline for it — the camera comes online with a live stream, no CLI."""
+    payload = await request.json()
+    code, body = svc.upsert_camera(payload)
+    if code != 200:
+        return JSONResponse(status_code=code, content=body)
+    source = (payload.get("source") or "").strip()
+    if source:
+        if not _valid_source(source):
+            body["pipeline"] = "not started: source must be rtsp://, http(s)://, or an existing file"
+        else:
+            host = (request.headers.get("host") or "localhost").split(":")[0]
+            try:
+                info = cam_mgr.launch(payload["camera_id"], source,
+                                      site_id=payload.get("site_id"), stream_host=host)
+                # reflect the live stream URL immediately (the runner also posts it)
+                svc.upsert_camera({"camera_id": payload["camera_id"],
+                                   "stream_url": info["stream_url"]})
+                body["pipeline"] = {"started": True, **info}
+            except Exception as e:
+                body["pipeline"] = f"failed to start: {e}"
     return JSONResponse(status_code=code, content=body)
 
 
 @app.delete("/api/v1/cameras/{camera_id}")
 async def delete_camera(camera_id: str):
+    cam_mgr.stop(camera_id)                       # stop its pipeline if we launched one
     code, body = svc.delete_camera(camera_id)
     return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/cameras/{camera_id}/start")
+async def start_camera(camera_id: str, request: Request):
+    """(Re)start the pipeline for a camera using its stored source."""
+    cam = next((c for c in svc.cameras() if c.get("camera_id") == camera_id), None)
+    if not cam:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "unknown camera"})
+    source = (cam.get("source") or "").strip()
+    if not _valid_source(source):
+        return JSONResponse(status_code=422,
+                            content={"ok": False, "error": "camera has no valid source"})
+    host = (request.headers.get("host") or "localhost").split(":")[0]
+    info = cam_mgr.launch(camera_id, source, site_id=cam.get("site_id"), stream_host=host)
+    svc.upsert_camera({"camera_id": camera_id, "stream_url": info["stream_url"]})
+    return {"ok": True, "camera_id": camera_id, **info}
+
+
+@app.post("/api/v1/cameras/{camera_id}/stop")
+async def stop_camera(camera_id: str):
+    return {"ok": True, "camera_id": camera_id, "stopped": cam_mgr.stop(camera_id)}
 
 
 @app.post("/api/v1/cameras/{camera_id}/simulate-failure")

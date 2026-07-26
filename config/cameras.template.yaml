@@ -1,0 +1,20 @@
+# Template config for cameras PROVISIONED FROM THE UI (Add camera form).
+# camera_id / site_id / source are overridden per camera via run_cpu CLI flags;
+# these are just placeholders. Frame size is auto-detected from the source.
+# Zones are defined per-camera in the zone editor (none seeded here).
+
+camera_id: UI-CAM
+site_id: SITE-UI
+
+source: ""              # overridden with --source (the RTSP URL / file)
+frame_width: 1280
+frame_height: 720
+
+model_path: models/yolov8n.pt
+device: cuda            # NVIDIA GPU; falls back to CPU if unavailable
+conf_threshold: 0.35
+person_class_id: 0
+process_fps: 15
+imgsz: 1280
+
+zones: []

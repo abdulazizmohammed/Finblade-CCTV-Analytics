@@ -79,10 +79,10 @@ body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),tr
         <div class="field"><label for="f_id">Camera ID</label><input id="f_id" placeholder="CAM-A-01"></div>
         <div class="field"><label for="f_name">Name</label><input id="f_name" placeholder="Main concourse"></div>
         <div class="field"><label for="f_site">Site</label><input id="f_site" placeholder="SITE-01"></div>
-        <div class="field"><label for="f_url">Stream URL</label><input id="f_url" placeholder="http://host:8080/stream"></div>
-        <button class="fb-btn fb-btn--primary" id="saveCam">Save camera</button>
+        <div class="field" style="min-width:280px;flex:1"><label for="f_source">Source (RTSP URL or file)</label><input id="f_source" placeholder="rtsp://127.0.0.1:8554/cam01"></div>
+        <button class="fb-btn fb-btn--primary" id="saveCam">Add camera</button>
       </div>
-      <p class="note" id="regNote"></p>
+      <p class="note" id="regNote">Enter an RTSP URL (or a file path) as the Source — the camera's detection pipeline starts automatically and it goes live. Leave Source blank to just register metadata.</p>
     </div>
   </div>
 
@@ -118,6 +118,8 @@ function card(c){
       <div class="m"><span class="v ${(drop||rec)?'bad':''}">${drop} / ${rec}</span><span class="k">Dropped / reconn</span></div>
     </div>
     <div class="actions">
+      ${c.source ? `<button class="fb-btn" data-act="start" data-id="${c.camera_id}">Start pipeline</button>
+                    <button class="fb-btn" data-act="stop" data-id="${c.camera_id}">Stop pipeline</button>` : ''}
       ${c.sim_failure
         ? `<button class="fb-btn" data-act="restore" data-id="${c.camera_id}">Restore</button>`
         : `<button class="fb-btn" data-act="sim" data-id="${c.camera_id}">Simulate failure</button>`}
@@ -152,18 +154,28 @@ document.addEventListener('click',e=>{
   const id=b.dataset.id;
   if(b.dataset.act==='sim') post(`/api/v1/cameras/${encodeURIComponent(id)}/simulate-failure`);
   else if(b.dataset.act==='restore') post(`/api/v1/cameras/${encodeURIComponent(id)}/restore`);
+  else if(b.dataset.act==='start') post(`/api/v1/cameras/${encodeURIComponent(id)}/start`);
+  else if(b.dataset.act==='stop') post(`/api/v1/cameras/${encodeURIComponent(id)}/stop`);
   else if(b.dataset.act==='del') del(id);
 });
 
 $('saveCam').addEventListener('click',async()=>{
   const id=$('f_id').value.trim();
   if(!id){ $('regNote').textContent='Camera ID is required.'; return; }
+  const source=$('f_source').value.trim();
   const body={camera_id:id,name:$('f_name').value.trim()||null,
-    site_id:$('f_site').value.trim()||null,stream_url:$('f_url').value.trim()||null};
+    site_id:$('f_site').value.trim()||null,source:source||null};
+  $('regNote').textContent=source?`Adding ${id} and starting its pipeline…`:`Registering ${id}…`;
   try{
     const r=await fetch(`${API}/api/v1/cameras`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    $('regNote').textContent=r.ok?`Saved ${id}.`:'Save failed.';
-    if(r.ok){ ['f_id','f_name','f_site','f_url'].forEach(i=>$(i).value=''); load(); }
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ $('regNote').textContent='Save failed: '+(j.errors||j.error||'').toString(); return; }
+    const p=j.pipeline;
+    if(p&&p.started) $('regNote').textContent=`Added ${id} — pipeline started on port ${p.port}. It will come online shortly.`;
+    else if(typeof p==='string') $('regNote').textContent=`Saved ${id}, but ${p}`;
+    else $('regNote').textContent=`Registered ${id} (metadata only — no source given).`;
+    ['f_id','f_name','f_site','f_source'].forEach(i=>$(i).value='');
+    load();
   }catch(e){ $('regNote').textContent='Save failed — API offline?'; }
 });
 

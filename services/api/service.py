@@ -76,6 +76,7 @@ class IngestService:
         self.store.upsert_camera(cid, site_id=payload.get("site_id"),
                                  name=payload.get("name"),
                                  stream_url=payload.get("stream_url"),
+                                 source=payload.get("source"),
                                  enabled=(None if payload.get("enabled") is None
                                           else (1 if payload.get("enabled") else 0)))
         return 200, {"ok": True, "camera_id": cid}

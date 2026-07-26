@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS cameras(
   camera_id TEXT PRIMARY KEY, site_id TEXT, last_seen REAL,
   name TEXT, state TEXT, input_fps REAL, resolution TEXT, dropped_frames INTEGER,
   reconnects INTEGER, loops INTEGER, frozen INTEGER, enabled INTEGER,
-  stream_url TEXT, health_ts REAL, sim_failure INTEGER DEFAULT 0);
+  stream_url TEXT, health_ts REAL, sim_failure INTEGER DEFAULT 0, source TEXT);
 
 CREATE TABLE IF NOT EXISTS reports(
   report_id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, generated_at REAL,
@@ -77,7 +77,7 @@ class SQLiteStore(Store):
             "name": "TEXT", "state": "TEXT", "input_fps": "REAL", "resolution": "TEXT",
             "dropped_frames": "INTEGER", "reconnects": "INTEGER", "loops": "INTEGER",
             "frozen": "INTEGER", "enabled": "INTEGER", "stream_url": "TEXT",
-            "health_ts": "REAL", "sim_failure": "INTEGER DEFAULT 0",
+            "health_ts": "REAL", "sim_failure": "INTEGER DEFAULT 0", "source": "TEXT",
         }
         for col, typ in cam_add.items():
             if col not in cam:
@@ -203,7 +203,7 @@ class SQLiteStore(Store):
     def upsert_camera(self, camera_id: str, **fields) -> None:
         if not camera_id:
             return
-        cols = [k for k in ("site_id", "name", "stream_url", "enabled")
+        cols = [k for k in ("site_id", "name", "stream_url", "enabled", "source")
                 if fields.get(k) is not None]
         with self._lock:
             self._conn.execute(
@@ -317,7 +317,7 @@ class SQLiteStore(Store):
             rows = _row(self._conn.execute(
                 "SELECT camera_id,site_id,last_seen,name,state,input_fps,resolution,"
                 "dropped_frames,reconnects,loops,frozen,enabled,stream_url,health_ts,"
-                "sim_failure FROM cameras ORDER BY camera_id"))
+                "sim_failure,source FROM cameras ORDER BY camera_id"))
         for r in rows:                       # store booleans as bools, not 0/1
             for k in ("frozen", "enabled", "sim_failure"):
                 if r.get(k) is not None:

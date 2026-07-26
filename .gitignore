@@ -24,6 +24,10 @@ data/
 # Local tooling / logs (bootstrap + install helpers)
 scripts/get-pip.py
 scripts/*.log
+# downloaded mediamtx RTSP server binary (scripts/rtsp_setup.sh) + its auto TLS certs
+scripts/bin/
+auto.crt
+auto.key
 
 # Model weights — fetched via scripts/get_weights.py, not committed
 models/*.pt

@@ -305,6 +305,9 @@ def run(config_path, max_seconds=None, source=None):
     if source:
         cfg.source = source                       # --source overrides the YAML clip
         log.info("source overridden to %s", source)
+    if str(cfg.source).startswith("rtsp"):
+        # RTSP over TCP is far more reliable than the UDP default on LAN/loopback.
+        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 
     # Auto-detect the real frame size from the source so normalized editor zones
     # scale correctly to ANY clip, regardless of the config's frame_width/height.

@@ -1,0 +1,11 @@
+# Minimal MediaMTX config for local RTSP camera-simulation testing.
+# Serves RTSP on :8554 and accepts publishing/reading on any path (cam01, cam02, …).
+rtspAddress: :8554
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+logLevel: info
+
+paths:
+  all_others:

@@ -99,13 +99,16 @@ def _post_json(path, payload):
 
 
 def _fetch_zones_raw(camera_id):
-    """Fetch this camera's editor-saved zones (raw dicts), or None."""
+    """Fetch this camera's editor-saved zones (raw dicts).
+
+    Returns a list (possibly EMPTY, meaning 'editor has no zones -> use config'),
+    or None when the API is unreachable (meaning 'keep whatever we have')."""
     if requests is None or not _API["base"]:
         return None
     try:
         r = requests.get(_API["base"] + "/api/v1/zones",
                          params={"camera_id": camera_id}, timeout=1.0)
-        return r.json().get("zones", []) or None
+        return r.json().get("zones", [])
     except Exception:
         return None
 
@@ -317,8 +320,10 @@ def run(config_path, max_seconds=None, source=None):
 
     device = _resolve_device(cfg.device)
 
-    # Prefer editor-saved zones from the API (source of truth); YAML is the seed.
-    # zone_sig lets the run loop hot-reload zones when they change in the editor.
+    # Prefer editor-saved zones from the API (source of truth); YAML is the seed
+    # we revert to if the editor's zone set is cleared. zone_sig lets the run loop
+    # hot-reload zones (including a revert-to-config) when they change in the editor.
+    config_zones = list(cfg.zones)
     _raw_zones = _fetch_zones_raw(cfg.camera_id)
     zone_sig = None
     if _raw_zones:
@@ -326,6 +331,8 @@ def run(config_path, max_seconds=None, source=None):
         zone_sig = _zone_sig(_raw_zones)
         log.info("loaded %d zone(s) from API for %s", len(cfg.zones), cfg.camera_id)
     else:
+        if _raw_zones is not None:        # API up but no editor zones -> config seed
+            zone_sig = _zone_sig([])
         log.info("using %d zone(s) from config for %s", len(cfg.zones), cfg.camera_id)
 
     if not os.path.exists(cfg.model_path):
@@ -442,18 +449,21 @@ def run(config_path, max_seconds=None, source=None):
                 worker.restore()
 
         # Hot-reload zones when they change in the editor (no restart needed).
+        # raw is None only if the API is unreachable -> keep current. An empty list
+        # means the editor's zones were cleared -> revert live to the config seed.
         if now - last_zone_check >= 4.0:
             last_zone_check = now
             raw = _fetch_zones_raw(cfg.camera_id)
-            if raw:
+            if raw is not None:
                 sig = _zone_sig(raw)
                 if sig != zone_sig:
-                    cfg.zones = _zones_from_raw(raw, cfg.frame_width, cfg.frame_height)
+                    cfg.zones = (_zones_from_raw(raw, cfg.frame_width, cfg.frame_height)
+                                 if raw else list(config_zones))
                     restricted_zone_ids = {z.zone_id for z in cfg.zones if z.restricted}
                     loiter_zone = {z.zone_id: z.loitering_threshold_sec for z in cfg.zones}
                     zone_sig = sig
-                    log.info("hot-reloaded %d zone(s) from editor for %s",
-                             len(cfg.zones), cfg.camera_id)
+                    log.info("hot-reloaded %d zone(s) for %s (%s)", len(cfg.zones),
+                             cfg.camera_id, "editor" if raw else "reverted to config")
 
         # Pull the latest frame from the capture thread (non-blocking).
         frame, fts, seq = worker.read_latest()

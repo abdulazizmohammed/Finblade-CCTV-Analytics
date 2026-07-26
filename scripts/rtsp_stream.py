@@ -27,11 +27,12 @@ def serve(src: str, url: str) -> None:
 
 
 def _serve_once(src: str, url: str) -> None:
+    # One publish session = play the clip fully, then return so serve() reopens a
+    # fresh session for the next loop (a clean reconnect avoids the non-monotonic
+    # timestamp errors that come from re-muxing after a mid-stream seek).
     inp = av.open(src)
     ivs = inp.streams.video[0]
-    # publish to the RTSP server over TCP (reliable on loopback/LAN)
-    out = av.open(url, mode="w", format="rtsp",
-                  options={"rtsp_transport": "tcp"})
+    out = av.open(url, mode="w", format="rtsp", options={"rtsp_transport": "tcp"})
     try:
         ovs = out.add_stream_from_template(ivs)      # PyAV >= 10: copy codec params
     except AttributeError:                           # older PyAV fallback
@@ -40,25 +41,20 @@ def _serve_once(src: str, url: str) -> None:
         ovs.pix_fmt = ivs.pix_fmt
     print(f"[rtsp] publishing {src} -> {url}", flush=True)
     tb = float(ivs.time_base)
-    loops = 0
     try:
-        while True:                               # loop the clip
-            base = time.time()
-            first = None
-            for packet in inp.demux(ivs):
-                if packet.dts is None:            # skip flush packets
-                    continue
-                if first is None:
-                    first = packet.pts
-                # real-time pacing so the consumer sees ~source fps
-                target = (packet.pts - first) * tb
-                delay = target - (time.time() - base)
-                if delay > 0:
-                    time.sleep(delay)
-                packet.stream = ovs
-                out.mux(packet)
-            loops += 1
-            inp.seek(0)                           # rewind and loop
+        base = time.time()
+        first = None
+        for packet in inp.demux(ivs):
+            if packet.dts is None:                   # skip flush packets
+                continue
+            if first is None:
+                first = packet.pts
+            # real-time pacing so the consumer sees ~source fps
+            delay = (packet.pts - first) * tb - (time.time() - base)
+            if delay > 0:
+                time.sleep(delay)
+            packet.stream = ovs
+            out.mux(packet)
     finally:
         try:
             out.close()

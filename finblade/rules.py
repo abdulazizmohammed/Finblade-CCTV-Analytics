@@ -257,6 +257,20 @@ class RuleEngine:
         self._loiter_fired = {k for k in self._loiter_fired if k[0] != person_ref}
         self._intrusion_active = {k for k in self._intrusion_active if k[0] != person_ref}
 
+    def reset_scene(self) -> None:
+        """Drop ALL latches — density hysteresis, capacity, loiter and intrusion.
+
+        Called when stream continuity is lost (a reconnect, or a looping test clip
+        restarting): the tracks that follow are effectively a fresh scene, so any
+        still-true condition should re-alert instead of being suppressed by a latch
+        armed before the gap.
+        """
+        self._amber.clear()
+        self._red.clear()
+        self._cap.clear()
+        self._loiter_fired.clear()
+        self._intrusion_active.clear()
+
 
 # --- R-08 occupancy report --------------------------------------------------
 class ReportScheduler:

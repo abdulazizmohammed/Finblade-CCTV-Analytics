@@ -431,6 +431,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             elif state == CameraState.ONLINE:
                 cev = new_event(CAMERA_ONLINE if not ever_online else CAMERA_RECOVERED,
                                 cfg.camera_id, cfg.site_id, now)
+                if ever_online:
+                    # reconnect (incl. a looping test clip restarting): fresh scene,
+                    # so drop all rule latches + per-track state -> alerts re-fire.
+                    eng.reset_scene()
+                    loiter_started.clear(); restricted_since.clear(); prev_zone.clear()
                 ever_online = True
             if cev is not None:
                 events_fp.write(json.dumps(cev) + "\n")

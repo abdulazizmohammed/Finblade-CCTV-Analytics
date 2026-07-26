@@ -160,6 +160,21 @@ class TestIntrusion(unittest.TestCase):
             eng.evaluate_intrusion("pr_a", "ZONE-02", restricted=True, now=10.0))
 
 
+class TestResetScene(unittest.TestCase):
+    def test_reset_scene_re_fires_all(self):
+        eng = RuleEngine(RuleThresholds(loiter_seconds=30.0))
+        # arm intrusion + loiter latches
+        self.assertIsNotNone(eng.evaluate_intrusion("p", "Z", restricted=True, now=0.0))
+        self.assertIsNotNone(eng.evaluate_loiter("p", "Z", dwell_s=31.0, now=31.0))
+        # both are latched now
+        self.assertIsNone(eng.evaluate_intrusion("p", "Z", restricted=True, now=1.0))
+        self.assertIsNone(eng.evaluate_loiter("p", "Z", dwell_s=40.0, now=40.0))
+        # a reconnect / loop resets the scene -> still-true conditions re-alert
+        eng.reset_scene()
+        self.assertIsNotNone(eng.evaluate_intrusion("p", "Z", restricted=True, now=50.0))
+        self.assertIsNotNone(eng.evaluate_loiter("p", "Z", dwell_s=41.0, now=51.0))
+
+
 class TestDropPerson(unittest.TestCase):
     def test_clears_state_and_bounds_memory(self):
         eng = RuleEngine(RuleThresholds(loiter_seconds=30.0))

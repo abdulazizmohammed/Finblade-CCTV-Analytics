@@ -107,8 +107,9 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
 
 <aside id="side">
   <p class="eyebrow">Camera</p>
-  <label class="lbl" for="camera">Camera ID (zones save under this)</label>
-  <input type="text" id="camera" value="CAM-SYN-01">
+  <label class="lbl" for="camera">Camera (zones save under this — pick or type an ID)</label>
+  <input type="text" id="camera" list="camlist" value="CAM-SYN-01" autocomplete="off">
+  <datalist id="camlist"></datalist>
   <label class="lbl" for="api">API base</label>
   <input type="text" id="api" value="">
 
@@ -406,12 +407,28 @@ $('ztype').onchange=()=>{ if(v('ztype')==='RESTRICTED') $('colour').value='#e047
 // Reload the zone set + reference frame whenever the camera changes.
 $('camera').addEventListener('change', ()=>{ loadServer(); tryLoadFrame(); });
 
-// On open: size the placeholder canvas, auto-load this camera's saved zones AND
-// its reference frame from the server, so editing shows the real frame with zones
-// on it immediately (no manual file picker needed).
+// Populate the camera picker from the server and default to one that HAS zones,
+// so opening the editor shows existing zones (not a stale hard-coded default).
+async function initCameras(){
+  const api=v('api').replace(/\/$/,'');
+  try{
+    const zs=(await fetch(`${api}/api/v1/zones`).then(r=>r.json())).zones||[];
+    const byCam={}; zs.forEach(z=>{ if(z.camera_id) byCam[z.camera_id]=(byCam[z.camera_id]||0)+1; });
+    const withZones=Object.keys(byCam).sort((a,b)=>byCam[b]-byCam[a]);  // most zones first
+    let regd=[];
+    try{ regd=((await fetch(`${api}/api/v1/cameras`).then(r=>r.json())).cameras||[]).map(c=>c.camera_id); }catch(e){}
+    const all=[...new Set([...withZones, ...regd])];
+    $('camlist').innerHTML=all.map(c=>`<option value="${c}">${byCam[c]?byCam[c]+' zone(s)':'no zones yet'}</option>`).join('');
+    const pick = withZones[0] || regd[0];        // prefer a camera that has zones
+    if(pick) $('camera').value=pick;
+  }catch(e){}
+  loadServer();
+  tryLoadFrame();
+}
+
+// On open: size the placeholder canvas, then load the picked camera's zones + frame.
 sizeCanvas();
 draw();
-loadServer();
-tryLoadFrame();
+initCameras();
 </script>
 </html>

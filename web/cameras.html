@@ -112,7 +112,7 @@ function card(c){
     </div>
     <div class="cname">${c.name?c.name+' · ':''}${c.site_id||'—'}${c.sim_failure?' · <span style="color:var(--fb-warning)">SIMULATED</span>':''}</div>
     <div class="metrics">
-      <div class="m"><span class="v">${(c.input_fps??0).toFixed?c.input_fps.toFixed(1):(c.input_fps||'—')}</span><span class="k">Input FPS</span></div>
+      <div class="m"><span class="v">${typeof c.input_fps==='number'?c.input_fps.toFixed(1):'—'}</span><span class="k">Input FPS</span></div>
       <div class="m"><span class="v">${c.resolution||'—'}</span><span class="k">Resolution</span></div>
       <div class="m"><span class="v">${fmtAge(c.seconds_since_seen)}</span><span class="k">Last seen</span></div>
       <div class="m"><span class="v ${(drop||rec)?'bad':''}">${drop} / ${rec}</span><span class="k">Dropped / reconn</span></div>
@@ -144,7 +144,7 @@ async function load(){
   summary(cams);
   const g=$('grid'); g.innerHTML='';
   if(!cams.length){ g.innerHTML='<div class="empty">No cameras registered yet. Start a runner with --api-url, or register one below.</div>'; return; }
-  cams.forEach(c=>g.appendChild(card(c)));
+  cams.forEach(c=>{ try{ g.appendChild(card(c)); }catch(e){ console.error('camera card failed',c,e); } });
 }
 
 document.addEventListener('click',e=>{

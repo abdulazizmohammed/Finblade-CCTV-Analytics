@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -60,12 +61,13 @@ class TestZoneState(unittest.TestCase):
 
     def test_latest_state_and_range(self):
         svc = _svc()
-        svc.record_zone_state(self._state(ts=100.0, occupancy=3))
-        svc.record_zone_state(self._state(ts=105.0, occupancy=5))
-        latest = svc.zone_states()
+        t = time.time()
+        svc.record_zone_state(self._state(ts=t - 5, occupancy=3))
+        svc.record_zone_state(self._state(ts=t, occupancy=5))
+        latest = svc.zone_states()          # live view is freshness-filtered
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0]["occupancy"], 5)
-        rng = svc.zone_state_range("Z1", 99.0, 101.0)
+        rng = svc.zone_state_range("Z1", t - 6, t - 4)   # range query is NOT filtered
         self.assertEqual(len(rng), 1)
         self.assertEqual(rng[0]["occupancy"], 3)
 
@@ -273,18 +275,27 @@ class TestZoneFreshness(unittest.TestCase):
 
     def test_stale_zone_dropped_from_live(self):
         svc = _svc()
-        svc.record_zone_state({**self._BASE, "zone_id": "FRESH", "ts": 1000.0})
-        svc.record_zone_state({**self._BASE, "zone_id": "STALE", "ts": 900.0})  # 100s older
+        t = time.time()
+        svc.record_zone_state({**self._BASE, "zone_id": "FRESH", "ts": t})
+        svc.record_zone_state({**self._BASE, "zone_id": "STALE", "ts": t - 100})
         ids = {z["zone_id"] for z in svc.zone_states()}
         self.assertIn("FRESH", ids)
         self.assertNotIn("STALE", ids)   # removed/renamed zone drops off the dashboard
 
     def test_recent_zones_both_kept(self):
         svc = _svc()
-        svc.record_zone_state({**self._BASE, "zone_id": "A", "ts": 1000.0})
-        svc.record_zone_state({**self._BASE, "zone_id": "B", "ts": 990.0})  # within window
+        t = time.time()
+        svc.record_zone_state({**self._BASE, "zone_id": "A", "ts": t})
+        svc.record_zone_state({**self._BASE, "zone_id": "B", "ts": t - 5})  # within window
         ids = {z["zone_id"] for z in svc.zone_states()}
         self.assertEqual(ids, {"A", "B"})
+
+    def test_last_zone_ages_out(self):
+        # The exact bug: when NO newer zone is being posted, the last remaining
+        # stale zone must still drop (wall-clock freshness, not newest-relative).
+        svc = _svc()
+        svc.record_zone_state({**self._BASE, "zone_id": "ONLY", "ts": time.time() - 100})
+        self.assertEqual(svc.zone_states(), [])
 
 
 class TestReport(unittest.TestCase):

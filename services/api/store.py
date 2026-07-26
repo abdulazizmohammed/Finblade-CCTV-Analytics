@@ -9,20 +9,21 @@ The API talks only to the Store interface, so the ingest/ack logic is fully
 tested against InMemoryStore without a database.
 """
 
+import time
 from typing import Dict, List, Optional
 
-# Live dashboard freshness: a zone whose newest sample lags the overall newest by
-# more than this was removed/renamed in the editor (or its camera stopped), so it
-# is dropped from latest_zone_states. Referenced off the newest sample rather than
-# wall-clock so it stays stable in tests and offline replays.
+# Live dashboard freshness: a zone not reported within this many seconds (wall
+# clock) was removed/renamed in the editor, or its camera stopped, so it is
+# dropped from latest_zone_states. Wall-clock (not newest-sample-relative) so the
+# last remaining zone still ages out when nothing new is being posted.
 ZONE_STALE_SECONDS = 30.0
 
 
-def _fresh_zones(rows: List[dict]) -> List[dict]:
+def _fresh_zones(rows: List[dict], now: Optional[float] = None) -> List[dict]:
     if not rows:
         return rows
-    newest = max(r.get("ts", 0) for r in rows)
-    return [r for r in rows if r.get("ts", 0) >= newest - ZONE_STALE_SECONDS]
+    cutoff = (time.time() if now is None else now) - ZONE_STALE_SECONDS
+    return [r for r in rows if r.get("ts", 0) >= cutoff]
 
 
 class Store:

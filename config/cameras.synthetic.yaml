@@ -24,16 +24,7 @@ person_class_id: 0
 process_fps: 20     # GPU sustains ~24 FPS @ imgsz 1280; caps near source rate.
 imgsz: 1280         # (CPU fallback self-limits to whatever it manages.)
 
-zones:
-  # Left/centre walkway where the group moves (and the lone man bottom-left).
-  - zone_id: ZONE-LOBBY
-    zone_name: Concourse
-    restricted: false
-    capacity_max: 20
-    area_sqm: 5.0          # small on purpose -> ~12 people => density amber/red
-    polygon: [[40, 240], [268, 210], [285, 398], [215, 600], [40, 560]]
-
-  # NOTE: the old taped-off "Restricted Area" wedge was fitted to the previous
-  # demo clip and mis-fires on other footage, so it's removed here. Draw restricted
-  # (or any) zones for the clip you're running in tools/zone-editor.html — editor
-  # zones are saved per-camera and override this YAML (and hot-reload live).
+# No seed zones — zones are defined MANUALLY per clip in tools/zone-editor.html.
+# Editor zones are saved per-camera and hot-reload into the running camera live.
+# (Leaving this empty means the stream shows NO zone overlay until you draw one.)
+zones: []

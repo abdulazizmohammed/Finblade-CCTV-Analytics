@@ -105,7 +105,8 @@ class SQLiteStore(Store):
     def save_zone_state(self, s: dict) -> None:
         with self._lock:
             extra = {k: s[k] for k in ("net_flow", "inflow_5m", "outflow_5m",
-                                       "inflow_15m", "outflow_15m") if k in s}
+                                       "inflow_15m", "outflow_15m",
+                                       "capacity_max", "area_sqm") if k in s}
             self._conn.execute(
                 "INSERT INTO zone_state_ts(zone_id,camera_id,zone_name,zone_type,restricted,ts,"
                 "occupancy,density,capacity_pct,peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status) "

@@ -276,7 +276,8 @@ function renderZones(zones){
     const pill=intrusion?'restricted':(SEVCLASS[st]||'normal');
     const pillTxt=intrusion?'Intrusion':st;
     const cap=Math.min(100,+z.capacity_pct||0);
-    const capMax=(z.capacity_pct>0)?Math.round(100*(+z.occupancy||0)/(+z.capacity_pct)):'—';
+    const capMax=(z.capacity_max!=null)?z.capacity_max
+                 :((z.capacity_pct>0)?Math.round(100*(+z.occupancy||0)/(+z.capacity_pct)):'—');
     const trend=TREND[String(z.trend||'flat')]||'▬';
     const peak=(z.peak_occupancy!=null)?`peak ${z.peak_occupancy}`:'';
     return `<div class="zcard fb-bracket"${dataStatus?` data-status="${dataStatus}"`:''}>

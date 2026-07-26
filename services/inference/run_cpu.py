@@ -126,9 +126,11 @@ def _zones_from_raw(data, frame_width, frame_height):
 
 
 def _zone_sig(data):
-    """Change signature so a live edit is detected without rebuilding every tick."""
+    """Change signature so a live edit is detected without rebuilding every tick.
+    Includes every editable field (capacity/area too) so any edit hot-reloads."""
     return json.dumps([[z.get("zone_id"), z.get("zone_type"), z.get("restricted"),
                         z.get("normalized_polygon") or z.get("polygon"),
+                        z.get("capacity_max"), z.get("area_sqm"),
                         z.get("warning_density"), z.get("critical_density"),
                         z.get("loitering_threshold_sec"), z.get("enabled")]
                        for z in data], sort_keys=True)
@@ -617,6 +619,7 @@ def run(config_path, max_seconds=None, source=None):
                     "zone_name": z.zone_name, "restricted": z.restricted,
                     "zone_type": z.zone_type,
                     "occupancy": occ, "density": dens, "capacity_pct": cap_pct,
+                    "capacity_max": z.capacity_max, "area_sqm": z.area_sqm,
                     "peak_occupancy": zstats.peak(z.zone_id),
                     "avg_occupancy": round(zstats.average(z.zone_id), 1),
                     "trend": zstats.trend(z.zone_id, vnow),

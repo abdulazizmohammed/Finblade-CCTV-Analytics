@@ -282,7 +282,13 @@ function render(){
         `<div class="meta">${z.zone_name} · ${z.polygon.length} pts · cap ${z.capacity_max} · ${z.area_sqm} m² · warn ${z.warning_density}/crit ${z.critical_density} · loiter ${z.loitering_threshold_sec}s</div>`;
       box.appendChild(d);
     });
-    box.querySelectorAll('.rm').forEach(b=> b.onclick=()=>{zones.splice(+b.dataset.i,1); draw(); render();});
+    box.querySelectorAll('.rm').forEach(b=> b.onclick=async()=>{
+      const i=+b.dataset.i, zid=(zones[i]||{}).zone_id||'zone';
+      zones.splice(i,1); draw(); render();          // remove locally...
+      const ok=await persistZones();                // ...and persist so it can't reappear
+      setStatus(ok ? `deleted ${zid} — saved (applies live)`
+                   : `deleted ${zid} locally but SAVE FAILED — is the API on :8000?`);
+    });
     box.querySelectorAll('.edit').forEach(b=> b.onclick=()=>editZone(+b.dataset.i));
   }
   $('out').textContent=yaml();
@@ -318,25 +324,38 @@ function yaml(){
   }).join('\n');
 }
 
-async function saveServer(){
-  if(pts.length>=3) closeZone();   // commit an un-closed polygon so Save "just works"
-  const cam=v('camera').trim(), api=v('api').replace(/\/$/,'');
-  if(!cam){ setStatus('set a Camera ID first'); return; }
-  if(pts.length>0 && pts.length<3){ setStatus('finish the current zone (need ≥3 points) or clear it, then Save'); return; }
-  if(!zones.length){ setStatus('draw a zone first: left-click corners, right-click to close, then Save'); return; }
-  setStatus(`saving ${zones.length} zone(s) to ${cam}…`);
-  const payload={camera_id:cam, zones: zones.map(z=>({
+function zonesPayload(cam){
+  return {camera_id:cam, zones: zones.map(z=>({
     zone_id:z.zone_id, zone_name:z.zone_name, zone_type:z.zone_type, restricted:z.restricted,
     capacity_max:z.capacity_max, area_sqm:z.area_sqm, warning_density:z.warning_density,
     critical_density:z.critical_density, loitering_threshold_sec:z.loitering_threshold_sec,
     colour:z.colour, adjacency_list:z.adjacency_list, enabled:true,
     normalized_polygon: (z.norm && z.norm.length) ? z.norm : z.polygon.map(norm),
   }))};
+}
+
+// Persist the current zone set (replace-all) to the server. Returns ok boolean.
+// Used by both Save and Delete so a deletion actually sticks server-side.
+async function persistZones(){
+  const cam=v('camera').trim(), api=v('api').replace(/\/$/,'');
+  if(!cam) return false;
   try{
-    const r=await fetch(`${api}/api/v1/zones`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    const b=await r.json();
-    setStatus(r.ok ? `saved ${b.count} zone(s) to ${cam} — restart the camera to apply` : `save failed: ${(b.errors||[]).join('; ')}`);
-  }catch(e){ setStatus('save failed — is the API running on :8000?'); }
+    const r=await fetch(`${api}/api/v1/zones`, {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(zonesPayload(cam))});
+    return r.ok;
+  }catch(e){ return false; }
+}
+
+async function saveServer(){
+  if(pts.length>=3) closeZone();   // commit an un-closed polygon so Save "just works"
+  const cam=v('camera').trim();
+  if(!cam){ setStatus('set a Camera ID first'); return; }
+  if(pts.length>0 && pts.length<3){ setStatus('finish the current zone (need ≥3 points) or Clear it, then Save'); return; }
+  if(!zones.length){ setStatus('draw a zone first, then Save'); return; }
+  setStatus(`saving ${zones.length} zone(s) to ${cam}…`);
+  const ok=await persistZones();
+  setStatus(ok ? `saved ${zones.length} zone(s) to ${cam} — applies live in a few seconds`
+               : 'save failed — is the API running on :8000?');
 }
 
 async function loadServer(){

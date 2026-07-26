@@ -171,18 +171,7 @@ body{
           <label><input type="checkbox" data-ovl="dwell" checked> Dwell</label>
         </div>
         <div class="feeds" id="feeds">
-          <div class="feed fb-bracket" data-port="8080">
-            <div class="scan"></div><div class="live"><span class="rd"></span> Live</div>
-            <div class="tc fb-num" data-tc>00:00:00</div>
-            <div class="ph">connecting · stream :8080<br>detect · track · foot-point · zones</div>
-            <div class="cap">Camera A · :8080</div>
-          </div>
-          <div class="feed fb-bracket" data-port="8081">
-            <div class="scan"></div><div class="live"><span class="rd"></span> Live</div>
-            <div class="tc fb-num" data-tc>00:00:00</div>
-            <div class="ph">no signal · stream :8081</div>
-            <div class="cap">Camera B · :8081</div>
-          </div>
+          <div class="feed fb-bracket"><div class="ph">no camera streams yet — add a camera on the Cameras page</div></div>
         </div>
         <div class="section-h" style="margin-top:18px;"><p class="eyebrow">Camera health</p><span class="rule"></span></div>
         <div class="panel cams" id="cams"><span class="empty">no cameras reporting</span></div>
@@ -209,31 +198,59 @@ const SEVCLASS={NORMAL:'normal',WARNING:'warning',CRITICAL:'critical',AMBER:'war
 const BRACK={WARNING:'warning',CRITICAL:'critical'};
 const TREND={rising:'▲',falling:'▼',flat:'▬'};
 
-// live annotated feeds (best effort; each tile connects to its camera's port).
-// Overlay toggles append ?layer=0 for any layer switched off; the inference MJPEG
-// server re-annotates the raw frame to match (all-on = the cheap default stream).
+// live annotated feeds — one tile per camera that reports a stream_url. Overlay
+// toggles append ?layer=0 for any layer switched off; the inference MJPEG server
+// re-annotates to match. Tiles/imgs are reused across polls so the MJPEG stream
+// isn't reconnected every refresh (only when the URL or overlays change).
 const OVL={zones:true,boxes:true,ids:true,feet:true,dwell:true};
-function feedSrc(port){
+const feedTiles={};   // camera_id -> {tile,img,streamUrl}
+function feedUrl(streamUrl){
   const off=Object.keys(OVL).filter(k=>!OVL[k]).map(k=>`${k}=0`);
-  const q=off.length?`?${off.join('&')}&_=${Date.now()}`:'';
-  return `http://${location.hostname}:${port}/stream${q}`;
+  if(!off.length) return streamUrl;
+  return streamUrl+(streamUrl.includes('?')?'&':'?')+off.join('&')+'&_='+Date.now();
 }
-function applyFeeds(){
-  document.querySelectorAll('#feeds .feed').forEach(tile=>{
-    const port=tile.getAttribute('data-port');
-    let img=tile._img;
-    if(!img){
-      img=tile._img=new Image();
-      img.onload=()=>{const p=tile.querySelector('.ph');if(p)p.remove();if(!img.parentNode)tile.insertBefore(img,tile.firstChild);};
+function renderFeeds(cameras){
+  const host=$('feeds');
+  const feeds=cameras.filter(c=>c.stream_url);
+  if(!feeds.length){
+    Object.keys(feedTiles).forEach(id=>{feedTiles[id].tile.remove();delete feedTiles[id];});
+    if(!host.querySelector('.ph')) host.innerHTML='<div class="feed fb-bracket"><div class="ph">no camera streams yet — add a camera on the Cameras page</div></div>';
+    return;
+  }
+  const initPh=host.querySelector('.feed .ph');
+  if(initPh && !Object.keys(feedTiles).length) host.innerHTML='';   // clear the placeholder
+  const present=new Set(feeds.map(c=>c.camera_id));
+  Object.keys(feedTiles).forEach(id=>{if(!present.has(id)){feedTiles[id].tile.remove();delete feedTiles[id];}});
+  feeds.forEach(c=>{
+    let t=feedTiles[c.camera_id];
+    if(!t){
+      const tile=document.createElement('div');
+      tile.className='feed fb-bracket';
+      tile.innerHTML='<div class="scan"></div><div class="live"><span class="rd"></span> Live</div>'
+        +'<div class="tc fb-num" data-tc>00:00:00</div><div class="ph"></div><div class="cap"></div>';
+      host.appendChild(tile);
+      const img=new Image();
+      img.onload=()=>{const p=tile.querySelector('.ph');if(p)p.style.display='none';if(!img.parentNode)tile.insertBefore(img,tile.firstChild);};
       img.onerror=()=>{};
+      t=feedTiles[c.camera_id]={tile,img,streamUrl:null};
     }
-    img.src=feedSrc(port);
+    t.tile.querySelector('.cap').textContent=`${c.camera_id}${c.name?' · '+c.name:''}`;
+    const ph=t.tile.querySelector('.ph');
+    const online=c.effective_state!=='OFFLINE'&&c.effective_state!=='DISABLED';
+    if(online){
+      if(t.streamUrl!==c.stream_url){t.streamUrl=c.stream_url;t.img.src=feedUrl(c.stream_url);}
+      if(ph && !t.img.parentNode){ph.style.display='';ph.textContent='connecting…';}
+    }else{
+      if(t.img.parentNode) t.img.remove();
+      t.streamUrl=null;
+      if(ph){ph.style.display='';ph.textContent='no signal · '+(c.effective_state||'offline').toLowerCase();}
+    }
   });
 }
 document.querySelectorAll('#ovlbar input[data-ovl]').forEach(cb=>cb.addEventListener('change',()=>{
-  OVL[cb.getAttribute('data-ovl')]=cb.checked; applyFeeds();
+  OVL[cb.getAttribute('data-ovl')]=cb.checked;
+  Object.values(feedTiles).forEach(t=>{if(t.streamUrl)t.img.src=feedUrl(t.streamUrl);});
 }));
-applyFeeds();
 
 function renderKpis(zones,alerts){
   const totOcc=zones.reduce((a,z)=>a+(+z.occupancy||0),0);
@@ -244,10 +261,6 @@ function renderKpis(zones,alerts){
   $('kAlerts').textContent=alerts.length;
   $('kAlertsSub').textContent=`${crit} critical · ${warn} warning`;
   $('kAlertTile').classList.toggle('alert',alerts.length>0);
-  const cams=[...new Set(zones.map(z=>z.camera_id).filter(Boolean))];
-  const offline=new Set(alerts.filter(a=>a.rule_id==='R-07').map(a=>a.camera_id));
-  const online=cams.filter(c=>!offline.has(c)).length;
-  $('kCams').innerHTML=`${online}<span class="u">/ ${cams.length}</span>`;
   let peak={d:-1,name:'—',status:''};
   zones.forEach(z=>{if((+z.density||0)>peak.d)peak={d:+z.density,name:z.zone_name||z.zone_id,status:z.status};});
   $('kDens').innerHTML=`${(peak.d<0?0:peak.d).toFixed(2)}<span class="u">/m²</span>`;
@@ -297,15 +310,25 @@ function renderZones(zones){
   }).join('');
 }
 
-function renderCams(zones,alerts){
+// Camera health + online KPI + feeds, all from the cameras API (not zones), so
+// UI-provisioned cameras appear even before they have zones.
+function renderCameras(cameras){
+  const online=cameras.filter(c=>c.effective_state!=='OFFLINE'&&c.effective_state!=='DISABLED').length;
+  $('kCams').innerHTML=`${online}<span class="u">/ ${cameras.length}</span>`;
   const host=$('cams');
-  const cams=[...new Set(zones.map(z=>z.camera_id).filter(Boolean))];
-  if(!cams.length){host.innerHTML='<span class="empty">no cameras reporting</span>';return;}
-  const offline=new Set(alerts.filter(a=>a.rule_id==='R-07').map(a=>a.camera_id));
-  host.innerHTML=cams.map(c=>{
-    const off=offline.has(c);
-    return `<span class="cam"><span class="d ${off?'off':'on'}"></span>${esc(c)} · ${off?'offline':'online'}</span>`;
+  if(!cameras.length){host.innerHTML='<span class="empty">no cameras reporting</span>';}
+  else host.innerHTML=cameras.map(c=>{
+    const st=String(c.effective_state||'OFFLINE');
+    const on=st!=='OFFLINE'&&st!=='DISABLED';
+    return `<span class="cam"><span class="d ${on?'on':'off'}"></span>${esc(c.camera_id)} · ${esc(st.toLowerCase())}</span>`;
   }).join('');
+  renderFeeds(cameras);
+}
+async function pollCameras(){
+  try{
+    const {cameras}=await fetch(`${API}/api/v1/cameras`).then(r=>r.json());
+    renderCameras(cameras||[]);
+  }catch(e){}
 }
 
 function renderAlerts(alerts){
@@ -350,7 +373,7 @@ async function alertAction(act,id){
 function apply(d){
   const zones=d.zones||[], alerts=d.alerts||[];
   if(zones[0]&&zones[0].camera_id)$('site').textContent=zones[0].camera_id;
-  renderKpis(zones,alerts);renderZones(zones);renderCams(zones,alerts);renderAlerts(alerts);
+  renderKpis(zones,alerts);renderZones(zones);renderAlerts(alerts);
 }
 
 let ws=null,pollTimer=null;
@@ -383,6 +406,7 @@ setInterval(()=>{
 },1000);
 
 connect();startPoll();
+pollCameras();setInterval(pollCameras,3000);   // cameras/feeds refresh independently of WS
 </script>
 </body>
 </html>

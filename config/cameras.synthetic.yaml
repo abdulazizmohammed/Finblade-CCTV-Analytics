@@ -33,11 +33,7 @@ zones:
     area_sqm: 5.0          # small on purpose -> ~12 people => density amber/red
     polygon: [[40, 240], [268, 210], [285, 398], [215, 600], [40, 560]]
 
-  # Taped-off no-go wedge on the right (RESTRICTED - NO ENTRY). A foot crossing
-  # the tape fires R-06 immediately.
-  - zone_id: ZONE-RESTRICTED
-    zone_name: Restricted Area
-    restricted: true
-    capacity_max: 2
-    area_sqm: 6.0
-    polygon: [[270, 408], [440, 250], [464, 262], [464, 500]]
+  # NOTE: the old taped-off "Restricted Area" wedge was fitted to the previous
+  # demo clip and mis-fires on other footage, so it's removed here. Draw restricted
+  # (or any) zones for the clip you're running in tools/zone-editor.html — editor
+  # zones are saved per-camera and override this YAML (and hot-reload live).

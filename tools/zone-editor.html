@@ -67,6 +67,11 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
 .rm:hover{color:var(--fb-critical);}
 .edit{position:absolute;top:9px;right:32px;cursor:pointer;color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;line-height:1;background:none;border:0;padding:2px 4px;}
 .edit:hover{color:var(--fb-teal);}
+.props{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px;}
+.props .p{display:flex;flex-direction:column;gap:2px;}
+.props .p span{font-family:var(--fb-font-data);font-size:8px;letter-spacing:.06em;text-transform:uppercase;color:var(--fb-text-faint);}
+.props .p input{width:62px;background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:12px;padding:4px 6px;border-radius:var(--fb-r);}
+.props .p input:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
 .empty{color:var(--fb-text-faint);font-size:12px;padding:14px 0;}
 </style>
 
@@ -107,7 +112,7 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
   <label class="lbl" for="api">API base</label>
   <input type="text" id="api" value="">
 
-  <p class="eyebrow" style="margin-top:22px">Define zone</p>
+  <p class="eyebrow" style="margin-top:22px">New zone (draw on the frame) — edit existing zones on their cards below</p>
   <label class="lbl" for="zid">Zone ID</label><input type="text" id="zid" value="ZONE-01">
   <label class="lbl" for="zname">Name</label><input type="text" id="zname" value="Lobby">
   <label class="lbl" for="ztype">Type</label>
@@ -272,14 +277,24 @@ function render(){
   if(!zones.length){ box.innerHTML='<p class="empty">No zones defined.</p>'; }
   else{
     box.innerHTML='';
+    const prop=(i,k,label,val,step)=>
+      `<label class="p"><span>${label}</span>`+
+      `<input type="number" min="0" step="${step}" data-i="${i}" data-k="${k}" value="${val}"></label>`;
     zones.forEach((z,i)=>{
       const d=document.createElement('div');
       d.className='zone'+(z.restricted?' nogo':'');
       d.innerHTML=
-        `<button class="edit" title="Edit" data-i="${i}">Edit</button>`+
+        `<button class="edit" title="Edit shape" data-i="${i}">Edit shape</button>`+
         `<button class="rm" title="Remove" data-i="${i}">✕</button>`+
         `<div class="id">${z.zone_id}<span class="pill ${z.restricted?'nogo':'mon'}">${z.zone_type}</span></div>`+
-        `<div class="meta">${z.zone_name} · ${z.polygon.length} pts · cap ${z.capacity_max} · ${z.area_sqm} m² · warn ${z.warning_density}/crit ${z.critical_density} · loiter ${z.loitering_threshold_sec}s</div>`;
+        `<div class="meta">${z.zone_name} · ${z.polygon.length} pts</div>`+
+        `<div class="props">`+
+          prop(i,'capacity_max','Capacity',z.capacity_max,1)+
+          prop(i,'area_sqm','Area m²',z.area_sqm,0.1)+
+          prop(i,'warning_density','Warn /m²',z.warning_density,0.1)+
+          prop(i,'critical_density','Crit /m²',z.critical_density,0.1)+
+          prop(i,'loitering_threshold_sec','Loiter s',z.loitering_threshold_sec,1)+
+        `</div>`;
       box.appendChild(d);
     });
     box.querySelectorAll('.rm').forEach(b=> b.onclick=async()=>{
@@ -290,6 +305,16 @@ function render(){
                    : `deleted ${zid} locally but SAVE FAILED — is the API on :8000?`);
     });
     box.querySelectorAll('.edit').forEach(b=> b.onclick=()=>editZone(+b.dataset.i));
+    // Edit a zone's numbers right on the card -> update + auto-save (applies live).
+    box.querySelectorAll('.props input').forEach(inp=> inp.onchange=async()=>{
+      const i=+inp.dataset.i, k=inp.dataset.k, z=zones[i];
+      if(!z) return;
+      z[k]=+inp.value;
+      $('out').textContent=yaml();
+      const ok=await persistZones();
+      setStatus(ok ? `updated ${z.zone_id} ${k}=${z[k]} — saved (applies live)`
+                   : `update FAILED — is the API on :8000?`);
+    });
   }
   $('out').textContent=yaml();
 }

@@ -1,0 +1,47 @@
+# Camera topology for cross-camera identity (finblade/topology.py).
+#
+# This file encodes site knowledge that no model can infer from the video:
+# which cameras see the same floor, and how long it takes a person to walk
+# between the ones that don't. It is the gate that stops appearance matching
+# from linking two similar-looking strangers.
+#
+# ---------------------------------------------------------------------------
+# NEEDS A HUMAN. The numbers below are placeholders, not survey data.
+# Wrong transit times fail in two directions, both bad:
+#   min too LOW  -> strangers get linked (two people become one on the dashboard)
+#   min too HIGH -> real handovers are missed (one person becomes two)
+# Pace the walk between each camera pair and put the real seconds in.
+# ---------------------------------------------------------------------------
+
+# Pairs whose views share floor area. The same person is legitimately visible
+# on both AT THE SAME MOMENT, so dt near zero is expected — and simultaneous
+# presence is evidence FOR a match. This is also what makes site occupancy
+# stop double-counting someone standing in the overlap.
+overlapping_pairs: []
+  # - a: CAM-A-01
+  #   b: CAM-B-02
+
+# Pairs separated by a walk. min_seconds is the fastest a person could
+# physically cover it; max_seconds is the longest gap still worth treating as
+# one continuous journey rather than a fresh visit.
+transits: []
+  # - a: CAM-A-01
+  #   b: CAM-B-02
+  #   min_seconds: 12      # measured: brisk walk, lobby -> terminal
+  #   max_seconds: 90      # beyond this, treat as a new visit
+
+# Applied to any pair not listed above. Deliberately permissive so an
+# incomplete topology degrades to "matching still works, just less precisely"
+# rather than silently refusing every handover. Unknown pairs are reported as
+# reason="unknown_pair" so you can see which pairs still need surveying.
+default_transit:
+  min_seconds: 2.0
+  max_seconds: 120.0
+
+# Independent camera processes keep their own clocks. An overlapping pair can
+# legitimately report a slightly negative dt; this is how much skew to forgive.
+overlap_tolerance_seconds: 5.0
+
+# Set false on a fully surveyed site to reject any pair not listed above.
+# Strictest and safest setting once the topology is complete.
+allow_unknown_pairs: true

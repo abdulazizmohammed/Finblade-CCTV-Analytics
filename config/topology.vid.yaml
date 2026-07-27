@@ -12,14 +12,25 @@
 #     oppositely: overlapping expects dt~0, non-overlapping REJECTS dt~0 as
 #     physically impossible.
 
+# NOTE: these are camera_id values, and they must match the ids the cameras
+# actually run under. Cameras added from the camera page use whatever id you
+# typed there, so add those ids here too — a pair that appears nowhere in this
+# file falls back to the default window, and /api/v1/identity/stats will show a
+# rising "unknown_pair" count telling you this list is incomplete.
 overlapping_pairs:
   - a: CAM-VID-1
     b: CAM-VID-2
+  # Added from the camera page against the same two streams.
+  - a: CAM-06
+    b: Cam-07
 
 transits: []
 
+# Minimum zero: these cameras show the same scene, so the same person is on both
+# at the same instant. A non-zero minimum would reject every one of those as
+# "too fast" — which is precisely how cross-camera matching fails silently.
 default_transit:
-  min_seconds: 2.0
+  min_seconds: 0.0
   max_seconds: 120.0
 
 # Both publishers start within a few hundred ms of each other, but the two

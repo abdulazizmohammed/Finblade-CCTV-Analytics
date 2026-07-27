@@ -224,7 +224,8 @@ def _draw_dashed_poly(frame, pts, color, thickness=2, dash=14):
 
 
 # Overlay layers the live stream can toggle on/off (evidence always draws all).
-OVERLAY_DEFAULT = {"zones": True, "boxes": True, "ids": True, "feet": True, "dwell": True}
+OVERLAY_DEFAULT = {"zones": True, "boxes": True, "ids": True, "feet": True,
+                   "dwell": True, "gid": True}
 
 
 def annotate(frame, zones, tracks, occupancy, track_meta=None, overlay=None):
@@ -277,6 +278,18 @@ def annotate(frame, zones, tracks, occupancy, track_meta=None, overlay=None):
                 label += f"  {tag}"
             cv2.putText(frame, label.strip(), (int(x1), int(y1) - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
+        if o["gid"]:
+            # The CROSS-CAMERA identity, drawn above the local track id.
+            # "ID 985" is a ByteTrack counter — private to this process and
+            # guaranteed to differ on another camera. The short ref below is
+            # the shared one: the SAME person shows the same #xxxx on every
+            # camera that recognises them. Without this on screen there is no
+            # way to see cross-camera matching working.
+            gref = meta.get("gref")
+            gid_label = f"#{gref[-4:]}" if gref else "#...."   # .... = not resolved yet
+            cv2.putText(frame, gid_label, (int(x1), int(y1) - 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        BGR_TEXT if gref else (120, 120, 120), 2 if gref else 1)
     return frame
 
 

@@ -48,7 +48,18 @@ class CameraTopology:
         self,
         overlapping: Iterable[Pair] = (),
         transits: Optional[Dict[Pair, Tuple[float, float]]] = None,
-        default_transit: Tuple[float, float] = (2.0, 120.0),
+        # Unknown pairs default to a MINIMUM OF ZERO, deliberately. A non-zero
+        # minimum is an assumption that the two cameras are far apart, and for
+        # an unconfigured pair we do not know that. Worse, it fails silently and
+        # in the confusing direction: cameras whose views overlap see the same
+        # person simultaneously (dt~0), every candidate is rejected as
+        # "physically impossible" before appearance is ever scored, and
+        # cross-camera matching quietly does nothing while the logs look fine.
+        # That is exactly what happens to cameras added from the UI, whose ids
+        # are not in any topology file. Safety comes from CONFIGURING real
+        # transit times (and allow_unknown_pairs: false on a surveyed site),
+        # not from guessing one here.
+        default_transit: Tuple[float, float] = (0.0, 120.0),
         overlap_tolerance_s: float = 5.0,
         allow_unknown_pairs: bool = True,
     ):
@@ -132,7 +143,7 @@ class CameraTopology:
                                     float(entry["max_seconds"]))
 
         d = cfg.get("default_transit", {}) or {}
-        default = (float(d.get("min_seconds", 2.0)),
+        default = (float(d.get("min_seconds", 0.0)),
                    float(d.get("max_seconds", 120.0)))
 
         return cls(

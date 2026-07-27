@@ -93,6 +93,16 @@ class TestUnknownPairs(unittest.TestCase):
         # Flagged so the caller can report that topology config is incomplete.
         self.assertEqual(reason, "unknown_pair")
 
+    def test_unknown_pair_allows_simultaneous_sighting(self):
+        # Regression: the default minimum used to be 2s, so an unconfigured pair
+        # of OVERLAPPING cameras had every candidate rejected as "too_fast" —
+        # cross-camera matching silently did nothing. Cameras added from the UI
+        # are never in a topology file, so this was the default experience.
+        t = CameraTopology()
+        ok, _ = t.feasible("CAM-06", "Cam-07", 0.0)
+        self.assertTrue(ok)
+        self.assertTrue(t.feasible("CAM-06", "Cam-07", 0.4)[0])
+
     def test_unknown_pair_can_be_rejected_outright(self):
         t = CameraTopology(allow_unknown_pairs=False)
         ok, reason = t.feasible("CAM-X", "CAM-Y", 30.0)

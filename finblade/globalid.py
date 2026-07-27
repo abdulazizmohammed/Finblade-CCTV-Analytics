@@ -140,7 +140,14 @@ class GlobalIdentityRegistry:
         self._bindings: Dict[Binding, str] = {}
         self._seq = 0
         self.stats = {"created": 0, "matched": 0, "rejected_margin": 0,
-                      "rejected_topology": 0, "expired": 0}
+                      "rejected_topology": 0, "expired": 0,
+                      # Candidates evaluated for a camera pair that appears in
+                      # no topology entry. Non-zero means the topology file does
+                      # not cover the cameras actually running, so those pairs
+                      # are falling back to the permissive default. Surfaced in
+                      # /api/v1/identity/stats so incomplete config is visible
+                      # rather than silently degrading match quality.
+                      "unknown_pair": 0}
 
     # ---- ref minting ------------------------------------------------------
     def _mint_ref(self) -> str:
@@ -217,14 +224,17 @@ class GlobalIdentityRegistry:
         runner_up = -1.0
         considered = 0
         topo_rejected = 0
+        unknown_pairs = 0
 
         for ref, ident in self._identities.items():
             # Gate 1: one person cannot be two live tracks on the same camera.
             if any(c == camera_id and t != binding[1] for c, t in ident.active):
                 continue
             # Gate 2: physics.
-            ok, _reason = self.topology.feasible(
+            ok, reason = self.topology.feasible(
                 ident.last_camera, camera_id, now - ident.last_seen)
+            if reason == "unknown_pair":
+                unknown_pairs += 1
             if not ok:
                 topo_rejected += 1
                 continue
@@ -238,6 +248,7 @@ class GlobalIdentityRegistry:
                 runner_up = score
 
         self.stats["rejected_topology"] += topo_rejected
+        self.stats["unknown_pair"] += unknown_pairs
         runner_up = max(runner_up, 0.0)
         best_score = max(best_score, 0.0)
 

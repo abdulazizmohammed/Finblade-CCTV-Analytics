@@ -71,6 +71,14 @@ body{
 .feed .live .rd{width:7px;height:7px;border-radius:50%;background:var(--fb-critical);box-shadow:0 0 8px var(--fb-critical);animation:fbpulse 1.6s ease-in-out infinite;}
 .feed .tc{position:absolute;right:12px;top:12px;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-teal);letter-spacing:.05em;z-index:3;}
 .feed .cap{position:absolute;left:12px;bottom:12px;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);z-index:3;}
+/* Per-camera people counts, rendered as crisp HTML rather than drawn into the
+   video: the annotated overlay is scaled down with the feed tile, so anything
+   burned into the frame becomes unreadable at small tile sizes. */
+.feed .cnt{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;gap:10px;
+  font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:11px;
+  background:rgba(6,17,23,.72);border:1px solid var(--fb-line);border-radius:6px;padding:4px 8px;}
+.feed .cnt b{font-weight:600;color:var(--fb-text);}
+.feed .cnt .k{color:var(--fb-text-faint);}
 .feed .ph{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;text-align:center;z-index:2;padding:20px;}
 
 /* camera health */
@@ -228,7 +236,8 @@ function renderFeeds(cameras){
       const tile=document.createElement('div');
       tile.className='feed fb-bracket';
       tile.innerHTML='<div class="scan"></div><div class="live"><span class="rd"></span> Live</div>'
-        +'<div class="tc fb-num" data-tc>00:00:00</div><div class="ph"></div><div class="cap"></div>';
+        +'<div class="tc fb-num" data-tc>00:00:00</div><div class="ph"></div><div class="cap"></div>'
+        +'<div class="cnt" data-cnt hidden></div>';
       host.appendChild(tile);
       const img=new Image();
       img.onload=()=>{const p=tile.querySelector('.ph');if(p)p.style.display='none';if(!img.parentNode)tile.insertBefore(img,tile.firstChild);};
@@ -236,6 +245,14 @@ function renderFeeds(cameras){
       t=feedTiles[c.camera_id]={tile,img,streamUrl:null};
     }
     t.tile.querySelector('.cap').textContent=`${c.camera_id}${c.name?' · '+c.name:''}`;
+    // Live / cumulative-unique for THIS camera, from the identity counts.
+    const cnt=t.tile.querySelector('[data-cnt]');
+    const pc=(LAST_COUNTS&&LAST_COUNTS.per_camera||[]).find(p=>p.camera_id===c.camera_id);
+    if(pc){
+      cnt.hidden=false;
+      cnt.innerHTML=`<span><span class="k">live</span> <b>${pc.live}</b></span>`
+                   +`<span><span class="k">unique</span> <b>${pc.unique}</b></span>`;
+    }else{cnt.hidden=true;}
     const ph=t.tile.querySelector('.ph');
     const online=c.effective_state!=='OFFLINE'&&c.effective_state!=='DISABLED';
     if(online){

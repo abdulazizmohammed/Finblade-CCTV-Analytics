@@ -430,6 +430,10 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     last_evidence_t = 0.0
     prev_zone = {}
     restricted_since = {}   # tid -> vnow when the track entered its restricted zone
+    feet_total = 0          # foot points evaluated while zones were defined
+    feet_outside = 0        # ...that landed in no zone at all
+    feet_at_frame_edge = 0  # ...of those, ones sitting on the frame border
+    last_zone_warn = 0.0
 
     interval = 1.0 / cfg.process_fps if cfg.process_fps and cfg.process_fps > 0 else 0
     last_proc = 0.0
@@ -551,7 +555,24 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 reaper.see(tid, vnow)
                 tracks.append((tid, x1, y1, x2, y2))
                 conf_by_tid[tid] = float(conf)
-                observed = zone_of(foot_point(x1, y1, x2, y2), cfg.zones)
+                _fx, _fy = foot_point(x1, y1, x2, y2)
+                observed = zone_of((_fx, _fy), cfg.zones)
+                # Diagnostic for the commonest zone-drawing mistake. Occupancy
+                # counts FOOT points, and a person whose box is clipped by the
+                # frame edge has their foot point ON that edge — so a zone drawn
+                # even slightly inset from the bottom excludes them and reports
+                # 0 while people are plainly being tracked. Counting this makes
+                # a mis-drawn polygon visible instead of silently wrong.
+                if cfg.zones:
+                    feet_total += 1
+                    if observed is None:
+                        feet_outside += 1
+                        # "Near the bottom" rather than exactly on it: a clipped
+                        # person's foot point lands within a few percent of the
+                        # border, not on the last pixel, so a 2px test missed
+                        # almost all of them and under-reported the cause.
+                        if _fy >= (cfg.frame_height * 0.97):
+                            feet_at_frame_edge += 1
                 confirmed, changed = deb.update(tid, observed)
                 zone_by_tid[tid] = confirmed
                 if confirmed:
@@ -624,6 +645,20 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             reid.observe(frame, tracks, conf_by_tid, vnow,
                          cfg.frame_width, cfg.frame_height)
             reid.resolve_pending(vnow, zone_by_tid)
+
+        # Warn (throttled) when most tracked people fall outside every zone —
+        # almost always a polygon that does not reach the frame edge.
+        if feet_total >= 50 and (now - last_zone_warn) >= 60.0:
+            frac = feet_outside / feet_total
+            if frac >= 0.5:
+                last_zone_warn = now
+                edge = (feet_at_frame_edge / feet_outside) if feet_outside else 0.0
+                log.warning(
+                    "camera %s: %.0f%% of foot points are in NO zone (%d/%d); "
+                    "%.0f%% of those sit near the bottom of the frame — the zone "
+                    "polygon probably needs to extend to the bottom edge",
+                    cfg.camera_id, frac * 100, feet_outside, feet_total,
+                    edge * 100)
 
         det_counts.append(len(tracks))
         processed += 1
@@ -775,6 +810,14 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # Counts only — never vectors. "status" says whether cross-camera
         # identity actually ran this session or was unavailable.
         "reid": reid.snapshot(),
+        # Zone sanity: a high outside fraction means occupancy will read low
+        # even though people are being tracked.
+        "zone_fit": {
+            "foot_points": feet_total,
+            "outside_all_zones": feet_outside,
+            "outside_pct": round(100.0 * feet_outside / feet_total, 1) if feet_total else 0.0,
+            "of_those_on_frame_edge": feet_at_frame_edge,
+        },
     }
     with open(os.path.join(EVIDENCE, f"metrics_{slug}.json"), "w") as f:
         json.dump(metrics, f, indent=2)

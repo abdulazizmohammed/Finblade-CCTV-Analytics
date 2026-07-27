@@ -53,6 +53,84 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 
 ---
 
+## 2b. Getting the code onto the test machine
+
+**There is no git remote configured.** The repository is local-only: 67 commits
+on `master`, tag `v1.0.0-test`. So "clone the repo" needs one of the following
+first.
+
+### What must travel, and what must not
+
+| | Size | |
+|---|---|---|
+| `.git` (source + history) | 117 MB | **copy** |
+| `models/*.pt` | 9.2 MB | **copy** — gitignored, or refetch with `scripts/get_weights.py` |
+| `scripts/bin/mediamtx` | 52 MB | copy only if republishing clips as RTSP; or `bash scripts/rtsp_setup.sh` |
+| `media/*.mp4` | 123 MB | only if testing without real cameras |
+| `.venv` | **7.5 GB** | **NEVER copy** — rebuild on the target |
+| `data/`, `evidence/` | — | don't copy; runtime state, regenerated |
+
+Do not copy `.venv`. It contains absolute paths baked into the venv config and
+compiled CUDA extensions built for this exact machine; copying it produces
+failures that look like corrupted installs. Rebuilding takes ~10 minutes.
+
+### Option A — a git host (best if you have one)
+
+```bash
+# on dev
+git remote add origin git@your-host:team/finblade-cctv.git
+git push -u origin master --tags
+
+# on test
+git clone git@your-host:team/finblade-cctv.git finblade-cctv
+```
+
+Weights still transfer separately (gitignored) — either run
+`scripts/get_weights.py` on the target, or `scp models/*.pt` across.
+
+### Option B — a git bundle (no server needed, keeps full history)
+
+One file, carries every commit and tag, moves over scp or a USB stick.
+
+```bash
+# on dev
+git bundle create finblade.bundle --all          # ~92 MB
+scp finblade.bundle models/*.pt user@test-host:~/
+
+# on test
+git clone finblade.bundle finblade-cctv
+cd finblade-cctv && git remote remove origin     # the bundle file is not a live remote
+mkdir -p models && mv ~/*.pt models/
+```
+
+Verify before trusting it: `git bundle verify finblade.bundle` should say
+"The bundle records a complete history."
+
+To ship an update later, a much smaller incremental bundle:
+`git bundle create update.bundle <last-tag>..master`
+
+### Option C — direct copy (simplest, no git needed on the target)
+
+```bash
+rsync -av --progress \
+  --exclude '.venv' --exclude 'data' --exclude 'evidence' \
+  --exclude '__pycache__' --exclude '*.pyc' \
+  /home/usv/finblade-cctv/ user@test-host:/opt/finblade-cctv/
+```
+
+Keeps `.git`, so history and `git pull` from dev still work later. Add
+`--exclude 'media'` to skip the 123 MB of test clips, and `--exclude '.git'` if
+you want source only.
+
+No network path between the machines? Tar it:
+
+```bash
+tar --exclude='.venv' --exclude='data' --exclude='evidence' \
+    --exclude='__pycache__' -czf finblade.tar.gz -C /home/usv finblade-cctv
+```
+
+---
+
 ## 3. Install
 
 ```bash

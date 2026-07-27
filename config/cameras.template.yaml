@@ -17,4 +17,18 @@ person_class_id: 0
 process_fps: 15
 imgsz: 1280
 
+# Cross-camera identity for UI-provisioned cameras. This was working implicitly
+# (an absent block defaults to enabled), but stating it makes it tunable and
+# makes it obvious that cameras added from the UI take part in identity
+# matching. Pair them up in config/topology.yaml — until a pair is listed there
+# it falls back to the permissive default transit window.
+reid:
+  enabled: true
+  weights: models/osnet_x0_25_msmt17.pt
+  device: "0"
+  interval_seconds: 1.0
+  max_samples: 5
+  budget_per_frame: 8
+  min_samples_to_resolve: 2
+
 zones: []

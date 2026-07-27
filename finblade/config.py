@@ -4,7 +4,7 @@ Kept dependency-light: only pyyaml (already installed). Zone polygons are read
 verbatim from the human's config — never rewritten here.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
 import yaml
@@ -30,6 +30,9 @@ class CameraConfig:
     track_ttl_seconds: float
     offline_seconds: float
     zones: List[Zone]
+    # Cross-camera ReID settings (optional block; absent = defaults, disabled
+    # only if reid.enabled is explicitly false or the weights are missing).
+    reid: dict = field(default_factory=dict)
 
 
 def load_camera_config(path: str) -> CameraConfig:
@@ -60,4 +63,5 @@ def load_camera_config(path: str) -> CameraConfig:
         # Mark the camera OFFLINE after this many seconds without a valid frame.
         offline_seconds=float(cfg.get("offline_seconds", 30.0)),
         zones=[zone_from_dict(z, fw, fh) for z in cfg.get("zones", [])],
+        reid=cfg.get("reid") or {},
     )

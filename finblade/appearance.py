@@ -275,14 +275,16 @@ class OSNetEmbedder:
         self._reid = None
 
     def load(self) -> None:
-        from pathlib import Path            # lazy: keep import cost off the
-        from boxmot.reid import ReID        # test path entirely
+        from pathlib import Path
+        # Check the file BEFORE importing boxmot: the import pulls in torch and
+        # costs seconds, and the common failure is simply missing weights.
         path = Path(self.weights)
         if not path.exists():
             raise FileNotFoundError(
                 f"ReID weights not found at {path}. Run scripts/get_weights.py. "
                 "Do not substitute a stub embedder."
             )
+        from boxmot.reid import ReID        # lazy: keeps torch off the test path
         self._reid = ReID(weights=path, device=self.device)
 
     @property

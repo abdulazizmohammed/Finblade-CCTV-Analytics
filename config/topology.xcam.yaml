@@ -1,0 +1,19 @@
+# Topology for the cross-camera test rig (config/cameras.xcam.yaml).
+#
+# CAM-X-01 and CAM-X-02 are fed the same clip, so they stand in for two cameras
+# whose views overlap: the same person is visible on both at the same instant.
+# That is the case where dt ~ 0 is EXPECTED, and where site occupancy must not
+# double-count someone standing in the shared area.
+
+overlapping_pairs:
+  - a: CAM-X-01
+    b: CAM-X-02
+
+transits: []
+
+default_transit:
+  min_seconds: 2.0
+  max_seconds: 120.0
+
+overlap_tolerance_seconds: 5.0
+allow_unknown_pairs: true

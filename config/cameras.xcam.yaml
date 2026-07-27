@@ -1,0 +1,46 @@
+# Cross-camera identity test rig (additive — does not touch cameras.yaml).
+#
+# Run TWICE with --camera-id / --port overrides to get two independent camera
+# processes watching the same scene, which is the overlapping-pair case:
+#
+#   run_cpu.py --config config/cameras.xcam.yaml --camera-id CAM-X-01 --port 8091 \
+#              --api-url http://127.0.0.1:8000
+#   run_cpu.py --config config/cameras.xcam.yaml --camera-id CAM-X-02 --port 8092 \
+#              --api-url http://127.0.0.1:8000
+#
+# Pair them in config/topology.xcam.yaml and the API should resolve the same
+# person on both feeds to ONE global_ref.
+
+camera_id: CAM-X-01
+site_id: SITE-DXB-01
+
+source: media/museum_cam01_zone_transitions.mp4
+frame_width: 1280
+frame_height: 720
+
+model_path: models/yolov8n.pt
+device: cuda
+conf_threshold: 0.35
+person_class_id: 0
+process_fps: 10
+imgsz: 960
+
+# Cross-camera ReID. interval_seconds/budget_per_frame are the throughput
+# guards: embedding is CPU-bound in preprocessing, so we sample thinly per
+# track rather than embedding every person every frame.
+reid:
+  enabled: true
+  weights: models/osnet_x0_25_msmt17.pt
+  device: "0"
+  interval_seconds: 0.7
+  max_samples: 6
+  budget_per_frame: 8
+  min_samples_to_resolve: 2
+
+zones:
+  - zone_id: ZONE-X-FLOOR
+    zone_name: Gallery Floor
+    restricted: false
+    capacity_max: 40
+    area_sqm: 80.0
+    polygon: [[100, 200], [1180, 200], [1180, 700], [100, 700]]

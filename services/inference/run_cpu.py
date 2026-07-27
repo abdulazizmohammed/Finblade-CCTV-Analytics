@@ -63,6 +63,7 @@ from finblade.tracking import TrackReaper                # noqa: E402
 from finblade.tracks import TrackRegistry                # noqa: E402
 from finblade.zones import zone_of                       # noqa: E402
 from services.inference.camera_worker import CameraWorker, CameraState  # noqa: E402
+from services.inference.reid_client import ReIDResolver                 # noqa: E402
 
 # Shared handle so the MJPEG server can drive the demo simulate/restore controls.
 _worker = {"ref": None}
@@ -381,6 +382,22 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     zstats = ZoneStats()
     eng = RuleEngine()
     hasher = PersonRefHasher()
+    # Cross-camera identity. Local ByteTrack ids mean nothing outside this
+    # process, so the API resolves them to a shared global_ref. If the weights
+    # are missing this disables itself loudly and the rest of the pipeline is
+    # unaffected — it never falls back to a stub embedder.
+    _reid_cfg = cfg.reid or {}
+    reid = ReIDResolver(
+        cfg.camera_id, _post_json,
+        weights=_reid_cfg.get("weights"),
+        device=str(_reid_cfg.get("device", "0")),
+        interval_s=float(_reid_cfg.get("interval_seconds", 1.0)),
+        max_samples=int(_reid_cfg.get("max_samples", 5)),
+        budget_per_frame=int(_reid_cfg.get("budget_per_frame", 8)),
+        min_samples_to_resolve=int(_reid_cfg.get("min_samples_to_resolve", 2)),
+        enabled=bool(_reid_cfg.get("enabled", True)),
+    )
+    reid.load()
     reaper = TrackReaper(cfg.track_ttl_seconds)
     registry = TrackRegistry()
     completed_tracks = 0
@@ -505,6 +522,8 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
 
         # --- pass 1: detect -> zone -> occupancy; collect events/alerts ------
         tracks = []
+        conf_by_tid = {}     # tid -> detection confidence (ReID crop gating)
+        zone_by_tid = {}     # tid -> confirmed zone (stamped on the identity)
         occupancy = {z.zone_id: 0 for z in cfg.zones}
         pending_events = []   # ZONE_* + DENSITY_UPDATE dicts
         pending_alerts = []   # alert dicts (intrusion / loiter / density / capacity)
@@ -518,8 +537,10 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 seen_ids.add(tid)
                 reaper.see(tid, vnow)
                 tracks.append((tid, x1, y1, x2, y2))
+                conf_by_tid[tid] = float(conf)
                 observed = zone_of(foot_point(x1, y1, x2, y2), cfg.zones)
                 confirmed, changed = deb.update(tid, observed)
+                zone_by_tid[tid] = confirmed
                 if confirmed:
                     occupancy[confirmed] += 1
                 pr = hasher.ref(tid)
@@ -583,6 +604,14 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                                 LOITERING_START, cfg.camera_id, cfg.site_id, vnow,
                                 zone_id=confirmed, person_ref=pr, dwell_time=d))
 
+        # Cross-camera identity: embed a budgeted subset of this frame's crops,
+        # then ask the API to resolve any track with enough views. Both calls
+        # are no-ops when ReID is unavailable.
+        if reid.ready:
+            reid.observe(frame, tracks, conf_by_tid, vnow,
+                         cfg.frame_width, cfg.frame_height)
+            reid.resolve_pending(vnow, zone_by_tid)
+
         det_counts.append(len(tracks))
         processed += 1
 
@@ -604,6 +633,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 loiter_started.discard((pr, gone_zone))
             deb.drop(tid)
             dwell.drop(tid)
+            reid.drop(tid)          # frees the feature bank + releases the binding
             eng.drop_person(pr)
             prev_zone.pop(tid, None)
             restricted_since.pop(tid, None)
@@ -655,6 +685,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         track_meta = {t.track_id: {
             "dwell": t.dwell_time,
             "loiter": (t.person_ref, t.current_zone_id) in loiter_started,
+            "gref": reid.global_ref(t.track_id),   # None until ReID resolves it
         } for t in registry.active()}
         annotated = annotate(frame.copy(), cfg.zones, tracks, occupancy, track_meta)
         okj, buf = cv2.imencode(".jpg", annotated)
@@ -728,6 +759,9 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         "completed_tracks": completed_tracks,
         "evidence_frames_saved": saved_frames,
         "camera_health": worker.health(),
+        # Counts only — never vectors. "status" says whether cross-camera
+        # identity actually ran this session or was unavailable.
+        "reid": reid.snapshot(),
     }
     with open(os.path.join(EVIDENCE, f"metrics_{slug}.json"), "w") as f:
         json.dump(metrics, f, indent=2)

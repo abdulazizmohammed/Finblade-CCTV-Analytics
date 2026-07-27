@@ -107,7 +107,17 @@ class GlobalIdentityRegistry:
     def __init__(
         self,
         topology: Optional[CameraTopology] = None,
-        threshold: float = 0.62,
+        # Measured on media/1903279 via scripts/eval_cross_camera.py (see
+        # evidence/cross_camera_eval_dense.json): true-pair similarities ran
+        # min 0.80 / median 0.90, false pairs median 0.61 / max 0.83. The two
+        # distributions OVERLAP, so no threshold separates them cleanly — the
+        # runner-up margin and the topology gate do the real work, and this
+        # value is only a floor. 0.62 sat at the false-pair median, which is
+        # poor hygiene; 0.70 clears most of them without cutting into observed
+        # true pairs. NOT final: that eval's second camera is a transformed
+        # copy, so real cameras will push true-pair scores DOWN. Retune from
+        # genuine two-camera footage before deployment.
+        threshold: float = 0.70,
         margin: float = 0.06,
         ttl_seconds: float = 300.0,
         max_identities: int = 2000,

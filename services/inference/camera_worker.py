@@ -31,8 +31,18 @@ class CameraState:
 
 def _default_open(source):
     """Default capture factory (cv2). Returns an opened capture or None."""
+    import os
     import cv2  # lazy: keeps this module importable without cv2 (tests)
     if isinstance(source, str) and source.startswith(("rtsp://", "http://", "https://")):
+        # Force RTSP over TCP. FFMPEG defaults to UDP, which drops RTP packets
+        # whenever they exceed the path MTU — our own MediaMTX logs
+        # "RTP packets are too big (1460 > 1440), remuxing them into smaller
+        # ones" — and the reader then stalls until it hits the 30s stream
+        # timeout and reconnects forever. Observed as a camera sitting in
+        # RECONNECTING with a multi-MB log of
+        # "backend is generally available but can't be used to capture by name".
+        # TCP is also what production CCTV deployments use, for this reason.
+        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
         cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
     else:
         cap = cv2.VideoCapture(source)

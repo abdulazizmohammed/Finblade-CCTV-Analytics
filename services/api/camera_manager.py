@@ -95,7 +95,11 @@ class CameraManager:
         # Also kill any orphaned pipeline for this camera (e.g. one launched before
         # an API restart). Only matches OUR pipelines, which carry --camera-id <id>.
         try:
-            subprocess.run(["pkill", "-f", f"--camera-id {camera_id}"],
+            # No leading "--" in the pattern: pkill parses an argument starting
+            # with dashes as its own options, so `pkill -f "--camera-id X"` just
+            # printed pgrep usage into the API log and killed nothing. Matching
+            # "camera-id X" hits the same command lines without the ambiguity.
+            subprocess.run(["pkill", "-f", f"camera-id {camera_id}"],
                            timeout=5, check=False)
         except Exception:
             pass

@@ -248,6 +248,75 @@ class TestSiteMetrics(unittest.TestCase):
         self.assertEqual(len(r.cross_camera_refs()), 1)
 
 
+class TestUniqueCountingWithoutZones(unittest.TestCase):
+    """Counting people must not depend on zone polygons being defined.
+
+    Every resolve() below passes zone_id=None — the no-zones case.
+    """
+
+    def test_unique_total_counts_distinct_people(self):
+        r = GlobalIdentityRegistry(topology=CameraTopology())
+        r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0)
+        r.resolve("CAM-A", 2, bank(PERSON_B), now=100.0)
+        self.assertEqual(r.unique_total(), 2)
+
+    def test_same_person_on_two_cameras_counts_once(self):
+        topo = CameraTopology(overlapping=[("CAM-A", "CAM-B")])
+        r = GlobalIdentityRegistry(topology=topo)
+        r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0)
+        r.resolve("CAM-B", 9, bank(PERSON_A_ALT), now=100.0)
+        # Two local tracks, two cameras, ONE person.
+        self.assertEqual(r.unique_total(), 1)
+        self.assertEqual(r.site_occupancy(), 1)
+        # Per-camera tallies each see them, so they sum to 2 — the gap versus
+        # unique_total is exactly the double-count that was avoided.
+        self.assertEqual(r.unique_by_camera(), {"CAM-A": 1, "CAM-B": 1})
+
+    def test_unique_total_survives_the_person_leaving(self):
+        # Footfall must not fall when someone walks out and the TTL expires.
+        r = GlobalIdentityRegistry(topology=CameraTopology(), ttl_seconds=10.0)
+        r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0)
+        r.release("CAM-A", 1)
+        r.expire(now=500.0)
+        self.assertEqual(len(r), 0)              # gallery emptied
+        self.assertEqual(r.site_occupancy(), 0)  # nobody here now
+        self.assertEqual(r.unique_total(), 1)    # but one person WAS here
+
+    def test_live_counts_drop_when_tracks_end(self):
+        r = GlobalIdentityRegistry(topology=CameraTopology())
+        r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0)
+        r.resolve("CAM-A", 2, bank(PERSON_B), now=100.0)
+        self.assertEqual(r.live_by_camera(), {"CAM-A": 2})
+        r.release("CAM-A", 1)
+        self.assertEqual(r.live_by_camera(), {"CAM-A": 1})
+        self.assertEqual(r.unique_total(), 2)    # cumulative unchanged
+
+    def test_reappearing_person_is_not_counted_twice(self):
+        r = GlobalIdentityRegistry(topology=CameraTopology())
+        r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0)
+        r.release("CAM-A", 1)
+        # Same person returns under a new ByteTrack id.
+        res = r.resolve("CAM-A", 77, bank(PERSON_A_ALT), now=130.0)
+        self.assertTrue(res.matched)
+        self.assertEqual(r.unique_total(), 1)
+
+    def test_merge_corrects_the_cumulative_tally(self):
+        r = GlobalIdentityRegistry(topology=CameraTopology())
+        a = r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0).global_ref
+        b = r.resolve("CAM-B", 2, bank(PERSON_B), now=100.0).global_ref
+        self.assertEqual(r.unique_total(), 2)
+        r.merge(a, b)                            # they were one person after all
+        self.assertEqual(r.unique_total(), 1)
+
+    def test_snapshot_exposes_the_counts(self):
+        r = GlobalIdentityRegistry(topology=CameraTopology())
+        r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0)
+        snap = r.snapshot()
+        self.assertEqual(snap["unique_total"], 1)
+        self.assertEqual(snap["unique_by_camera"], {"CAM-A": 1})
+        self.assertEqual(snap["live_by_camera"], {"CAM-A": 1})
+
+
 class TestJourneyAndSummary(unittest.TestCase):
     def test_journey_records_zone_sequence(self):
         r = GlobalIdentityRegistry(topology=CameraTopology())

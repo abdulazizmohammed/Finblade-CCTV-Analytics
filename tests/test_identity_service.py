@@ -198,6 +198,41 @@ class TestStatsAndListing(unittest.TestCase):
         self.assertEqual(len(self.svc.list_identities(cross_camera_only=True)), 0)
 
 
+class TestCountsWithoutZones(unittest.TestCase):
+    def setUp(self):
+        topo = CameraTopology(overlapping=[("CAM-A", "CAM-B")])
+        self.svc = IdentityService(registry=GlobalIdentityRegistry(topology=topo))
+
+    def test_counts_work_with_zone_id_absent(self):
+        # No zone_id anywhere — the no-zones deployment.
+        self.svc.resolve(payload("CAM-A", 1, 100.0))
+        self.svc.resolve(payload("CAM-A", 2, 100.0, embeddings=[vec(0.0, 1.0)]))
+        c = self.svc.counts(now=100.0)
+        self.assertEqual(c["live"], 2)
+        self.assertEqual(c["unique_total"], 2)
+        self.assertEqual(c["per_camera"], [{"camera_id": "CAM-A", "live": 2, "unique": 2}])
+
+    def test_person_on_both_cameras_counted_once_site_wide(self):
+        self.svc.resolve(payload("CAM-A", 1, 100.0))
+        self.svc.resolve(payload("CAM-B", 9, 100.0))
+        c = self.svc.counts(now=100.0)
+        self.assertEqual(c["unique_total"], 1)
+        self.assertEqual(c["live"], 1)
+        self.assertEqual(c["cross_camera"], 1)
+        # Each camera still saw one person; the sum exceeding the total is the
+        # double-count that de-duplication removed.
+        self.assertEqual(sum(p["unique"] for p in c["per_camera"]), 2)
+
+    def test_unique_total_persists_after_expiry(self):
+        svc = IdentityService(registry=GlobalIdentityRegistry(
+            topology=CameraTopology(), ttl_seconds=10.0))
+        svc.resolve(payload("CAM-A", 1, 100.0))
+        svc.release({"camera_id": "CAM-A", "local_track_id": 1})
+        c = svc.counts(now=1000.0)          # long past the TTL
+        self.assertEqual(c["live"], 0)
+        self.assertEqual(c["unique_total"], 1)
+
+
 class TestMerge(unittest.TestCase):
     def setUp(self):
         self.svc = IdentityService(registry=GlobalIdentityRegistry(

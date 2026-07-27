@@ -238,6 +238,16 @@ async def identity_stats():
     return id_svc.stats()
 
 
+@app.get("/api/v1/identity/counts")
+async def identity_counts():
+    """Unique-people counts that work with NO zones defined.
+
+    Zone occupancy needs a polygon; this needs only identity. `live` is distinct
+    people visible now, `unique_total` is distinct people since startup.
+    """
+    return id_svc.counts()
+
+
 @app.get("/api/v1/identity/list")
 async def identity_list(limit: int = Query(200),
                         cross_camera_only: bool = Query(False)):

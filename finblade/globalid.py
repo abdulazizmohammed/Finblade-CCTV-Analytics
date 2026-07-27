@@ -138,6 +138,14 @@ class GlobalIdentityRegistry:
 
         self._identities: Dict[str, GlobalIdentity] = {}
         self._bindings: Dict[Binding, str] = {}
+        # (camera_id, global_ref) pairs EVER seen. Deliberately survives TTL
+        # expiry and gallery eviction: it is the cumulative footfall tally, and
+        # a person who left an hour ago still counts as one unique person seen.
+        # Zone-independent by construction — counting people needs identity, not
+        # geometry, so this works with no zone polygons defined at all.
+        # Memory is bounded by (unique people x cameras) short strings, and the
+        # refs are the same anonymous salted hashes stored nowhere else.
+        self._seen_pairs: Set[Tuple[str, str]] = set()
         self._seq = 0
         self.stats = {"created": 0, "matched": 0, "rejected_margin": 0,
                       "rejected_topology": 0, "expired": 0,
@@ -212,6 +220,7 @@ class GlobalIdentityRegistry:
         existing = self._bindings.get(binding)
         if existing is not None and existing in self._identities:
             ident = self._identities[existing]
+            self._seen_pairs.add((camera_id, existing))
             ident.note_seen(camera_id, now, zone_id)
             for v in bank.vectors[-1:]:          # keep the signature fresh
                 ident.bank.add(v)
@@ -260,6 +269,7 @@ class GlobalIdentityRegistry:
                 ident.note_seen(camera_id, now, zone_id)
                 ident.active.add(binding)
                 self._bindings[binding] = best_ref
+                self._seen_pairs.add((camera_id, best_ref))
                 self.stats["matched"] += 1
                 return MatchResult(global_ref=best_ref, matched=True,
                                    score=best_score, runner_up=runner_up,
@@ -280,6 +290,7 @@ class GlobalIdentityRegistry:
         ident.active.add(binding)
         self._identities[ref] = ident
         self._bindings[binding] = ref
+        self._seen_pairs.add((camera_id, ref))
         self.stats["created"] += 1
         self._evict_if_full()
         return MatchResult(global_ref=ref, matched=False, score=best_score,
@@ -314,6 +325,10 @@ class GlobalIdentityRegistry:
         for binding in list(drop.active):
             keep.active.add(binding)
             self._bindings[binding] = keep_ref
+        # Two refs turned out to be one person, so the cumulative tally must
+        # drop by one too — otherwise a corrected merge leaves footfall inflated.
+        self._seen_pairs = {(cam, keep_ref if ref == drop_ref else ref)
+                            for cam, ref in self._seen_pairs}
         self._identities.pop(drop_ref, None)
         return True
 
@@ -331,13 +346,47 @@ class GlobalIdentityRegistry:
         return {ref for ref in self._bindings.values()}
 
     def site_occupancy(self) -> int:
-        """Distinct people on site right now.
+        """Distinct people on site RIGHT NOW.
 
         The point of cross-camera identity for counting: someone standing in the
         overlap of two cameras is two local tracks but one person, and summing
         per-camera occupancy would count them twice.
         """
         return len(self.active_refs())
+
+    # ---- cumulative unique counts (no zones required) ---------------------
+    def unique_total(self) -> int:
+        """Distinct people seen since startup, across all cameras.
+
+        This is the footfall number, and it needs no zone polygons: it counts
+        identities, not positions. Someone seen on three cameras counts once.
+        Survives TTL expiry — a person who has left still happened.
+        """
+        return len({ref for _, ref in self._seen_pairs})
+
+    def unique_by_camera(self) -> Dict[str, int]:
+        """Distinct people seen by each camera since startup.
+
+        Note these will not sum to unique_total whenever a person was seen by
+        more than one camera — that is the whole point, and the difference is
+        exactly the double-counting a per-camera tally would have produced.
+        """
+        counts: Dict[str, int] = {}
+        for cam, _ref in self._seen_pairs:
+            counts[cam] = counts.get(cam, 0) + 1
+        return counts
+
+    def live_by_camera(self) -> Dict[str, int]:
+        """Distinct people currently visible to each camera.
+
+        Counts distinct refs, not bindings: two local tracks on one camera that
+        resolved to the same person count once.
+        """
+        pairs = {(cam, ref) for (cam, _tid), ref in self._bindings.items()}
+        counts: Dict[str, int] = {}
+        for cam, _ref in pairs:
+            counts[cam] = counts.get(cam, 0) + 1
+        return counts
 
     def cross_camera_refs(self) -> List[str]:
         """Identities that have genuinely been seen by more than one camera."""
@@ -349,6 +398,11 @@ class GlobalIdentityRegistry:
             "active_bindings": len(self._bindings),
             "site_occupancy": self.site_occupancy(),
             "cross_camera": len(self.cross_camera_refs()),
+            # Zone-independent people counting. These are the numbers to use
+            # when no zone polygons are defined.
+            "unique_total": self.unique_total(),
+            "unique_by_camera": self.unique_by_camera(),
+            "live_by_camera": self.live_by_camera(),
             "stats": dict(self.stats),
         }
 

@@ -166,6 +166,39 @@ class IdentityService:
         snap["ttl_seconds"] = self.registry.ttl_seconds
         return snap
 
+    # -- GET /api/v1/identity/counts --
+    def counts(self, now: Optional[float] = None) -> dict:
+        """People counts that need no zones defined.
+
+        Zone occupancy answers "how many people are in this polygon", which
+        requires a polygon. This answers "how many distinct people", which only
+        requires identity — so it works on a camera with no zones at all.
+
+          live         distinct people visible right now, site-wide
+          unique_total distinct people seen since startup (footfall)
+          per_camera   the same two numbers per camera
+
+        per_camera unique will not sum to unique_total when someone was seen by
+        more than one camera. That gap IS the de-duplication.
+        """
+        now = time.time() if now is None else now
+        self.registry.expire(now)
+        live_by_cam = self.registry.live_by_camera()
+        uniq_by_cam = self.registry.unique_by_camera()
+        cameras = sorted(set(live_by_cam) | set(uniq_by_cam))
+        return {
+            "live": self.registry.site_occupancy(),
+            "unique_total": self.registry.unique_total(),
+            "cross_camera": len(self.registry.cross_camera_refs()),
+            "per_camera": [
+                {"camera_id": c,
+                 "live": live_by_cam.get(c, 0),
+                 "unique": uniq_by_cam.get(c, 0)}
+                for c in cameras
+            ],
+            "ts": now,
+        }
+
     # -- GET /api/v1/identity/list --
     def list_identities(self, limit: int = 200, cross_camera_only: bool = False) -> List[dict]:
         refs = (self.registry.cross_camera_refs() if cross_camera_only

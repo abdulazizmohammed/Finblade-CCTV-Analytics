@@ -161,6 +161,98 @@ class IngestService:
         return 200, {"acknowledged": True, "alert_id": alert_id,
                      "acknowledged_by": who, "acknowledged_at": ts}
 
+    def clear_alerts(self, scope: str = "closed", delete_frames: bool = True
+                     ) -> Tuple[int, dict]:
+        """Delete alerts and, optionally, the snapshot files they own.
+
+        scope "closed" (default) removes only RESOLVED/DISMISSED alerts, so an
+        operator cannot wipe something still needing attention with one click.
+        "all" removes everything.
+
+        Frame deletion is deliberately paranoid about paths: refs come from the
+        database as URL paths like "/bookmarks/bm_CAM_00001.jpg", and are only
+        unlinked after resolving to a real file that sits INSIDE the bookmarks
+        directory. A ref of "../../etc/passwd" resolves outside and is skipped.
+        """
+        import os
+
+        scope = (scope or "closed").lower()
+        if scope not in ("closed", "all"):
+            return 400, {"ok": False, "error": "scope must be 'closed' or 'all'"}
+
+        count, frames = self.store.delete_alerts(scope)
+
+        removed = failed = 0
+        if delete_frames and frames:
+            root = os.path.abspath(os.path.join(
+                os.path.dirname(__file__), "..", "..", "evidence", "bookmarks"))
+            for ref in frames:
+                name = str(ref).split("/")[-1]
+                path = os.path.abspath(os.path.join(root, name))
+                if not path.startswith(root + os.sep):
+                    failed += 1          # escaped the bookmarks dir; leave it
+                    continue
+                try:
+                    os.remove(path)
+                    removed += 1
+                except FileNotFoundError:
+                    pass                 # already gone: not an error
+                except OSError:
+                    failed += 1
+        return 200, {"ok": True, "scope": scope, "alerts_deleted": count,
+                     "frames_deleted": removed, "frames_failed": failed}
+
+    def orphaned_frames(self) -> dict:
+        """Snapshot files on disk that no alert references any more.
+
+        Alerts deleted before this endpoint existed left their JPEGs behind, and
+        so does any alert removed directly from the database.
+        """
+        import os
+
+        root = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "..", "evidence", "bookmarks"))
+        if not os.path.isdir(root):
+            return {"orphans": 0, "bytes": 0, "dir": root}
+        referenced = set()
+        for a in self.store.list_alerts_history(0, 9_999_999_999, limit=100000):
+            if a.get("frame"):
+                referenced.add(str(a["frame"]).split("/")[-1])
+        orphans, total = 0, 0
+        for name in os.listdir(root):
+            if name in referenced:
+                continue
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+                orphans += 1
+            except OSError:
+                pass
+        return {"orphans": orphans, "bytes": total,
+                "mb": round(total / (1024 * 1024), 1), "dir": root}
+
+    def delete_orphaned_frames(self) -> Tuple[int, dict]:
+        import os
+
+        info = self.orphaned_frames()
+        root = info["dir"]
+        if not os.path.isdir(root):
+            return 200, {"ok": True, "frames_deleted": 0}
+        referenced = set()
+        for a in self.store.list_alerts_history(0, 9_999_999_999, limit=100000):
+            if a.get("frame"):
+                referenced.add(str(a["frame"]).split("/")[-1])
+        removed = 0
+        for name in os.listdir(root):
+            if name in referenced:
+                continue
+            try:
+                os.remove(os.path.join(root, name))
+                removed += 1
+            except OSError:
+                pass
+        return 200, {"ok": True, "frames_deleted": removed,
+                     "mb_freed": info.get("mb", 0)}
+
     def resolve(self, alert_id: str, action: str, who: str, ts: float,
                 note: str = None) -> Tuple[int, dict]:
         """Close an alert: action 'RESOLVED' (handled) or 'DISMISSED' (false alarm),

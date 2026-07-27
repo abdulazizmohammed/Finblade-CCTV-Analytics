@@ -135,6 +135,30 @@ class SQLiteStore(Store):
     def acknowledge_alert(self, alert_id: str, who: str, ts: float) -> bool:
         return self.update_alert(alert_id, "ACK", who, ts)
 
+    def delete_alerts(self, scope: str = "closed"):
+        """Delete alerts, returning (count, frame_refs) so snapshots can go too.
+
+        Selects the frame refs BEFORE deleting: once the rows are gone there is
+        no way to find which JPEGs they owned, and the files would sit on disk
+        forever.
+        """
+        closed = ("RESOLVED", "DISMISSED")
+        with self._lock:
+            if scope == "all":
+                rows = self._conn.execute(
+                    "SELECT frame FROM alerts WHERE frame IS NOT NULL").fetchall()
+                cur = self._conn.execute("DELETE FROM alerts")
+            else:
+                rows = self._conn.execute(
+                    "SELECT frame FROM alerts WHERE frame IS NOT NULL "
+                    "AND status IN (?,?)", closed).fetchall()
+                cur = self._conn.execute(
+                    "DELETE FROM alerts WHERE status IN (?,?)", closed)
+            self._conn.commit()
+            frames = [r["frame"] if isinstance(r, dict) or hasattr(r, "keys") else r[0]
+                      for r in rows]
+            return cur.rowcount, [f for f in frames if f]
+
     def update_alert(self, alert_id: str, status: str, who: str, ts: float,
                      note: str = None) -> bool:
         """Advance an alert through OPEN -> ACK -> RESOLVED/DISMISSED. A resolve or

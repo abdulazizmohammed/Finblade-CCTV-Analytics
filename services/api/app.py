@@ -238,6 +238,32 @@ async def identity_stats():
     return id_svc.stats()
 
 
+@app.delete("/api/v1/alerts")
+async def clear_alerts(scope: str = Query("closed"),
+                       delete_frames: bool = Query(True)):
+    """Delete alerts and their saved snapshots.
+
+    scope=closed (default) removes only RESOLVED/DISMISSED alerts; scope=all
+    removes every alert including open ones. Destructive and not undoable — the
+    UI confirms before calling this.
+    """
+    status, body = svc.clear_alerts(scope=scope, delete_frames=delete_frames)
+    return JSONResponse(status_code=status, content=body)
+
+
+@app.get("/api/v1/frames/orphaned")
+async def orphaned_frames():
+    """Snapshot files on disk that no alert references any more."""
+    return svc.orphaned_frames()
+
+
+@app.delete("/api/v1/frames/orphaned")
+async def delete_orphaned_frames():
+    """Remove snapshot files left behind by alerts deleted earlier."""
+    status, body = svc.delete_orphaned_frames()
+    return JSONResponse(status_code=status, content=body)
+
+
 @app.get("/api/v1/identity/counts")
 async def identity_counts():
     """Unique-people counts that work with NO zones defined.

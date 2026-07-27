@@ -10,7 +10,7 @@ tested against InMemoryStore without a database.
 """
 
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Live dashboard freshness: a zone not reported within this many seconds (wall
 # clock) was removed/renamed in the editor, or its camera stopped, so it is
@@ -34,6 +34,19 @@ class Store:
     def acknowledge_alert(self, alert_id: str, who: str, ts: float) -> bool: raise NotImplementedError
     def update_alert(self, alert_id: str, status: str, who: str, ts: float,
                      note: str = None) -> bool: raise NotImplementedError
+
+    def delete_alerts(self, scope: str = "closed") -> Tuple[int, List[str]]:
+        """Delete alerts. Returns (rows_deleted, frame_refs_of_deleted).
+
+        The frame refs come back so the caller can remove the snapshot files
+        too — deleting only the rows would orphan the JPEGs, which are the bulk
+        of the disk usage (944 MB at last count).
+
+        scope: "closed" = RESOLVED/DISMISSED only (safe default), "all" = every
+        alert regardless of state.
+        """
+        return 0, []
+
     def latest_zone_states(self) -> List[dict]: raise NotImplementedError
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]: raise NotImplementedError
 
@@ -98,6 +111,16 @@ class InMemoryStore(Store):
 
     def acknowledge_alert(self, alert_id: str, who: str, ts: float) -> bool:
         return self.update_alert(alert_id, "ACK", who, ts)
+
+    def delete_alerts(self, scope: str = "closed") -> Tuple[int, List[str]]:
+        closed = ("RESOLVED", "DISMISSED")
+        doomed = [aid for aid, a in self._alerts.items()
+                  if scope == "all" or a.get("status", "OPEN") in closed]
+        frames = [self._alerts[aid].get("frame") for aid in doomed
+                  if self._alerts[aid].get("frame")]
+        for aid in doomed:
+            del self._alerts[aid]
+        return len(doomed), frames
 
     def update_alert(self, alert_id: str, status: str, who: str, ts: float,
                      note: str = None) -> bool:

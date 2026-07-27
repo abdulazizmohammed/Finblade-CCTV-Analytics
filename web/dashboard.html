@@ -120,6 +120,18 @@ body{
 
 /* alerts */
 .alerts{display:flex;flex-direction:column;gap:9px;padding:12px 14px;max-height:520px;overflow-y:auto;}
+/* Destructive controls. Teal is chrome, so the default action uses it; only the
+   irreversible "clear all" takes the critical colour, and only on hover — a
+   permanently red button next to a live alert feed competes with real alarms. */
+.clearbtn{margin-left:8px;background:transparent;color:var(--fb-text-muted);
+  border:1px solid var(--fb-line);border-radius:6px;padding:4px 10px;cursor:pointer;
+  font-family:var(--fb-font-data);font-size:11px;letter-spacing:.04em;}
+.clearbtn:hover{border-color:var(--fb-teal);color:var(--fb-teal);}
+.clearbtn.danger:hover{border-color:var(--fb-critical);color:var(--fb-critical);}
+.clearbtn:focus-visible{outline:2px solid var(--fb-teal);outline-offset:2px;}
+.clearbtn[disabled]{opacity:.5;cursor:default;}
+.cleanline{margin:8px 0 0;padding:6px 10px;border:1px solid var(--fb-line);border-radius:6px;
+  font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);}
 .alert{display:flex;gap:11px;padding:10px 12px;border-radius:var(--fb-r);background:var(--fb-surface-2);border-left:3px solid var(--fb-ok);}
 .alert[data-sev="AMBER"]{border-left-color:var(--fb-warning);}
 .alert[data-sev="RED"]{border-left-color:var(--fb-critical);}
@@ -189,7 +201,11 @@ body{
       <section>
         <div class="section-h"><p class="eyebrow">Zones</p><span class="rule"></span></div>
         <div class="zones" id="zones"><span class="empty">no zone data</span></div>
-        <div class="section-h" style="margin-top:18px;"><p class="eyebrow">Alert feed</p><span class="rule"></span></div>
+        <div class="section-h" style="margin-top:18px;"><p class="eyebrow">Alert feed</p><span class="rule"></span>
+          <button class="clearbtn" id="clearClosed" title="Delete resolved and dismissed alerts and their saved frames">Clear closed</button>
+          <button class="clearbtn danger" id="clearAll" title="Delete EVERY alert, including open ones, and their saved frames">Clear all</button>
+        </div>
+        <div class="cleanline" id="cleanline" hidden></div>
         <div class="panel alerts" id="alerts"><span class="empty">no active alerts</span></div>
       </section>
     </div>
@@ -453,6 +469,37 @@ setInterval(()=>{
 },1000);
 
 connect();startPoll();
+// --- destructive housekeeping: delete alerts + their saved frames ----------
+// Both confirm first and report what actually happened, including bytes freed,
+// because there is no undo.
+async function clearAlerts(scope,btn){
+  const what = scope==='all'
+    ? 'Delete EVERY alert, including open ones, and their saved frames?'
+    : 'Delete resolved and dismissed alerts and their saved frames?';
+  if(!confirm(what+'\n\nThis cannot be undone.'))return;
+  const line=$('cleanline'); const buttons=[$('clearClosed'),$('clearAll')];
+  buttons.forEach(b=>b.disabled=true);
+  line.hidden=false; line.textContent='deleting…';
+  try{
+    const r=await fetch(`${API}/api/v1/alerts?scope=${scope}`,{method:'DELETE'})
+      .then(r=>r.json());
+    let msg=`deleted ${r.alerts_deleted} alert${r.alerts_deleted===1?'':'s'}`
+           +` · ${r.frames_deleted} frame${r.frames_deleted===1?'':'s'}`;
+    if(r.frames_failed)msg+=` · ${r.frames_failed} frame(s) could not be removed`;
+    // Snapshots orphaned by earlier deletions are not reachable from any alert,
+    // so offer them separately rather than leaving them on disk silently.
+    try{
+      const o=await fetch(`${API}/api/v1/frames/orphaned`).then(r=>r.json());
+      if(o.orphans>0)msg+=` · ${o.orphans} orphaned frame(s) (${o.mb} MB) remain`;
+    }catch(e){}
+    line.textContent=msg;
+    poll();
+  }catch(e){ line.textContent='delete failed — see the API log'; }
+  finally{ buttons.forEach(b=>b.disabled=false); }
+}
+$('clearClosed').addEventListener('click',()=>clearAlerts('closed'));
+$('clearAll').addEventListener('click',()=>clearAlerts('all'));
+
 pollCameras();setInterval(pollCameras,3000);   // cameras/feeds refresh independently of WS
 pollCounts();setInterval(pollCounts,3000);     // unique-people counts (zone-independent)
 </script>

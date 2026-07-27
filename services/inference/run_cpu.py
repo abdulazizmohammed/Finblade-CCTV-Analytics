@@ -161,9 +161,16 @@ ZONE_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION}
 POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE,
                     CAPACITY_WARNING, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
                     LOITERING_START, LOITERING_END}
-# Alerts that get a saved snapshot (Req 17): restricted intrusion (R-06),
-# loitering (R-05), critical density (R-02). Density-warning/capacity do NOT.
-SNAPSHOT_RULES = {"R-02", "R-05", "R-06"}
+# Alerts that get a saved snapshot: critical density (R-02) and restricted-zone
+# intrusion (R-06) ONLY.
+#
+# R-05 (loitering) was dropped from this set deliberately. Loitering fires
+# continuously for anyone standing still, so on a looping clip it produced 7,741
+# frames totalling 944 MB — the evidence directory became the largest thing in
+# the repo and the genuinely serious snapshots were buried in it. A snapshot is
+# only worth writing when someone must look at it: a red-band crowd density, or
+# a person somewhere they are not allowed to be.
+SNAPSHOT_RULES = {"R-02", "R-06"}
 
 _latest_jpeg = {"buf": None}
 # Raw frame + render context so the MJPEG stream can re-annotate per-request with
@@ -744,8 +751,8 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 _render.update(frame=frame, zones=cfg.zones, tracks=list(tracks),
                                occ=dict(occupancy), meta=track_meta)
 
-        # Snapshot only the snapshot-worthy alerts (restricted / loitering /
-        # critical-density) — not density-warning, capacity, or movement events.
+        # Snapshot only critical density + restricted intrusion — not loitering,
+        # density-warning, capacity, or movement events.
         snap_alerts = [a for a in pending_alerts
                        if a.get("rule_id") in SNAPSHOT_RULES and a.get("kind") == "FIRE"]
         frame_ref = None

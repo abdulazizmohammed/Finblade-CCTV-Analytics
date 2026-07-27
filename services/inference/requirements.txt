@@ -1,3 +1,12 @@
+# SUPERSEDED — do not install from this file.
+#
+# It predates the API service, the move from OpenVINO to CUDA, and cross-camera
+# ReID: it pins openvino (no longer used) and omits torch, fastapi, uvicorn and
+# boxmot, so a system built from it will not run. Kept only because the original
+# OpenVINO/Arc path in main.py still refers to it.
+#
+# Use ../../requirements.txt with ../../constraints.txt. See docs/DEPLOY.md.
+#
 # Pinned to reduce surprises on first run. Bump deliberately, not accidentally.
 ultralytics==8.3.40      # provides YOLO + built-in ByteTrack (model.track)
 openvino==2024.4.0       # Arc GPU inference backend

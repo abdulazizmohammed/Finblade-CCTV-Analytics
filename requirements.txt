@@ -1,0 +1,46 @@
+# FinBlade CCTV — complete runtime dependency set.
+#
+# These are the versions ACTUALLY running, captured from a working install, not
+# an aspiration. services/inference/requirements.txt predates the API, the
+# CUDA move and cross-camera ReID: it still pins openvino (unused) and omits
+# torch, fastapi, uvicorn and boxmot, so installing from it produces a broken
+# system. Use this file.
+#
+# INSTALL (order matters — see docs/DEPLOY.md):
+#   pip install -r requirements.txt -c constraints.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cu128
+#
+# The constraints file is not optional. boxmot's own dependency resolution wants
+# numpy>=2, which is an ABI break for torch/torchvision/ultralytics/opencv/scipy
+# compiled against numpy 1.x — it takes the whole vision pipeline down. The
+# constraints file pins numpy and friends so pip picks a boxmot build that
+# tolerates them.
+
+# --- vision -----------------------------------------------------------------
+# +cu128 wheels come from the PyTorch index, not PyPI. For a CPU-only test box
+# drop the +cu128 suffixes and the --extra-index-url, and set device: cpu in the
+# camera configs.
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+ultralytics==8.3.40          # YOLO detection + built-in ByteTrack
+boxmot==19.0.0               # OSNet ReID backend for cross-camera identity
+lapx==0.9.4                  # linear assignment used by the tracker
+filterpy==1.4.5              # boxmot dependency
+numpy==1.26.4                # DO NOT bump: see the constraints note above
+scipy==1.15.3
+opencv-python-headless==4.10.0.84
+
+# --- API + web --------------------------------------------------------------
+fastapi==0.139.2
+uvicorn==0.51.0
+flask==3.0.3                 # per-camera MJPEG viewer
+requests==2.34.2             # camera workers post to the API
+PyYAML==6.0.2
+
+# --- weight fetching --------------------------------------------------------
+gdown==5.2.2                 # scripts/get_weights.py pulls OSNet via boxmot
+
+# --- tests ------------------------------------------------------------------
+# httpx is required by fastapi.testclient; without it the HTTP-level tests skip
+# themselves rather than fail, so the suite silently loses 11 tests.
+httpx==0.28.1

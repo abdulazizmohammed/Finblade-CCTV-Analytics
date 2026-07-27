@@ -1,0 +1,21 @@
+# Version floor/ceiling protection for pip's resolver.
+#
+# Pass with -c on EVERY install into this environment:
+#   pip install <anything> -c constraints.txt
+#
+# Why this exists: `pip install boxmot` on its own resolves to boxmot 22, which
+# requires numpy>=2. numpy 2.x is an ABI break for torch, torchvision,
+# ultralytics, scipy and opencv when they were built against numpy 1.x — the
+# result is a stack that imports and then segfaults or throws dtype errors deep
+# in inference. With these constraints pip backs off to boxmot 19, which works
+# with the pinned stack, and every other package here is left untouched.
+#
+# Verified: installing boxmot under these constraints changed none of the pins
+# below, and the full test suite stayed green.
+
+numpy==1.26.4
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+ultralytics==8.3.40
+scipy==1.15.3
+opencv-python-headless==4.10.0.84

@@ -146,9 +146,18 @@ class GlobalIdentityRegistry:
         # Memory is bounded by (unique people x cameras) short strings, and the
         # refs are the same anonymous salted hashes stored nowhere else.
         self._seen_pairs: Set[Tuple[str, str]] = set()
+        # Refs PROVEN to be different people, because they were tracked at the
+        # same moment on the same camera. One person cannot be in two places at
+        # once, so this is hard physical evidence — and unlike appearance it
+        # still holds when two people are dressed identically. Consolidation
+        # consults it before folding two records together.
+        self._exclusive: Dict[str, Set[str]] = {}
         self._seq = 0
         self.stats = {"created": 0, "matched": 0, "rejected_margin": 0,
                       "rejected_topology": 0, "expired": 0,
+                      # Ambiguities resolved by folding two gallery records of
+                      # the same person together instead of splitting again.
+                      "consolidated": 0,
                       # Candidates evaluated for a camera pair that appears in
                       # no topology entry. Non-zero means the topology file does
                       # not cover the cameras actually running, so those pairs
@@ -191,6 +200,17 @@ class GlobalIdentityRegistry:
             if self._bindings[binding] == ref:
                 del self._bindings[binding]
 
+    def _note_co_present(self, ref: str, camera_id: str) -> None:
+        """Record that ``ref`` is distinct from everyone else live on this camera."""
+        for (cam, _tid), other in self._bindings.items():
+            if cam != camera_id or other == ref:
+                continue
+            self._exclusive.setdefault(ref, set()).add(other)
+            self._exclusive.setdefault(other, set()).add(ref)
+
+    def _are_exclusive(self, a: str, b: str) -> bool:
+        return b in self._exclusive.get(a, ())
+
     def _evict_if_full(self) -> None:
         if len(self._identities) <= self.max_identities:
             return
@@ -230,7 +250,7 @@ class GlobalIdentityRegistry:
         self.expire(now)
 
         best_ref, best_score = None, -1.0
-        runner_up = -1.0
+        runner_up_ref, runner_up = None, -1.0
         considered = 0
         topo_rejected = 0
         unknown_pairs = 0
@@ -251,30 +271,64 @@ class GlobalIdentityRegistry:
             considered += 1
             score = bank.similarity(ident.bank)
             if score > best_score:
-                runner_up = best_score
+                runner_up_ref, runner_up = best_ref, best_score
                 best_ref, best_score = ref, score
             elif score > runner_up:
-                runner_up = score
+                runner_up_ref, runner_up = ref, score
 
         self.stats["rejected_topology"] += topo_rejected
         self.stats["unknown_pair"] += unknown_pairs
         runner_up = max(runner_up, 0.0)
         best_score = max(best_score, 0.0)
 
+        def _bind(ref: str, reason: str) -> MatchResult:
+            ident = self._identities[ref]
+            for v in bank.vectors:
+                ident.bank.add(v)
+            ident.note_seen(camera_id, now, zone_id)
+            ident.active.add(binding)
+            self._note_co_present(ref, camera_id)
+            self._bindings[binding] = ref
+            self._seen_pairs.add((camera_id, ref))
+            self.stats["matched"] += 1
+            return MatchResult(global_ref=ref, matched=True, score=best_score,
+                               runner_up=runner_up, reason=reason,
+                               candidates=considered)
+
         if best_ref is not None and best_score >= self.threshold:
             if (best_score - runner_up) >= self.margin or considered == 1:
-                ident = self._identities[best_ref]
-                for v in bank.vectors:
-                    ident.bank.add(v)
-                ident.note_seen(camera_id, now, zone_id)
-                ident.active.add(binding)
-                self._bindings[binding] = best_ref
-                self._seen_pairs.add((camera_id, best_ref))
-                self.stats["matched"] += 1
-                return MatchResult(global_ref=best_ref, matched=True,
-                                   score=best_score, runner_up=runner_up,
-                                   reason="appearance_match", candidates=considered)
-            # Ambiguous: several plausible people. Splitting is the safe error.
+                return _bind(best_ref, "appearance_match")
+
+            # Ambiguous — but "ambiguous" has two opposite meanings, and
+            # treating them alike is what made unique counts run away:
+            #
+            #   two DIFFERENT people scoring alike  -> splitting is correct
+            #   two records of the SAME person      -> merging is correct
+            #
+            # The second case is self-inflicted: every split leaves another
+            # near-identical copy of one person in the gallery, which makes the
+            # next match more ambiguous, which causes another split. Observed
+            # live as rejected_margin=95 against created=100 for a clip
+            # containing about five people.
+            #
+            # Distinguishing them is cheap: ask whether the top two candidates
+            # look like each other. If they do, they are one person already
+            # split, so consolidate them and accept rather than splitting again.
+            # ...unless they were tracked simultaneously on one camera, which
+            # proves they are two people however alike they look. Appearance
+            # alone cannot make that call: two staff in the same uniform score
+            # just as high as two records of one person, and merging them would
+            # put a stranger's movements under someone else's ref.
+            if (runner_up_ref is not None and runner_up_ref in self._identities
+                    and not self._are_exclusive(best_ref, runner_up_ref)):
+                twin = self._identities[best_ref].bank.similarity(
+                    self._identities[runner_up_ref].bank)
+                if twin >= self.threshold:
+                    self.merge(best_ref, runner_up_ref)
+                    self.stats["consolidated"] += 1
+                    return _bind(best_ref, "consolidated_duplicate")
+
+            # Genuinely different people. Splitting stays the safe error.
             self.stats["rejected_margin"] += 1
             reason = "ambiguous_margin"
         else:
@@ -289,6 +343,9 @@ class GlobalIdentityRegistry:
         ident.note_seen(camera_id, now, zone_id)
         ident.active.add(binding)
         self._identities[ref] = ident
+        # Anyone else live on this camera right now is definitively a different
+        # person from this one.
+        self._note_co_present(ref, camera_id)
         self._bindings[binding] = ref
         self._seen_pairs.add((camera_id, ref))
         self.stats["created"] += 1
@@ -329,6 +386,17 @@ class GlobalIdentityRegistry:
         # drop by one too — otherwise a corrected merge leaves footfall inflated.
         self._seen_pairs = {(cam, keep_ref if ref == drop_ref else ref)
                             for cam, ref in self._seen_pairs}
+        # Exclusions transfer: anyone proven distinct from the dropped ref is
+        # proven distinct from the surviving one.
+        for other in self._exclusive.pop(drop_ref, set()):
+            peers = self._exclusive.get(other)
+            if peers is not None:
+                peers.discard(drop_ref)
+                if other != keep_ref:
+                    peers.add(keep_ref)
+            if other != keep_ref:
+                self._exclusive.setdefault(keep_ref, set()).add(other)
+        self._exclusive.get(keep_ref, set()).discard(keep_ref)
         self._identities.pop(drop_ref, None)
         return True
 
@@ -389,8 +457,24 @@ class GlobalIdentityRegistry:
         return counts
 
     def cross_camera_refs(self) -> List[str]:
-        """Identities that have genuinely been seen by more than one camera."""
+        """LIVE identities seen by more than one camera (gallery-scoped).
+
+        Only counts identities still in the gallery, so it drops on TTL expiry.
+        Use cross_camera_total() for a figure comparable with unique_total().
+        """
         return [r for r, i in self._identities.items() if len(i.cameras_seen) > 1]
+
+    def cross_camera_total(self) -> int:
+        """Cumulative count of people ever seen by more than one camera.
+
+        Must be derived from _seen_pairs, not the gallery: mixing a live count
+        with cumulative ones makes the numbers fail to reconcile
+        (unique_by_camera summed, minus unique_total, should equal this).
+        """
+        cams: Dict[str, Set[str]] = {}
+        for cam, ref in self._seen_pairs:
+            cams.setdefault(ref, set()).add(cam)
+        return sum(1 for c in cams.values() if len(c) > 1)
 
     def snapshot(self) -> dict:
         return {

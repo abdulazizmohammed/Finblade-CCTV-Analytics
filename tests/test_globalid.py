@@ -120,6 +120,59 @@ class TestAmbiguity(unittest.TestCase):
         self.assertEqual(r.stats["rejected_margin"], 1)
         self.assertEqual(len(r), 3)
 
+    def test_duplicate_records_of_one_person_are_consolidated(self):
+        # Regression on runaway splitting. Two gallery entries that are really
+        # the SAME person (an earlier split) both score highly for a new track.
+        # Splitting again would add a third copy and make the next match worse
+        # still — live this produced rejected_margin=95 / created=100 for a clip
+        # with about five people in it.
+        r = GlobalIdentityRegistry(topology=walk_topology(),
+                                   threshold=0.62, margin=0.06)
+        a = r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0).global_ref
+        # A near-duplicate of the same person, on a different camera so the
+        # same-camera conflict gate does not hide the effect.
+        b = r.resolve("CAM-B", 2, bank(PERSON_A_ALT), now=100.0).global_ref
+        self.assertNotEqual(a, b)
+        r.release("CAM-A", 1)
+        r.release("CAM-B", 2)
+
+        before = len(r)
+        res = r.resolve("CAM-B", 9, bank(PERSON_A), now=140.0)
+        self.assertTrue(res.matched)
+        self.assertEqual(res.reason, "consolidated_duplicate")
+        self.assertEqual(r.stats["consolidated"], 1)
+        self.assertEqual(len(r), before - 1)      # two records became one
+        self.assertEqual(r.unique_total(), 1)     # and footfall corrected
+
+    def test_lookalikes_seen_together_are_never_consolidated(self):
+        # The safety rail on consolidation. Two people in matching uniforms
+        # score ~0.99 against each other — appearance CANNOT distinguish "one
+        # person split in two" from "two people who dress alike". What can is
+        # physics: these two were tracked simultaneously on one camera, so they
+        # are certainly different people and must never be folded together.
+        r = GlobalIdentityRegistry(topology=walk_topology(),
+                                   threshold=0.62, margin=0.06)
+        a = r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0).global_ref
+        b = r.resolve("CAM-A", 2, bank(LOOKALIKE), now=100.0).global_ref
+        self.assertTrue(r._are_exclusive(a, b))
+        r.release("CAM-A", 1)
+        r.release("CAM-A", 2)
+
+        res = r.resolve("CAM-B", 9, bank(BETWEEN), now=140.0)
+        self.assertFalse(res.matched)
+        self.assertEqual(res.reason, "ambiguous_margin")
+        self.assertEqual(r.stats["consolidated"], 0)
+
+    def test_exclusion_survives_a_merge(self):
+        r = GlobalIdentityRegistry(topology=CameraTopology())
+        a = r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0).global_ref
+        b = r.resolve("CAM-A", 2, bank(PERSON_B), now=100.0).global_ref
+        c = r.resolve("CAM-B", 3, bank(PERSON_B), now=100.0).global_ref
+        self.assertTrue(r._are_exclusive(a, b))
+        r.merge(c, b)                     # b folded into c
+        # c inherits b's proof that it is not a.
+        self.assertTrue(r._are_exclusive(a, c))
+
     def test_clear_winner_is_accepted(self):
         # Same setup but the second candidate is plainly a different person,
         # so the margin is wide and matching proceeds.

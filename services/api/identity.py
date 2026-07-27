@@ -189,7 +189,10 @@ class IdentityService:
         return {
             "live": self.registry.site_occupancy(),
             "unique_total": self.registry.unique_total(),
-            "cross_camera": len(self.registry.cross_camera_refs()),
+            # Cumulative, to match unique_total: sum(per_camera unique)
+            # - unique_total == cross_camera. A live-scoped count here would not
+            # reconcile with the other figures in the same response.
+            "cross_camera": self.registry.cross_camera_total(),
             "per_camera": [
                 {"camera_id": c,
                  "live": live_by_cam.get(c, 0),

@@ -118,7 +118,7 @@ class GlobalIdentityRegistry:
             raise ValueError("threshold must be in (0, 1]")
         if margin < 0:
             raise ValueError("margin must be >= 0")
-        self.topology = topology or CameraTopology.empty()
+        self.topology = topology if topology is not None else CameraTopology.empty()
         self.threshold = threshold
         self.margin = margin
         self.ttl_seconds = ttl_seconds
@@ -302,6 +302,9 @@ class GlobalIdentityRegistry:
 
     def ref_for(self, camera_id: str, local_track_id: int) -> Optional[str]:
         return self._bindings.get((camera_id, int(local_track_id)))
+
+    def all_refs(self) -> List[str]:
+        return list(self._identities)
 
     def active_refs(self) -> Set[str]:
         return {ref for ref in self._bindings.values()}

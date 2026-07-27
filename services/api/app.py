@@ -42,6 +42,16 @@ else:
 
 svc = IngestService(store, bus)
 
+# Cross-camera identity. Lives in the API process because it is the only one
+# that sees every camera; each inference worker resolves its local track ids
+# against this single registry. Embeddings stay in this process's RAM and are
+# never handed to `store` — see services/api/identity.py.
+from .identity import IdentityService                            # noqa: E402
+_TOPOLOGY_PATH = os.environ.get(
+    "FINBLADE_TOPOLOGY",
+    os.path.join(os.path.dirname(__file__), "..", "..", "config", "topology.yaml"))
+id_svc = IdentityService(topology_path=_TOPOLOGY_PATH)
+
 # Manages detection pipelines for UI-provisioned cameras (Add camera + a source).
 from .camera_manager import CameraManager                       # noqa: E402
 _SELF_URL = os.environ.get("FINBLADE_SELF_URL", "http://127.0.0.1:8000")
@@ -205,6 +215,48 @@ async def occupancy_report_csv(frm: float = Query(0, alias="from"),
 async def list_reports(limit: int = Query(100)):
     """R-08 scheduled + on-demand occupancy reports (most recent first)."""
     return {"reports": svc.list_reports(limit)}
+
+
+# --- cross-camera identity -------------------------------------------------
+# Inference workers POST embeddings here and get back an opaque global_ref.
+# Nothing in this section ever returns or persists a vector.
+@app.post("/api/v1/identity/resolve")
+async def identity_resolve(request: Request):
+    status, body = id_svc.resolve(await request.json())
+    return JSONResponse(status_code=status, content=body)
+
+
+@app.post("/api/v1/identity/release")
+async def identity_release(request: Request):
+    status, body = id_svc.release(await request.json())
+    return JSONResponse(status_code=status, content=body)
+
+
+@app.get("/api/v1/identity/stats")
+async def identity_stats():
+    """Registry health: identity count, site occupancy, match/reject counters."""
+    return id_svc.stats()
+
+
+@app.get("/api/v1/identity/list")
+async def identity_list(limit: int = Query(200),
+                        cross_camera_only: bool = Query(False)):
+    return {"identities": id_svc.list_identities(
+        limit=limit, cross_camera_only=cross_camera_only)}
+
+
+@app.post("/api/v1/identity/merge")
+async def identity_merge(request: Request):
+    """Operator correction: fold one identity into another."""
+    status, body = id_svc.merge(await request.json())
+    return JSONResponse(status_code=status, content=body)
+
+
+@app.get("/api/v1/identity/{global_ref}")
+async def identity_journey(global_ref: str):
+    """Where this person has been: cameras and zones, in order."""
+    status, body = id_svc.journey(global_ref)
+    return JSONResponse(status_code=status, content=body)
 
 
 @app.post("/api/v1/reports/generate")

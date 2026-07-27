@@ -37,7 +37,7 @@ body{
 .wrap{max-width:1440px;margin:0 auto;padding:18px 22px 40px;}
 
 /* KPI strip */
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:18px;}
 .kpi{background:linear-gradient(180deg,var(--fb-surface-2),var(--fb-surface));border:1px solid var(--fb-line);
   border-radius:var(--fb-r-lg);padding:14px 16px;position:relative;overflow:hidden;}
 .kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--fb-teal);opacity:.35;}
@@ -154,6 +154,7 @@ body{
   <div class="wrap">
     <div class="kpis">
       <div class="kpi"><p class="eyebrow">Total occupancy</p><div class="val fb-num" id="kOcc">0<span class="u">people</span></div><div class="sub" id="kOccSub">across 0 zones</div></div>
+      <div class="kpi"><p class="eyebrow">Unique people</p><div class="val fb-num" id="kUniq">0<span class="u">seen</span></div><div class="sub" id="kUniqSub">—</div></div>
       <div class="kpi" id="kAlertTile"><p class="eyebrow">Active alerts</p><div class="val fb-num" id="kAlerts">0</div><div class="sub" id="kAlertsSub">0 critical · 0 warning</div></div>
       <div class="kpi"><p class="eyebrow">Cameras online</p><div class="val fb-num" id="kCams">0<span class="u">/ 0</span></div><div class="sub">heartbeat &lt; 30s</div></div>
       <div class="kpi"><p class="eyebrow">Peak density</p><div class="val fb-num" id="kDens">0.00<span class="u">/m²</span></div><div class="sub" id="kDensSub">—</div></div>
@@ -252,10 +253,29 @@ document.querySelectorAll('#ovlbar input[data-ovl]').forEach(cb=>cb.addEventList
   Object.values(feedTiles).forEach(t=>{if(t.streamUrl)t.img.src=feedUrl(t.streamUrl);});
 }));
 
-function renderKpis(zones,alerts){
+function renderKpis(zones,alerts,counts){
+  // Occupancy is a ZONE measure — it needs polygons. With no zones defined it
+  // is structurally 0, which reads as "nobody here" when the cameras are in
+  // fact tracking people. Fall back to the identity count, which needs no
+  // geometry, and say plainly which of the two is being shown.
   const totOcc=zones.reduce((a,z)=>a+(+z.occupancy||0),0);
-  $('kOcc').innerHTML=`${totOcc}<span class="u">people</span>`;
-  $('kOccSub').textContent=`across ${zones.length} zone${zones.length===1?'':'s'}`;
+  if(zones.length){
+    $('kOcc').innerHTML=`${totOcc}<span class="u">people</span>`;
+    $('kOccSub').textContent=`across ${zones.length} zone${zones.length===1?'':'s'}`;
+  }else if(counts){
+    $('kOcc').innerHTML=`${counts.live||0}<span class="u">people</span>`;
+    $('kOccSub').textContent='live · no zones defined';
+  }else{
+    $('kOcc').innerHTML=`0<span class="u">people</span>`;
+    $('kOccSub').textContent='across 0 zones';
+  }
+  // Cumulative distinct people, de-duplicated across cameras.
+  if(counts){
+    $('kUniq').innerHTML=`${counts.unique_total||0}<span class="u">seen</span>`;
+    const per=(counts.per_camera||[]).map(p=>`${p.camera_id} ${p.unique}`).join(' · ');
+    $('kUniqSub').textContent=(counts.cross_camera
+      ? `${counts.cross_camera} on 2+ cameras · ` : '')+(per||'—');
+  }
   const crit=alerts.filter(a=>['CRITICAL','RED'].includes(String(a.severity).toUpperCase())).length;
   const warn=alerts.length-crit;
   $('kAlerts').textContent=alerts.length;
@@ -370,10 +390,20 @@ async function alertAction(act,id){
   }catch(e){}
 }
 
+// Identity counts refresh on their own timer rather than riding the zone/alert
+// payload, so they keep working on both the WebSocket and REST-fallback paths —
+// and, importantly, on a site with no zones at all, where the zone poll returns
+// nothing to hang them off.
+let LAST_COUNTS=null;
+async function pollCounts(){
+  try{ LAST_COUNTS=await fetch(`${API}/api/v1/identity/counts`).then(r=>r.json()); }
+  catch(e){}
+}
+
 function apply(d){
   const zones=d.zones||[], alerts=d.alerts||[];
   if(zones[0]&&zones[0].camera_id)$('site').textContent=zones[0].camera_id;
-  renderKpis(zones,alerts);renderZones(zones);renderAlerts(alerts);
+  renderKpis(zones,alerts,LAST_COUNTS);renderZones(zones);renderAlerts(alerts);
 }
 
 let ws=null,pollTimer=null;
@@ -407,6 +437,7 @@ setInterval(()=>{
 
 connect();startPoll();
 pollCameras();setInterval(pollCameras,3000);   // cameras/feeds refresh independently of WS
+pollCounts();setInterval(pollCounts,3000);     // unique-people counts (zone-independent)
 </script>
 </body>
 </html>

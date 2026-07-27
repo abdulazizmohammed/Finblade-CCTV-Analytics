@@ -44,6 +44,71 @@ can't verify (I can't see it). Config indirection avoids guessing.
 **Reverse:** `mv media/1903279-uhd_1920_1440_30fps.mp4 media/clip.mp4` if you want
 the canonical name; then either config works.
 
+## D-7 — Built cross-camera ReID, which CLAUDE.md explicitly cuts
+**Choice:** Implemented cross-camera person identity (appearance embeddings +
+topology gating + a global identity registry), listed under "DO NOT BUILD".
+**Why:** You asked for it directly and said "forget about the demo". I flagged
+the conflict and the cost first; you confirmed. A standing rule written before
+the request loses to an explicit instruction after it.
+**Reverse:** The feature is additive and off-switchable. Set `reid.enabled:
+false` in a camera config, or delete `finblade/{appearance,globalid,topology}.py`
++ `services/{api/identity.py,inference/reid_client.py}` and the identity routes
+in `app.py`. Detection, tracking, zones, metrics and rules never call into it.
+
+## D-8 — Used the network and added a dependency, under a constraints file
+**Choice:** Installed `boxmot` and downloaded `models/osnet_x0_25_msmt17.pt`
+(3 MB), overriding CLAUDE.md rules 2 and 5 — with your go-ahead.
+**Why:** There is no way to do appearance ReID without an appearance model, and
+ultralytics 8.3.40's BoT-SORT ReID is a stub (`self.encoder = None`, "Haven't
+supported BoT-SORT(reid) yet"), so the flag cannot supply one.
+**The trap I avoided:** `pip install boxmot` wanted to pull **numpy 2.2.6**,
+upgrading the pinned numpy 1.26.4 — an ABI break for torch/torchvision/
+ultralytics/scipy/opencv, which could have taken the working pipeline down. I
+installed under a constraints file pinning numpy/torch/torchvision/ultralytics/
+scipy, which resolved to boxmot 19.0.0 and left every pin untouched (verified).
+**Chose msmt17 over market1501:** MSMT17 is larger and shot across more cameras
+and lighting conditions, so it generalises better to real CCTV.
+**Reverse:** `pip uninstall boxmot`; a snapshot of the 81-package venv from
+before the change is at `/tmp/venv_before_reid.txt`.
+
+## D-9 — Embeddings are RAM-only and never persisted
+**Choice:** Feature vectors live only in the worker's per-track banks and the
+API's in-memory gallery. They are cleared on track reap and on TTL expiry, and
+are never written to the database, evidence/, or any log — every API response
+returns only an opaque `gp_` ref, salted per session like `person_ref`.
+**Why:** A ReID embedding is a biometric template — it is exactly the thing that
+makes a person re-identifiable later. The product's whole privacy claim is "we
+hold no PII". Keeping vectors ephemeral and un-persisted is what lets that claim
+survive adding this feature. There are tests asserting no endpoint leaks one.
+**This is still a posture change and needs your sign-off**: the data now exists
+in memory at all, and crosses a loopback HTTP boundary, which was not true
+before. Under GDPR/UAE DP law that is worth a conversation with the client.
+**Reverse:** Nothing to delete — no vector is stored anywhere.
+
+## D-10 — Ambiguity creates a new identity rather than guessing
+**Choice:** A match must clear the threshold AND beat the runner-up by a margin.
+When several candidates are close, the matcher creates a NEW identity instead of
+picking the top one.
+**Why:** The two errors are not symmetric. An unnecessary split counts one
+person as two — a quiet metrics error. A wrong merge puts a stranger's movements
+under someone else's ref, and if it drives a restricted-zone alert it accuses the
+wrong person. In a uniformed environment (staff, hi-vis) near-ties are the norm,
+not the edge case.
+**Reverse:** `margin=0.0` in `GlobalIdentityRegistry` restores pick-the-best.
+
+## D-11 — Match threshold 0.70, explicitly provisional
+**Choice:** Raised the default from 0.62 to 0.70.
+**Why:** Measured on the dense clip (`evidence/cross_camera_eval_dense.json`):
+true-pair similarities ran min 0.80 / median 0.90, false pairs median 0.61 /
+max 0.83. 0.62 sat *at the false-pair median*, which is poor hygiene. The
+distributions **overlap** (gap −0.034), so no threshold separates them cleanly —
+the margin rule and topology gate do the real work, and this value is only a
+floor. That is also why sweeping 0.62/0.70/0.78 changed nothing.
+**Why it is not final:** that evaluation's second camera is a transformed copy of
+the first, so the two views share clothing, pose and lighting. Real cameras will
+push true-pair scores DOWN, and 0.70 may then be too strict. See B-4.
+**Reverse:** One constructor arg in `finblade/globalid.py`.
+
 ## D-6 — Hysteresis clear thresholds
 **Choice:** amber on=2.0/off=1.8, red on=4.0/off=3.6, capacity on=90%/off=85%.
 **Why:** CLAUDE.md requires "falling to 1.9 does NOT clear amber" → off-threshold

@@ -1,0 +1,45 @@
+{
+  "separability": {
+    "true_pairs": {
+      "n": 27,
+      "min": 0.7996,
+      "median": 0.9039,
+      "max": 0.9698
+    },
+    "false_pairs": {
+      "n": 1113,
+      "min": 0.3938,
+      "median": 0.6085,
+      "max": 0.8332
+    },
+    "gap_min_true_minus_max_false": -0.0336
+  },
+  "source": "media/1903279-uhd_1920_1440_30fps.mp4",
+  "frames": 400,
+  "seconds": 35.4,
+  "fps": 11.3,
+  "params": {
+    "threshold": 0.62,
+    "margin": 0.06,
+    "gt_iou": 0.5,
+    "min_samples": 2
+  },
+  "tracks": {
+    "cam_a": 38,
+    "cam_b": 30
+  },
+  "ground_truth_pairs": 27,
+  "matched_pairs": 26,
+  "match_rate": 0.963,
+  "false_merges": 1,
+  "identities_created": 41,
+  "identities_ideal": 41,
+  "registry_stats": {
+    "created": 41,
+    "matched": 27,
+    "rejected_margin": 3,
+    "rejected_topology": 0,
+    "expired": 0
+  },
+  "caveat": "Camera B is a transformed copy of camera A, so the two views share clothing, pose and lighting. These numbers validate the pipeline and threshold behaviour end to end; they do NOT predict accuracy on a genuine second camera."
+}

@@ -4,6 +4,60 @@ Timestamped, most-blocking first. Each: what failed, what I tried, best hypothes
 
 ---
 
+## B-4 — No genuine two-camera footage: cross-camera accuracy is UNVALIDATED  [HIGH]
+
+**What:** Cross-camera identity is built, wired and running, but nothing in
+`media/` shows one person leaving one camera's view and entering another's.
+Every clip is a single scene. So the one number that matters — how often it
+correctly links the same person across two *real* cameras — cannot be measured.
+
+**What I did instead:** `scripts/eval_cross_camera.py` derives a synthetic second
+camera from a clip by a known transform (flip + brightness + scale). Because the
+transform is invertible, boxes that overlap after mapping back are the same
+person by construction — exact ground truth on real people. Results on
+`media/1903279…` (400 frames): 27 ground-truth pairs, 26 matched (96.3%), 1 false
+merge, 3 ambiguous candidates rejected by the margin rule.
+
+**Why that is NOT the answer:** camera B is a transformed *copy*, so both views
+share clothing, pose, lighting and viewpoint. Real cameras differ far more. Those
+figures validate the plumbing and threshold behaviour end to end; they do not
+predict real cross-camera accuracy, and must not be quoted to a client as if they
+do. The measured separability makes the risk concrete: even on this easy case
+true-pair and false-pair similarity distributions **overlap** (worst true 0.80 vs
+best false 0.83).
+
+**What it needs (~20 min of your time, then I can finish the job):**
+1. Record two clips of the same people from two cameras, ideally one overlapping
+   pair and one non-overlapping pair, with roughly synchronised clocks.
+2. Note who appears where and when — even a rough list ("blue jacket: cam1
+   0:05-0:20, cam2 0:31-0:50") is enough to score against.
+3. Pace the walk between the cameras and put the real seconds into
+   `config/topology.yaml` — the transit times there are placeholders, and they
+   are what stops similar-looking strangers being linked.
+
+With those, I can retune the threshold on real data (D-11) and give you a true
+precision/recall figure instead of a proxy.
+
+---
+
+## B-5 — Topology transit times are placeholders  [MEDIUM]
+
+**What:** `config/topology.yaml` ships with empty pair lists and a permissive
+default window (2–120s). Unknown pairs are allowed through and flagged as
+`unknown_pair`.
+
+**Why it matters:** the transit gate is what stops appearance matching linking
+two strangers in similar clothing at opposite ends of a site. Set the minimum too
+low and strangers get merged; too high and real handovers are missed. This is
+site knowledge — I cannot infer it from video, and guessing it would silently
+degrade accuracy in whichever direction I guessed wrong.
+
+**What it needs:** walk each camera-to-camera route, time it, fill in the file.
+Mark any pairs whose views share floor area as `overlapping_pairs` — those behave
+oppositely (dt≈0 is expected, not suspicious).
+
+---
+
 ## B-1 — Vision pipeline cannot execute (detection deps + weights absent)  [RESOLVED]
 
 > RESOLVED in a later session once the human authorised installs: bootstrapped

@@ -1,0 +1,30 @@
+{
+  "source": "media/museum_cam01_zone_transitions.mp4",
+  "frames": 250,
+  "seconds": 14.4,
+  "fps": 17.36,
+  "params": {
+    "threshold": 0.62,
+    "margin": 0.06,
+    "gt_iou": 0.5,
+    "min_samples": 2
+  },
+  "tracks": {
+    "cam_a": 3,
+    "cam_b": 3
+  },
+  "ground_truth_pairs": 3,
+  "matched_pairs": 3,
+  "match_rate": 1.0,
+  "false_merges": 0,
+  "identities_created": 3,
+  "identities_ideal": 3,
+  "registry_stats": {
+    "created": 3,
+    "matched": 3,
+    "rejected_margin": 0,
+    "rejected_topology": 0,
+    "expired": 0
+  },
+  "caveat": "Camera B is a transformed copy of camera A, so the two views share clothing, pose and lighting. These numbers validate the pipeline and threshold behaviour end to end; they do NOT predict accuracy on a genuine second camera."
+}

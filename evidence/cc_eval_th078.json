@@ -1,0 +1,30 @@
+{
+  "source": "media/1903279-uhd_1920_1440_30fps.mp4",
+  "frames": 400,
+  "seconds": 33.9,
+  "fps": 11.79,
+  "params": {
+    "threshold": 0.78,
+    "margin": 0.06,
+    "gt_iou": 0.5,
+    "min_samples": 2
+  },
+  "tracks": {
+    "cam_a": 38,
+    "cam_b": 30
+  },
+  "ground_truth_pairs": 27,
+  "matched_pairs": 26,
+  "match_rate": 0.963,
+  "false_merges": 1,
+  "identities_created": 41,
+  "identities_ideal": 41,
+  "registry_stats": {
+    "created": 41,
+    "matched": 27,
+    "rejected_margin": 1,
+    "rejected_topology": 0,
+    "expired": 0
+  },
+  "caveat": "Camera B is a transformed copy of camera A, so the two views share clothing, pose and lighting. These numbers validate the pipeline and threshold behaviour end to end; they do NOT predict accuracy on a genuine second camera."
+}

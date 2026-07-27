@@ -1,95 +1,108 @@
-# Morning report — 2026-07-24 (architect phases 1a–10)
+# Morning report — 2026-07-26 (cross-camera identity)
 
 ## TL;DR
-The full stack is built and green. On top of the earlier overnight core, I worked
-through a 10-phase architect plan — one phase per commit, tests + a live run after
-each. **164 unit/integration tests pass** (`python3 -m unittest discover -s tests`,
-~1.4s). The vision path runs on the **NVIDIA RTX PRO 2000 (Blackwell)** GPU at
-~23 FPS on the synthetic clip. **I still cannot see** — bounding-box / zone-polygon
-placement is unverified by me and needs your eyes (see NEEDS YOUR EYES).
+You asked for cross-camera person tracking and said to forget the demo. It is
+built, wired, running, and measured. **306 tests pass** (was 168). One person
+walking between two cameras now gets one `global_ref`, and site occupancy stops
+double-counting someone visible to two cameras at once.
 
-Skipped **Phase 11 (ReID/VLM)** on purpose — you told me to, and it collides with
-CLAUDE.md's "no cross-camera ReID" cut and the no-network rule anyway.
+**The number I cannot give you is the one that matters most:** how accurately it
+links people across two *real* cameras. There is no such footage in `media/` —
+every clip is a single scene. I built a ground-truth harness around a synthetic
+second camera to validate the pipeline, but that is a proxy, not an answer. See
+B-4; it needs ~20 minutes of your time to fix.
 
 ## Status
-Phases complete: **1a, 1b, 2, 3, 4, 5, 6, 7, 8, 9, 10** — all committed
-(latest `f73799b`). Phase 11 intentionally skipped. Vision correctness:
-**unverified by design.**
+Cross-camera identity: **built and running.** Accuracy on real cameras:
+**unvalidated.** Everything from previous sessions still green and untouched.
 
-## What runs (verified live this session)
-One command brings it all up: `bash scripts/demo.sh` (API + two camera feeds), then
-open http://localhost:8000/web/dashboard.html.
-- **GPU detection + ByteTrack** on the synthetic clip, ~23 FPS, non-blocking capture
-  thread (a slow consumer never stalls the camera).
-- **Zones**: editor at `/tools/zone-editor.html` → save to server → runner loads them
-  (normalized polygons, per-zone thresholds/loiter/type/colour).
-- **Metrics/events**: occupancy, density, capacity %, dwell, inflow/outflow +
-  net/5m/15m windows, the full event set incl. restricted entry/exit (with dwell
-  duration), loitering start/end, camera online/offline/recovered.
-- **Rule engine** R-01/02/03/05/06/07/08 with **sustained-duration** density
-  hysteresis (must hold >threshold for 10s to fire — brief spikes no longer alert).
-- **Alert lifecycle**: OPEN → ACK → RESOLVED/DISMISSED + operator note; feed +
-  history reflect it.
-- **Camera health screen** (`/web/cameras.html`): live state/fps/resolution, central
-  simulate-failure / restore, register/delete.
-- **Dashboard**: live feeds with **overlay toggles** (zones/boxes/ids/feet/dwell),
-  zone cards with occupancy **sparklines**, alert feed, KPIs.
-- **Reports**: enriched occupancy (per-zone peak/avg + alert counts), **CSV export**,
-  and an in-process **R-08 scheduler** (hourly; on-demand + saved-report list).
-- Automated end-to-end proof: `bash scripts/demo_pass.sh` walks events → alert
-  resolve → camera sim/restore → on-demand report → CSV → scheduled report → health.
+## What runs
+- **Two independent camera processes → one shared identity registry** over HTTP.
+  Proof: `bash scripts/verify_cross_camera.sh` — 4 identities, all 4 seen by both
+  cameras, 18 matches, site occupancy correctly 2 people from 4 local bindings.
+- **OSNet embeddings** (`models/osnet_x0_25_msmt17.pt`, 3 MB) on the GPU, behind a
+  crop quality gate (size / confidence / aspect / frame-edge / occlusion) and a
+  sampling budget. In the live run the gate rejected ~31% of candidate crops.
+- **Three-gate matching:** sticky binding → transit feasibility → appearance with
+  a runner-up margin. Ambiguity creates a new identity rather than guessing.
+- **Topology config** (`config/topology.yaml`) distinguishing overlapping pairs
+  (dt≈0 expected) from non-overlapping ones (a walk is required).
+- **No FPS cost:** 24.7 FPS with ReID vs 22.0 without, uncapped, same clip.
+- **Endpoints:** resolve / release / merge / stats / list / `{ref}` journey.
+- **Privacy:** embeddings are RAM-only, cleared on track reap and TTL expiry,
+  never persisted or logged. Tests assert no endpoint returns a vector.
 
-## NEEDS YOUR EYES (do this first, ~10 min)
-1. Open `evidence/contact_CAM-SYN-01.jpg` — are boxes on people? Do the zone
-   polygons sit on the floor where you expect? (The synthetic clip's polygons are
-   demo placeholders, not surveyed floor coordinates.)
-2. Open `evidence/metrics_CAM-SYN-01.json` — is avg detections/frame plausible for
-   the scene? Any wild track-ID count?
-3. For your REAL terminal clip (`config/cameras.dev.yaml` /
-   `media/1903279-uhd_1920_1440_30fps.mp4`): draw real zone polygons in the editor
-   and save them; the placeholders won't match your floor.
+## NEEDS YOUR EYES (do this first, ~20 min)
+1. **Record real two-camera footage.** This is the blocker on everything else
+   (B-4). Same people, two cameras, roughly synced clocks — one overlapping pair
+   and one non-overlapping pair if you can. A rough note of who appears where and
+   when is enough for me to score against.
+2. **Pace the walks between cameras** and fill in `config/topology.yaml`. The
+   transit times there are placeholders. This gate is what stops two similar
+   strangers being merged; wrong numbers fail in both directions (B-5).
+3. **Read `evidence/cross_camera_eval_dense.json`**, specifically `separability`.
+   True-pair similarities min 0.80 / median 0.90; false pairs median 0.61 but
+   **max 0.83**. They overlap. That is the honest risk picture.
+4. **Decide the privacy posture with the client** (D-9). The system now holds
+   biometric templates in memory, where before it held none. I kept them
+   ephemeral and un-persisted, but "we hold no PII" is a weaker statement than it
+   was, and that is a conversation, not a code change.
 
-## Blockers (could not resolve)
-- **App-level HTTP endpoints aren't in the unittest suite.** FastAPI's TestClient
-  needs `httpx`, which isn't installed and I can't fetch (no-network rule). I cover
-  the endpoints with the **live** `scripts/demo_pass.sh` instead — that's how I
-  caught a real 500 (a missing `Response` import) in Phase 10. If you `pip install
-  httpx`, I can add a proper TestClient smoke suite.
-- **Zone polygons are placeholders** for both the synthetic and the real clip —
-  a human-judgement task I won't guess at (CLAUDE.md rule 3).
+## Blockers (I could not resolve these)
+- **B-4 — no genuine two-camera footage.** Cross-camera accuracy is unvalidated.
+  Proxy result on a synthetic second camera: 26/27 pairs matched (96.3%), 1 false
+  merge. Do not quote that to a client — camera B was a transformed copy of
+  camera A, sharing clothing, pose and lighting.
+- **B-5 — topology transit times are placeholders.** Site knowledge I cannot
+  infer from video.
+- **Threshold is provisional** (D-11). Raised 0.62 → 0.70 because 0.62 sat at the
+  false-pair median. Cannot be finalised without real footage.
 
-## Decisions I made without you (reversible)
-- **GPU**: used the NVIDIA RTX PRO 2000 (CUDA, torch 2.11+cu128), NOT the Intel Arc
-  iGPU (WSL passthrough is the known time-sink CLAUDE.md warns off). Configs default
-  to `device: cuda` with a clean CPU fallback (`_resolve_device`).
-- **R-08 scheduler** runs in-process (asyncio), interval via
-  `FINBLADE_REPORT_INTERVAL` (default 3600s) — no external scheduler/cron, per the
-  no-external-infra rule.
-- **Sustained-duration hysteresis**: changed the density latch from fire-on-crossing
-  to hold-for-10s (Req 9). This makes density alerts appear more slowly by design;
-  the sustain window is configurable if you want the demo snappier.
-- Did **not** touch `config/cameras.yaml` (your GPU/OpenVINO zones) or `main.py`.
-  Added variant configs (`cameras.synthetic.yaml`, `cameras.cam2.yaml`, etc.).
-- Skipped Phase 11 (ReID/VLM) per your instruction + the cut-scope/no-network rules.
+## Decisions I made without you (all reversible, detail in DECISIONS.md)
+- **D-7** Built a feature CLAUDE.md explicitly cuts — you overrode it. Fully
+  off-switchable (`reid.enabled: false`); nothing else in the pipeline calls it.
+- **D-8** Used the network and added `boxmot`. **Caught a landmine:** the plain
+  install wanted numpy 2.2.6 over your pinned 1.26.4 — an ABI break that could
+  have taken torch/ultralytics/opencv down. Installed under a constraints file;
+  every pin verified untouched. Pre-change venv snapshot at
+  `/tmp/venv_before_reid.txt`.
+- **D-9** Embeddings RAM-only, never persisted.
+- **D-10** Bias toward splitting over merging.
+- **D-11** Threshold 0.70, provisional.
 
 ## Tests
-**164 passed / 0 failed.** `python3 -m unittest discover -s tests` (~1.4s, stdlib
-only). New since the overnight 84: TrackReaper/registry, CameraWorker, per-zone
-rule thresholds, sustained hysteresis, ZoneStats/flow windows, camera-health +
-SQLite store (incl. old-DB migrations), alert lifecycle, occupancy-report
-enrichment + CSV + reports persistence, and all-pages theme compliance.
+**306 passed / 0 failed** (~1.4s). Was 168 at the start of this session.
+New: topology gating, crop quality + sampling, feature banks, the matcher
+(including "physics beats appearance" and the ambiguity case), the identity
+service, the ReID client, and **11 HTTP tests**.
+
+Two real bugs the tests caught, both fixed:
+- `IdentityService` did `registry or GlobalIdentityRegistry(...)`, but the
+  registry defines `__len__` — so an empty one is falsy and the caller's registry
+  and topology were silently discarded at startup, exactly when it is always
+  empty.
+- With the API unreachable, every track retried resolve on every frame — 1877
+  failed POSTs in a 30s benchmark. Now backed off to one attempt per track per 2s.
+
+**Also unblocked:** the FastAPI TestClient blocker from the last report. `httpx`
+was the missing piece and it arrived as a boxmot dependency, so the HTTP layer is
+now covered by unit tests rather than only the live demo script.
 
 ## Suggested next steps (ordered)
-1. Eyeball the contact sheet + metrics (above); draw real zone polygons for your clip.
-2. `pip install httpx` → I add a FastAPI TestClient smoke suite so the HTTP layer
-   is covered by unit tests, not just the live demo pass.
-3. If you want cross-camera ReID or a VLM scene-description feature (the cut items),
-   place the model weights in `models/` and say so — I'll wire it then, not before.
-4. Optionally lower the density-hysteresis sustain window for a snappier live demo.
+1. Record the two-camera footage (B-4) and fill in `config/topology.yaml` (B-5).
+2. I retune the threshold on that footage and give you a real precision/recall
+   figure, replacing the proxy.
+3. Decide the client-facing privacy position (D-9).
+4. Surface identity in the dashboard — a `global_ref` badge on tracked people and
+   a journey view. Deliberately not built yet: showing identities whose accuracy
+   is unvalidated invites more trust than the numbers currently support.
+5. Persist completed journeys. `Track.summary()` and `GlobalIdentity.summary()`
+   both produce persistable rows that nothing currently writes.
 
 ## Where things are
-- Core: `finblade/` · Tests: `tests/` · Runner: `services/inference/run_cpu.py`
-- API: `services/api/` · UIs: `web/` (dashboard, cameras, history, report) +
-  `tools/zone-editor.html` · Evidence: `evidence/`
-- Demos: `scripts/demo.sh` (interactive), `scripts/demo_pass.sh` (automated)
-- Logs: `BLOCKERS.md`, `DECISIONS.md`
+- Identity core: `finblade/{appearance,globalid,topology}.py`
+- Service + routes: `services/api/identity.py`, routes in `app.py`
+- Worker side: `services/inference/reid_client.py` (wired into `run_cpu.py`)
+- Config: `config/topology.yaml`, test rig `config/{cameras,topology}.xcam.yaml`
+- Proof: `scripts/verify_cross_camera.sh` (live), `scripts/eval_cross_camera.py`
+  (measured), `evidence/cross_camera_eval_dense.json`

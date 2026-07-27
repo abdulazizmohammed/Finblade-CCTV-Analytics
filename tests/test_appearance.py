@@ -55,6 +55,20 @@ class TestCropQualityGate(unittest.TestCase):
             self.assertFalse(ok, f"expected rejection for {box}")
             self.assertEqual(reason, "truncated_at_edge")
 
+    def test_edge_margin_scales_with_frame_size(self):
+        # A fixed pixel margin is proportionally ~3x stricter on a 416px-tall
+        # clip than on a 1440px one. The margin scales so the rule means the
+        # same thing at every resolution the system ingests.
+        box = (500.0, 200.0, 580.0, 500.0)
+        # 1% of 1440 = 14.4px, so a box 10px from the bottom is truncated there...
+        tall = (500.0, 200.0, 580.0, 1440.0 - 10.0)
+        self.assertFalse(self.gate.check(tall, 0.9, 1920, 1440)[0])
+        # ...while the same 10px gap on a small frame (floor 6px) is fine.
+        small = (300.0, 100.0, 360.0, 416.0 - 10.0)
+        ok, reason = self.gate.check(small, 0.9, 752, 416)
+        self.assertTrue(ok, reason)
+        self.assertTrue(self.gate.check(box, 0.9, FRAME_W, FRAME_H)[0])
+
     def test_rejects_degenerate_box(self):
         ok, reason = self.gate.check((500.0, 200.0, 500.0, 200.0), 0.9,
                                      FRAME_W, FRAME_H)

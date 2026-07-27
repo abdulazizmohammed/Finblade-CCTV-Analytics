@@ -1,0 +1,29 @@
+# Topology for the RTSP pair CAM-VID-1 / CAM-VID-2.
+#
+# Set to OVERLAPPING because media/cam-vid-1.mp4 and media/cam-vid-2.mp4 are
+# currently byte-identical (same MD5) — one clip copied twice. Identical pixels
+# means the two "cameras" see the same thing at the same instant, which is the
+# overlapping case by definition.
+#
+# If you replace cam-vid-2.mp4 with genuinely different footage:
+#   * different angle on the SAME space  -> keep it here in overlapping_pairs
+#   * a separate space with a walk between -> move it to transits: and set
+#     min_seconds/max_seconds to the MEASURED walk time. Note the two behave
+#     oppositely: overlapping expects dt~0, non-overlapping REJECTS dt~0 as
+#     physically impossible.
+
+overlapping_pairs:
+  - a: CAM-VID-1
+    b: CAM-VID-2
+
+transits: []
+
+default_transit:
+  min_seconds: 2.0
+  max_seconds: 120.0
+
+# Both publishers start within a few hundred ms of each other, but the two
+# inference processes are independent; 5s absorbs the startup skew.
+overlap_tolerance_seconds: 5.0
+
+allow_unknown_pairs: true

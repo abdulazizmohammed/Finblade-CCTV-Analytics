@@ -55,7 +55,12 @@ class CropQualityGate:
     max_aspect: float = 1.1         # w/h; a person taller than wide. Wider =>
                                     # merged detections or a person lying down
     min_aspect: float = 0.15        # implausibly thin => sliver of a box
-    edge_margin_px: float = 8.0     # touching frame border => likely truncated
+    # Touching the frame border => likely a truncated person. The margin scales
+    # with the frame: a fixed 8px meant 1.9% of a 416px-tall clip but only 0.6%
+    # of a 1440px one, so the same rule was far stricter at low resolution than
+    # at high. Fraction of the smaller frame dimension, with an absolute floor.
+    edge_margin_px: float = 6.0
+    edge_margin_frac: float = 0.01
 
     def check(self, bbox: BBox, confidence: float, frame_w: int,
               frame_h: int) -> Tuple[bool, str]:
@@ -79,7 +84,8 @@ class CropQualityGate:
         if aspect < self.min_aspect:
             return False, "aspect_thin"
 
-        m = self.edge_margin_px
+        m = max(self.edge_margin_px,
+                self.edge_margin_frac * min(frame_w, frame_h))
         if x1 <= m or y1 <= m or x2 >= (frame_w - m) or y2 >= (frame_h - m):
             return False, "truncated_at_edge"
 

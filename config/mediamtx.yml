@@ -13,17 +13,16 @@ rtspAddress: :8554
 paths:
   cam1:
     runOnDemand: >
-      ffmpeg -re -stream_loop -1 -i /media/clip.mp4
+      ffmpeg -re -stream_loop -1 -i /media/cam-vid-1.mp4
       -c:v libx264 -preset veryfast -tune zerolatency -g 30
       -an -f rtsp rtsp://localhost:8554/cam1
     runOnDemandRestart: yes
     runOnDemandCloseAfter: 10s
 
-  # Add a second camera later by dropping ./media/clip2.mp4 and uncommenting:
-  # cam2:
-  #   runOnDemand: >
-  #     ffmpeg -re -stream_loop -1 -i /media/clip2.mp4
-  #     -c:v libx264 -preset veryfast -tune zerolatency -g 30
-  #     -an -f rtsp rtsp://localhost:8554/cam2
-  #   runOnDemandRestart: yes
-  #   runOnDemandCloseAfter: 10s
+  cam2:
+    runOnDemand: >
+      ffmpeg -re -stream_loop -1 -i /media/cam-vid-2.mp4
+      -c:v libx264 -preset veryfast -tune zerolatency -g 30
+      -an -f rtsp rtsp://localhost:8554/cam2
+    runOnDemandRestart: yes
+    runOnDemandCloseAfter: 10s

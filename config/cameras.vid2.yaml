@@ -1,0 +1,40 @@
+# CAM-VID-2 — reads the RTSP stream published from media/cam-vid-2.mp4.
+#
+#   bash scripts/rtsp_dual.sh          # publishes cam1 + cam2
+#   run_cpu.py --config config/cameras.vid2.yaml --port 8092 \
+#              --api-url http://127.0.0.1:8000
+#
+# Pairs with config/cameras.vid1.yaml via config/topology.vid.yaml.
+
+camera_id: CAM-VID-2
+site_id: SITE-DXB-01
+
+source: rtsp://127.0.0.1:8554/cam2
+frame_width: 752
+frame_height: 416
+
+model_path: models/yolov8n.pt
+device: cuda
+conf_threshold: 0.35
+person_class_id: 0
+process_fps: 12
+imgsz: 960
+
+reid:
+  enabled: true
+  weights: models/osnet_x0_25_msmt17.pt
+  device: "0"
+  interval_seconds: 0.7
+  max_samples: 6
+  budget_per_frame: 8
+  min_samples_to_resolve: 2
+
+# PLACEHOLDER polygon — see the note in cameras.vid1.yaml. Draw the real one
+# against media/CAM-VID-2_frame.jpg once the first run has saved it.
+zones:
+  - zone_id: ZONE-VID2-FLOOR
+    zone_name: Camera 2 Floor
+    restricted: false
+    capacity_max: 20
+    area_sqm: 50.0
+    polygon: [[40, 120], [712, 120], [712, 400], [40, 400]]

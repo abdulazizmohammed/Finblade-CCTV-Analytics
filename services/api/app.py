@@ -14,7 +14,8 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import JSONResponse, HTMLResponse, Response
+from fastapi.responses import (JSONResponse, HTMLResponse, Response,
+                               StreamingResponse)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -236,6 +237,53 @@ async def identity_release(request: Request):
 async def identity_stats():
     """Registry health: identity count, site occupancy, match/reject counters."""
     return id_svc.stats()
+
+
+@app.get("/api/v1/cameras/{camera_id}/stream")
+async def camera_stream(camera_id: str, request: Request):
+    """Proxy a camera's annotated MJPEG through the API's own port.
+
+    Each camera process serves its MJPEG on its own port (8090, 8091, …), so a
+    browser needed a direct route to every one of them. That fails on any
+    deployment where only the API port is exposed — a container behind a
+    port-forward, an ingress, or a Tailscale-mapped port — and shows up as a
+    feed stuck on "connecting…" while the analytics update normally.
+
+    The API and the camera processes share a host, so the API can always reach
+    127.0.0.1:<port>. Proxying here means a deployment exposes ONE port.
+
+    Query params (the overlay toggles) are passed through unchanged.
+    """
+    port = cam_mgr.local_port(camera_id)
+    if port is None:
+        # Camera started outside the manager (CLI): recover the port it
+        # advertised, but always dial loopback rather than the advertised host.
+        cam = next((c for c in svc.cameras() if c.get("camera_id") == camera_id), None)
+        url = (cam or {}).get("stream_url") or ""
+        try:
+            port = int(url.rsplit(":", 1)[1].split("/")[0])
+        except (IndexError, ValueError):
+            return JSONResponse(status_code=404,
+                                content={"error": f"no stream known for {camera_id}"})
+
+    qs = request.url.query
+    upstream = f"http://127.0.0.1:{port}/stream" + (f"?{qs}" if qs else "")
+
+    import httpx
+
+    async def relay():
+        # timeout=None: MJPEG is an unbounded stream, any read timeout would
+        # sever a healthy feed.
+        async with httpx.AsyncClient(timeout=None) as client:
+            try:
+                async with client.stream("GET", upstream) as upstream_resp:
+                    async for chunk in upstream_resp.aiter_raw():
+                        yield chunk
+            except Exception:
+                return          # client navigated away, or the camera died
+
+    return StreamingResponse(
+        relay(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
 @app.delete("/api/v1/alerts")

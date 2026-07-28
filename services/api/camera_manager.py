@@ -51,6 +51,17 @@ class CameraManager:
             e = self._procs.get(camera_id)
             return bool(e and e["proc"].poll() is None)
 
+    def local_port(self, camera_id: str):
+        """MJPEG port this camera serves on, or None if we did not launch it.
+
+        The API and the camera processes share a host, so the API can always
+        reach 127.0.0.1:<port> even when the browser cannot — which is what
+        lets the stream be proxied through the API's single exposed port.
+        """
+        with self._lock:
+            e = self._procs.get(camera_id)
+            return e["port"] if e else None
+
     def launch(self, camera_id: str, source: str, site_id: str = None,
                stream_host: str = "localhost") -> dict:
         """Start (or restart) the pipeline for camera_id reading `source`."""

@@ -96,7 +96,7 @@ tr.clickable:hover td{background:var(--fb-surface-2);}
   </div>
 
 <script>
-const API=`http://${location.hostname}:8000`;
+const API=location.origin;   // same origin as the page — see cameras.html
 const $=id=>document.getElementById(id);
 const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
 let mode='alerts';
@@ -156,7 +156,7 @@ async function load(){
       loadFlows(cam);
     }
     $('count').textContent=`${rows.length} ${mode==='alerts'?'alerts':'events'} · ${$('from').value||'start'} → ${$('to').value||'now'}`;
-  }catch(e){ $('count').textContent='offline — is the API running on :8000?'; }
+  }catch(e){ $('count').textContent='offline — cannot reach the API at this origin'; }
 }
 
 async function loadFlows(cam){

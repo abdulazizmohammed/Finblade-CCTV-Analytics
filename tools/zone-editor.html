@@ -161,7 +161,7 @@ let img=null, nat={w:1280,h:720}, scale=1, pts=[], zones=[];
 let down=false, moved=false, dragIdx=-1;
 const $=id=>document.getElementById(id);
 const v=id=>$(id).value;
-$('api').value = `http://${location.hostname}:8000`;
+$('api').value = location.origin;   // same origin as the page — see cameras.html
 function setStatus(t){ $('status').textContent=t; }
 function sizeCanvas(){ scale=Math.min(1, 900/nat.w); cv.width=Math.round(nat.w*scale); cv.height=Math.round(nat.h*scale); }
 
@@ -303,7 +303,7 @@ function render(){
       zones.splice(i,1); draw(); render();          // remove locally...
       const ok=await persistZones();                // ...and persist so it can't reappear
       setStatus(ok ? `deleted ${zid} — saved (applies live)`
-                   : `deleted ${zid} locally but SAVE FAILED — is the API on :8000?`);
+                   : `deleted ${zid} locally but SAVE FAILED — cannot reach the API`);
     });
     box.querySelectorAll('.edit').forEach(b=> b.onclick=()=>editZone(+b.dataset.i));
     // Edit a zone's numbers right on the card -> update + auto-save (applies live).

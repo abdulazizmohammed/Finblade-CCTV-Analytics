@@ -213,7 +213,12 @@ body{
   </div>
 
 <script>
-const API=`http://${location.hostname}:8000`, WS=`ws://${location.hostname}:8000/ws`, STREAM=`http://${location.hostname}:8080/stream`;
+// Same origin as the page — see the note in cameras.html. The WebSocket scheme
+// must follow suit: a page served over https cannot open a ws:// socket, so
+// behind a TLS-terminating proxy this has to be wss://.
+const API=location.origin;
+const WS=`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
+const STREAM=`${location.protocol}//${location.hostname}:8080/stream`;
 const $=id=>document.getElementById(id);
 const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
 const t0=Date.now();

@@ -87,7 +87,12 @@ body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),tr
   </div>
 
 <script>
-const API=`http://${location.hostname}:8000`;
+// Same origin as the page. These pages are SERVED BY the API, so whatever host,
+// port and scheme reached this page also reaches the API. Hardcoding :8000 broke
+// every indirect route — kubectl port-forward on another port, a reverse proxy,
+// an ingress on 443, Tailscale — and surfaced as "API offline" on a page the
+// API had just served.
+const API=location.origin;
 const $=id=>document.getElementById(id);
 const SEV={OFFLINE:'critical',DEGRADED:'warning',RECONNECTING:'warning'};
 
@@ -142,7 +147,7 @@ function summary(cams){
 async function load(){
   let cams=[];
   try{ cams=(await fetch(`${API}/api/v1/cameras`).then(r=>r.json())).cameras||[]; }
-  catch(e){ $('grid').innerHTML='<div class="empty">offline — is the API running on :8000?</div>'; return; }
+  catch(e){ $('grid').innerHTML='<div class="empty">offline — cannot reach the API at this origin</div>'; return; }
   summary(cams);
   const g=$('grid'); g.innerHTML='';
   if(!cams.length){ g.innerHTML='<div class="empty">No cameras registered yet. Start a runner with --api-url, or register one below.</div>'; return; }

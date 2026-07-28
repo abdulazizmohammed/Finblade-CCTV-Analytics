@@ -96,7 +96,7 @@ td.num{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;}
   </div>
 
 <script>
-const API=`http://${location.hostname}:8000`;
+const API=location.origin;   // same origin as the page — see cameras.html
 const $=id=>document.getElementById(id);
 const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
 
@@ -129,7 +129,7 @@ async function generate(){
   if($('zone').value)q.set('zone_id',$('zone').value);
   let data;
   try{ data=await fetch(`${API}/api/v1/reports/occupancy.json?${q}`).then(r=>r.json()); }
-  catch(e){ $('report').innerHTML='<div class="empty">Offline — is the API running on :8000?</div>'; return; }
+  catch(e){ $('report').innerHTML='<div class="empty">Offline — cannot reach the API at this origin</div>'; return; }
   render(data);
 }
 

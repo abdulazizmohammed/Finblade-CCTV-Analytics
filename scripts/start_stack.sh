@@ -6,9 +6,16 @@
 # stays up after the shell closes. That is what you want when you actually
 # intend to use the dashboard rather than prove a code path works.
 #
-#   bash scripts/start_stack.sh            # RTSP cameras (cam-vid-1/2)
-#   bash scripts/start_stack.sh files      # file-source cameras (no RTSP)
+#   bash scripts/start_stack.sh api        # API only - add real cameras from the UI
+#   bash scripts/start_stack.sh            # + republish local test clips over RTSP
+#   bash scripts/start_stack.sh files      # + file-source cameras (no RTSP)
 #   bash scripts/stop_all.sh               # stop everything
+#
+# USE `api` ON A REAL DEPLOYMENT. The other two modes drive the pipeline from
+# local test fixtures - sample clips and the MediaMTX binary - and BOTH are
+# gitignored, so a fresh clone does not have them. With real cameras you do not
+# want them anyway: start the API and point it at your RTSP URLs from
+# /web/cameras.html.
 #
 # Persists to data/finblade.db (NOT in-memory), so history and reports survive.
 set -u
@@ -22,7 +29,28 @@ echo "== stopping anything already running =="
 bash scripts/stop_all.sh >/dev/null 2>&1
 sleep 1
 
-if [ "$MODE" = "rtsp" ]; then
+if [ "$MODE" = "api" ]; then
+  CFG1=""; CFG2=""
+  TOPO=config/topology.yaml
+elif [ "$MODE" = "rtsp" ]; then
+  # Preflight the test fixtures before starting anything, and say plainly what
+  # is missing — both are gitignored, so this is the normal state of a fresh
+  # clone rather than a broken install.
+  missing=""
+  [ -f media/cam-vid-1.mp4 ] || missing="$missing media/cam-vid-1.mp4"
+  [ -f media/cam-vid-2.mp4 ] || missing="$missing media/cam-vid-2.mp4"
+  [ -x scripts/bin/mediamtx ] || missing="$missing scripts/bin/mediamtx"
+  if [ -n "$missing" ]; then
+    echo "[BLOCKER] this mode replays LOCAL TEST CLIPS, and these are missing:"
+    for m in $missing; do echo "    $m"; done
+    echo
+    echo "  They are gitignored, so a fresh clone never has them. Either:"
+    echo "    - real cameras:  bash scripts/start_stack.sh api"
+    echo "                     then add RTSP URLs at /web/cameras.html"
+    echo "    - test clips:    copy .mp4 files into media/ and run"
+    echo "                     bash scripts/rtsp_setup.sh   (fetches mediamtx)"
+    exit 1
+  fi
   echo "== publishing clips over RTSP =="
   bash scripts/rtsp_dual.sh >/dev/null 2>&1 || {
     echo "[BLOCKER] RTSP publish failed — run: bash scripts/rtsp_dual.sh"; exit 1; }
@@ -49,12 +77,17 @@ if [ "$up" = 0 ]; then
   echo "[BLOCKER] API did not come up; see scripts/api.log"; tail -20 scripts/api.log; exit 1
 fi
 
-echo "== starting cameras =="
-nohup $PY services/inference/run_cpu.py --config "$CFG1" \
-  --port 8091 --stream-host localhost --api-url $API > scripts/cam1.log 2>&1 &
-nohup $PY services/inference/run_cpu.py --config "$CFG2" \
-  --port 8092 --stream-host localhost --api-url $API > scripts/cam2.log 2>&1 &
-sleep 8   # let them open the source, load the models and post a first heartbeat
+if [ -z "$CFG1" ]; then
+  echo "== api-only mode: no cameras started =="
+  echo "   add them at http://<host>:8000/web/cameras.html with their RTSP URLs"
+else
+  echo "== starting cameras =="
+  nohup $PY services/inference/run_cpu.py --config "$CFG1" \
+    --port 8091 --stream-host localhost --api-url $API > scripts/cam1.log 2>&1 &
+  nohup $PY services/inference/run_cpu.py --config "$CFG2" \
+    --port 8092 --stream-host localhost --api-url $API > scripts/cam2.log 2>&1 &
+  sleep 8   # let them open the source, load models and post a first heartbeat
+fi
 
 echo
 echo "== status =="
@@ -102,7 +135,6 @@ cat <<EOF
   History     http://localhost:8000/web/history.html
   Report      http://localhost:8000/web/report.html
   Zone editor http://localhost:8000/tools/zone-editor.html
-  Feeds       http://localhost:8091  and  http://localhost:8092
 
 Stop everything:  bash scripts/stop_all.sh
 Logs: scripts/api.log scripts/cam1.log scripts/cam2.log

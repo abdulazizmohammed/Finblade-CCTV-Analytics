@@ -104,9 +104,17 @@ it, and torch will silently fall back to CPU rather than erroring.
 
 ## 2b. Getting the code onto the test machine
 
-**There is no git remote configured.** The repository is local-only: 67 commits
-on `master`, tag `v1.0.0-test`. So "clone the repo" needs one of the following
-first.
+The code lives at
+**https://github.com/abdulazizmohammed/Finblade-CCTV-Analytics** (branch `main`,
+tag `v1.0.0-test`). If the target machine can reach GitHub, just clone it and
+skip to §3.
+
+Note the history was rewritten once to strip an 87 MB test video, so `.git` is
+about 4 MB. If you have an older clone from before that, re-clone rather than
+pull — the histories diverged.
+
+The options below are for a target with no GitHub access (air-gapped, or a
+container without egress).
 
 ### What must travel, and what must not
 
@@ -183,7 +191,8 @@ tar --exclude='.venv' --exclude='data' --exclude='evidence' \
 ## 3. Install
 
 ```bash
-git clone <your-repo> finblade-cctv && cd finblade-cctv
+git clone https://github.com/abdulazizmohammed/Finblade-CCTV-Analytics.git finblade-cctv
+cd finblade-cctv
 
 python3.10 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip

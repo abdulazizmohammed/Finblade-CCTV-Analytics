@@ -45,11 +45,60 @@ CPU-only works — drop the `+cu128` suffixes in `requirements.txt`, omit the
 extra index URL, and set `device: cpu` in each camera config. Expect roughly
 3–5 FPS per camera instead of ~24.
 
-Check the GPU is visible before installing anything:
+### System packages on a fresh Ubuntu server
+
+```bash
+sudo apt update
+sudo apt install -y \
+    python3.10-venv python3-pip \
+    libgl1 libglib2.0-0 \
+    git curl
+```
+
+Why each, verified against the installed binaries rather than copied from a
+generic list:
+
+* **`python3.10-venv`** — Ubuntu 22.04 ships Python 3.10 but *not* the `venv`
+  module. Without it `python3 -m venv .venv` fails with a message suggesting
+  `apt install python3.10-venv`, which is easy to miss in a script.
+* **`libgl1` and `libglib2.0-0`** — the single most likely bring-up failure.
+  `ultralytics` depends on **`opencv-python`** (the full build), and that wins
+  the import over `opencv-python-headless`. The full build links against
+  `libGL.so.1`, `libX11`, and `libglib-2.0`, none of which a headless server
+  has. Symptom: `ImportError: libGL.so.1: cannot open shared object file`, on a
+  machine with no display, from a package with "headless" in the requirements.
+* **`git`, `curl`** — cloning and fetching weights.
+
+### What you do NOT need
+
+* **CUDA Toolkit.** The torch wheels bundle their own CUDA runtime as pip
+  packages (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, `nvidia-cuda-runtime-cu12`
+  and friends). Verified: `nvcc` is not installed on the working machine and
+  torch still reports `cuda True`. Installing the toolkit wastes several GB and
+  risks a version conflict.
+* **cuDNN as a system package** — also bundled by pip.
+* **ffmpeg.** The OpenCV wheel bundles its own; RTSP decode works without a
+  system ffmpeg. (`ffprobe` is absent on the working machine.)
+
+### NVIDIA driver
+
+The **driver** is the one GPU thing that must come from the OS:
+
+```bash
+ubuntu-drivers devices          # see what is recommended
+sudo ubuntu-drivers autoinstall # or: sudo apt install nvidia-driver-570
+sudo reboot
+```
+
+CUDA 12.8 needs driver **≥ 525** via minor-version compatibility; **≥ 570** is
+recommended. Verified working on 595.79. Confirm before installing anything else:
 
 ```bash
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 ```
+
+If that command fails, fix the driver first — everything downstream depends on
+it, and torch will silently fall back to CPU rather than erroring.
 
 ---
 

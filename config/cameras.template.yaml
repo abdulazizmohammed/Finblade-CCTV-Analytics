@@ -12,16 +12,23 @@ frame_height: 720
 
 model_path: models/yolov8n.pt
 device: cuda            # NVIDIA GPU; falls back to CPU if unavailable
-# 0.35 was too permissive on real indoor CCTV: empty chairs and sofas were being
-# detected as people, which inflates occupancy and feeds furniture into the ReID
-# gallery. Chair-shaped false positives sit mostly in the 0.35-0.5 band,
-# especially at low resolution where a seat back has roughly human proportions.
+# Detection sensitivity. This has been moved twice on real footage:
+#   0.35 -> empty chairs and sofas detected as people
+#   0.50 -> chairs gone, but real people at 640x360 were being MISSED
+#   0.40 -> current
 #
-# The trade is real — raising this also drops genuinely distant or partly
-# occluded people. If you find real people going undetected, lower it back
-# toward 0.4 and prefer fixing resolution instead (a 640x360 substream is the
-# root cause of most of these).
-conf_threshold: 0.5
+# The lesson from that: a confidence threshold is a blunt instrument for false
+# positives. A reflection in a TV, a figure on a poster and a chair-shaped sofa
+# are all genuinely person-shaped, so there is no value that removes them
+# without also removing real people who are small, distant, or partly occluded.
+#
+# Use an UNMONITORED mask zone for those instead — it targets exactly the region
+# that is not real floor and costs nothing in sensitivity. Keep this threshold
+# low enough to SEE people, and mask the places that lie.
+#
+# Raise toward 0.5 only if you have no masks drawn and prefer missing people to
+# counting furniture.
+conf_threshold: 0.4
 person_class_id: 0
 process_fps: 15
 imgsz: 1280

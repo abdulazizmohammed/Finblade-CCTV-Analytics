@@ -211,6 +211,7 @@ body{
     <div class="foot">FinBlade Crowd Analytics · CPU inference · air-gapped build</div>
   </div>
 
+<script src="apikey.js"></script>
 <script>
 // Same origin as the page — see the note in cameras.html. The WebSocket scheme
 // must follow suit: a page served over https cannot open a ws:// socket, so
@@ -240,8 +241,10 @@ const feedTiles={};   // camera_id -> {tile,img,streamUrl}
 function feedUrl(streamUrl, cameraId){
   const base=`${API}/api/v1/cameras/${encodeURIComponent(cameraId)}/stream`;
   const off=Object.keys(OVL).filter(k=>!OVL[k]).map(k=>`${k}=0`);
-  if(!off.length) return base;
-  return base+'?'+off.join('&')+'&_='+Date.now();
+  const url=off.length ? base+'?'+off.join('&')+'&_='+Date.now() : base;
+  // An <img src> cannot carry an Authorization header, so the key goes in the
+  // query string. The server accepts ?key= on this route only.
+  return (window.fbStreamUrl ? window.fbStreamUrl(url) : url);
 }
 function renderFeeds(cameras){
   const host=$('feeds');

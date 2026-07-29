@@ -201,6 +201,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from . import auth as _auth                                     # noqa: E402
+
+
+@app.middleware("http")
+async def _require_api_key(request: Request, call_next):
+    """Gate /api/v1 behind an API key when FINBLADE_API_KEY is set.
+
+    Off by default so an existing deployment keeps working until someone turns
+    it on. CORS preflight is exempt: the browser sends OPTIONS without
+    Authorization by design, and rejecting it breaks every cross-origin call
+    before the real request is ever made.
+    """
+    if request.method == "OPTIONS" or _auth.request_is_authorised(
+            request.url.path, request.headers, request.query_params):
+        return await call_next(request)
+    return JSONResponse(status_code=401, content={
+        "error": "unauthorized",
+        "detail": "supply the API key as 'Authorization: Bearer <key>' or "
+                  "'X-API-Key: <key>'"})
+
 # Serve the dashboard + theme so the operator can just open one URL.
 _WEB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "web"))
 if os.path.isdir(_WEB_DIR):

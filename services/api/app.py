@@ -133,10 +133,58 @@ async def _report_scheduler():
             pass  # a failed report must never kill the scheduler
 
 
+# --- FinBlade forwarder ----------------------------------------------------
+from .forwarder import FinBladeForwarder                        # noqa: E402
+
+
+def _apply_finblade_ack(ack: dict) -> None:
+    """Apply an operator action taken in FinBlade to the local alert."""
+    aid = str(ack.get("alert_id"))
+    action = str(ack.get("action") or "ACK").upper()
+    who = ack.get("by") or "finblade"
+    ts = float(ack.get("ts") or time.time())
+    if action == "ACK":
+        svc.acknowledge(aid, who, ts)
+    else:
+        svc.resolve(aid, action, who, ts, note=ack.get("note"))
+
+
+forwarder = FinBladeForwarder(
+    store, identity_service=id_svc,
+    base_url=os.environ.get("FINBLADE_URL"),
+    api_key=os.environ.get("FINBLADE_API_KEY"),
+    apply_ack=_apply_finblade_ack,
+)
+FORWARD_INTERVAL = float(os.environ.get("FINBLADE_FORWARD_INTERVAL", "5"))
+
+
+async def _forward_loop():
+    """Push live analytics to FinBlade on a fixed cadence.
+
+    Runs in this process because it is where the data already is. A failure
+    here must never touch video processing or alerting, so tick() swallows its
+    own errors and this loop only handles cancellation.
+    """
+    if not forwarder.enabled:
+        log.info("FinBlade forwarding disabled (set FINBLADE_URL to enable)")
+        return
+    log.info("FinBlade forwarding to %s every %.0fs",
+             forwarder.base_url, FORWARD_INTERVAL)
+    while True:
+        try:
+            await asyncio.sleep(FORWARD_INTERVAL)
+            await asyncio.to_thread(forwarder.tick)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            log.exception("forwarder loop error")
+
+
 @asynccontextmanager
 async def lifespan(app):
     tasks = [asyncio.create_task(_offline_monitor()),
-             asyncio.create_task(_report_scheduler())]
+             asyncio.create_task(_report_scheduler()),
+             asyncio.create_task(_forward_loop())]
     yield
     for t in tasks:
         t.cancel()
@@ -320,6 +368,22 @@ async def delete_orphaned_frames():
     """Remove snapshot files left behind by alerts deleted earlier."""
     status, body = svc.delete_orphaned_frames()
     return JSONResponse(status_code=status, content=body)
+
+
+@app.get("/api/v1/finblade/status")
+async def finblade_status():
+    """Is forwarding on, is it succeeding, and how far behind is it?"""
+    return forwarder.status()
+
+
+@app.post("/api/v1/finblade/flush")
+async def finblade_flush():
+    """Force a forwarding pass now instead of waiting for the timer."""
+    if not forwarder.enabled:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "error": "forwarding disabled — set FINBLADE_URL"})
+    await asyncio.to_thread(forwarder.tick)
+    return {"ok": True, "status": forwarder.status()}
 
 
 @app.get("/api/v1/identity/tuning")

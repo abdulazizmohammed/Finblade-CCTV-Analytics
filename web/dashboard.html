@@ -296,21 +296,25 @@ document.querySelectorAll('#ovlbar input[data-ovl]').forEach(cb=>cb.addEventList
   Object.values(feedTiles).forEach(t=>{if(t.streamUrl)t.img.src=feedUrl(t.streamUrl,t.camId);});
 }));
 
-function renderKpis(zones,alerts,counts){
-  // Occupancy is a ZONE measure — it needs polygons. With no zones defined it
-  // is structurally 0, which reads as "nobody here" when the cameras are in
-  // fact tracking people. Fall back to the identity count, which needs no
-  // geometry, and say plainly which of the two is being shown.
-  const totOcc=zones.reduce((a,z)=>a+(+z.occupancy||0),0);
+function renderKpis(zones,alerts,counts,cameras){
+  // Two different measures, and a mixed site needs BOTH:
+  //   in view   — every person the cameras can see, no zones required
+  //   in zones  — only those inside a drawn polygon
+  // Showing zone occupancy alone made unzoned cameras look empty when they
+  // were tracking people; showing only the frame-wide count hides where
+  // people actually are. So: headline the total, qualify it underneath.
+  const inZones=zones.reduce((a,z)=>a+(+z.occupancy||0),0);
+  const inView=(cameras||[]).reduce((a,c)=>a+(+c.people_in_view||0),0);
+  const zoned=(cameras||[]).filter(c=>(+c.people_in_zones||0)>0||zones.some(z=>z.camera_id===c.camera_id)).length;
+
+  // Prefer the frame-wide count when we have camera reports; fall back to the
+  // identity count, then to zone occupancy.
+  const headline=(cameras&&cameras.length)?inView:(counts?(counts.live||0):inZones);
+  $('kOcc').innerHTML=`${headline}<span class="u">people</span>`;
   if(zones.length){
-    $('kOcc').innerHTML=`${totOcc}<span class="u">people</span>`;
-    $('kOccSub').textContent=`across ${zones.length} zone${zones.length===1?'':'s'}`;
-  }else if(counts){
-    $('kOcc').innerHTML=`${counts.live||0}<span class="u">people</span>`;
-    $('kOccSub').textContent='live · no zones defined';
+    $('kOccSub').textContent=`${inZones} in ${zones.length} zone${zones.length===1?'':'s'} · ${headline} in view`;
   }else{
-    $('kOcc').innerHTML=`0<span class="u">people</span>`;
-    $('kOccSub').textContent='across 0 zones';
+    $('kOccSub').textContent='in view · no zones defined';
   }
   // NOTE: the cumulative "Unique people" tile was removed on request. The
   // counts themselves are still polled — Total occupancy falls back to
@@ -374,6 +378,7 @@ function renderZones(zones){
 // Camera health + online KPI + feeds, all from the cameras API (not zones), so
 // UI-provisioned cameras appear even before they have zones.
 function renderCameras(cameras){
+  LAST_CAMS=cameras||[];
   const online=cameras.filter(c=>c.effective_state!=='OFFLINE'&&c.effective_state!=='DISABLED').length;
   $('kCams').innerHTML=`${online}<span class="u">/ ${cameras.length}</span>`;
   const host=$('cams');
@@ -435,7 +440,7 @@ async function alertAction(act,id){
 // payload, so they keep working on both the WebSocket and REST-fallback paths —
 // and, importantly, on a site with no zones at all, where the zone poll returns
 // nothing to hang them off.
-let LAST_COUNTS=null;
+let LAST_COUNTS=null, LAST_CAMS=[];
 async function pollCounts(){
   try{ LAST_COUNTS=await fetch(`${API}/api/v1/identity/counts`).then(r=>r.json()); }
   catch(e){}
@@ -444,7 +449,7 @@ async function pollCounts(){
 function apply(d){
   const zones=d.zones||[], alerts=d.alerts||[];
   if(zones[0]&&zones[0].camera_id)$('site').textContent=zones[0].camera_id;
-  renderKpis(zones,alerts,LAST_COUNTS);renderZones(zones);renderAlerts(alerts);
+  renderKpis(zones,alerts,LAST_COUNTS,LAST_CAMS);renderZones(zones);renderAlerts(alerts);
 }
 
 let ws=null,pollTimer=null;

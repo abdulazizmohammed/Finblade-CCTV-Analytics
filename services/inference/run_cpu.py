@@ -454,6 +454,12 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     feet_outside = 0        # ...that landed in no zone at all
     feet_at_frame_edge = 0  # ...of those, ones sitting on the frame border
     ignored_dets = 0        # detections dropped by an UNMONITORED mask zone
+    # Last known people counts, reported in the 5s health post. These must live
+    # OUTSIDE the frame loop: the health post runs on its own timer and fires
+    # before the first frame is ever processed, so reading the loop's own
+    # `tracks` there raised UnboundLocalError and killed the camera process.
+    people_in_view = 0
+    people_in_zones = 0
     last_zone_warn = 0.0
 
     interval = 1.0 / cfg.process_fps if cfg.process_fps and cfg.process_fps > 0 else 0
@@ -507,6 +513,15 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             last_health_post = now
             hv = worker.health(now)
             hv["stream_url"] = _STREAM["url"]
+            # People currently in view, counted WITHOUT any zone. Occupancy is
+            # a zone measure and reads 0 on a camera with no polygons drawn,
+            # which on a mixed site makes those cameras look empty when they
+            # are not. This is the raw tracked-person count for the frame, so a
+            # site with some zoned and some unzoned cameras still totals
+            # correctly. Independent of ReID too — a person counts here the
+            # moment they are tracked, without waiting to be identified.
+            hv["people_in_view"] = people_in_view
+            hv["people_in_zones"] = people_in_zones
             resp = _post_json("/api/v1/cameras/health",
                               {"camera_id": cfg.camera_id, "site_id": cfg.site_id,
                                "ts": now, "health": hv})
@@ -690,6 +705,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     "polygon probably needs to extend to the bottom edge",
                     cfg.camera_id, frac * 100, feet_outside, feet_total,
                     edge * 100)
+
+        # Refresh what the health post reports. people_in_view needs no zones,
+        # so a camera with nothing drawn still says how many people it can see.
+        people_in_view = len(tracks)
+        people_in_zones = sum(occupancy.values()) if occupancy else 0
 
         det_counts.append(len(tracks))
         processed += 1

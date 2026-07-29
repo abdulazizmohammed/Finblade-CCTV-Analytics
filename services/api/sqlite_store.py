@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS cameras(
   camera_id TEXT PRIMARY KEY, site_id TEXT, last_seen REAL,
   name TEXT, state TEXT, input_fps REAL, resolution TEXT, dropped_frames INTEGER,
   reconnects INTEGER, loops INTEGER, frozen INTEGER, enabled INTEGER,
-  stream_url TEXT, health_ts REAL, sim_failure INTEGER DEFAULT 0, source TEXT);
+  stream_url TEXT, health_ts REAL, sim_failure INTEGER DEFAULT 0, source TEXT,
+  people_in_view INTEGER DEFAULT 0, people_in_zones INTEGER DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS reports(
   report_id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, generated_at REAL,
@@ -78,6 +79,10 @@ class SQLiteStore(Store):
             "dropped_frames": "INTEGER", "reconnects": "INTEGER", "loops": "INTEGER",
             "frozen": "INTEGER", "enabled": "INTEGER", "stream_url": "TEXT",
             "health_ts": "REAL", "sim_failure": "INTEGER DEFAULT 0", "source": "TEXT",
+            # Frame-wide people count, so a camera with no zones drawn
+            # still reports how many people it can see.
+            "people_in_view": "INTEGER DEFAULT 0",
+            "people_in_zones": "INTEGER DEFAULT 0",
         }
         for col, typ in cam_add.items():
             if col not in cam:
@@ -192,7 +197,9 @@ class SQLiteStore(Store):
             self._conn.execute(
                 "INSERT INTO cameras(camera_id,site_id,last_seen) VALUES (?,?,?) "
                 "ON CONFLICT(camera_id) DO UPDATE SET last_seen=excluded.last_seen, "
-                "site_id=COALESCE(excluded.site_id, cameras.site_id)",
+                "site_id=COALESCE(excluded.site_id, cameras.site_id), "
+                "people_in_view=excluded.people_in_view, "
+                "people_in_zones=excluded.people_in_zones",
                 (camera_id, site_id, ts))
             self._conn.commit()
 
@@ -208,19 +215,24 @@ class SQLiteStore(Store):
             res, health.get("dropped_frames"), health.get("reconnects"),
             health.get("loops"), 1 if health.get("frozen") else 0,
             1 if health.get("enabled", True) else 0, health.get("stream_url"),
+            int(health.get("people_in_view") or 0),
+            int(health.get("people_in_zones") or 0),
         )
         with self._lock:
             self._conn.execute(
                 "INSERT INTO cameras(camera_id,site_id,last_seen,health_ts,state,input_fps,"
-                "resolution,dropped_frames,reconnects,loops,frozen,enabled,stream_url) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "resolution,dropped_frames,reconnects,loops,frozen,enabled,stream_url,"
+                "people_in_view,people_in_zones) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(camera_id) DO UPDATE SET last_seen=excluded.last_seen, "
                 "health_ts=excluded.health_ts, state=excluded.state, "
                 "input_fps=excluded.input_fps, resolution=excluded.resolution, "
                 "dropped_frames=excluded.dropped_frames, reconnects=excluded.reconnects, "
                 "loops=excluded.loops, frozen=excluded.frozen, enabled=excluded.enabled, "
                 "stream_url=COALESCE(excluded.stream_url, cameras.stream_url), "
-                "site_id=COALESCE(excluded.site_id, cameras.site_id)",
+                "site_id=COALESCE(excluded.site_id, cameras.site_id), "
+                "people_in_view=excluded.people_in_view, "
+                "people_in_zones=excluded.people_in_zones",
                 vals)
             self._conn.commit()
 
@@ -341,7 +353,8 @@ class SQLiteStore(Store):
             rows = _row(self._conn.execute(
                 "SELECT camera_id,site_id,last_seen,name,state,input_fps,resolution,"
                 "dropped_frames,reconnects,loops,frozen,enabled,stream_url,health_ts,"
-                "sim_failure,source FROM cameras ORDER BY camera_id"))
+                "sim_failure,source,people_in_view,people_in_zones "
+                "FROM cameras ORDER BY camera_id"))
         for r in rows:                       # store booleans as bools, not 0/1
             for k in ("frozen", "enabled", "sim_failure"):
                 if r.get(k) is not None:

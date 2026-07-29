@@ -35,9 +35,13 @@ Sizing comes from measurements, not guesses: VRAM is not the constraint,
 | Cameras | Instance | vCPU / RAM | GPU | Notes |
 |---|---|---|---|---|
 | 1–2 | `g4dn.xlarge` | 4 / 16 GB | T4 16 GB | fine for a first test |
-| **4–6** | **`g4dn.2xlarge`** | **8 / 32 GB** | **T4 16 GB** | **recommended starting point** |
-| 6–10 | `g5.2xlarge` | 8 / 32 GB | A10G 24 GB | newer, noticeably faster |
+| 4–6 | `g4dn.2xlarge` | 8 / 32 GB | T4 16 GB | adequate |
+| 6–10 | `g5.2xlarge` | 8 / 32 GB | A10G 24 GB | newer, faster |
+| **6–20** | **`g6.4xlarge`** | **16 / 64 GB** | **L4 24 GB** | **Ada Lovelace; RAM allows ~20 cameras** |
 | CPU only | `c5.2xlarge` | 8 / 16 GB | — | ~3–5 FPS per camera instead of ~24 |
+
+The L4 is a **data-centre** GPU, so prefer the `-server` driver packages over the
+desktop ones — see §3.
 
 **AMI:** Ubuntu 22.04 LTS. It matches the environment everything was built and
 tested on — same Python 3.10.12.
@@ -74,10 +78,27 @@ need it.
 
 Skip entirely on a CPU instance or the Deep Learning AMI.
 
+First check whether one is already loaded — `lspci` showing the card proves
+nothing, only that the hardware is attached:
+
+```bash
+nvidia-smi          # works => skip this section entirely
+```
+
+If it is missing:
+
 ```bash
 sudo apt update
-sudo apt install -y ubuntu-drivers-common
+sudo apt install -y linux-headers-$(uname -r) ubuntu-drivers-common
 sudo ubuntu-drivers autoinstall
+sudo reboot
+```
+
+On **data-centre GPUs (L4, A10G, T4)** prefer the `-server` driver, which is the
+variant NVIDIA supports for these cards, if `autoinstall` picks a desktop one:
+
+```bash
+sudo apt install -y nvidia-driver-550-server
 sudo reboot
 ```
 

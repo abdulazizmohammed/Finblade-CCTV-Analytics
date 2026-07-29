@@ -416,6 +416,8 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         budget_per_frame=int(_reid_cfg.get("budget_per_frame", 8)),
         min_samples_to_resolve=int(_reid_cfg.get("min_samples_to_resolve", 2)),
         enabled=bool(_reid_cfg.get("enabled", True)),
+        min_crop_height=float(_reid_cfg.get("min_crop_height", 96.0)),
+        min_crop_confidence=float(_reid_cfg.get("min_crop_confidence", 0.5)),
     )
     reid.load()
     reaper = TrackReaper(cfg.track_ttl_seconds)

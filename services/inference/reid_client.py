@@ -43,6 +43,8 @@ class ReIDResolver:
         bank_capacity: int = 5,
         enabled: bool = True,
         retry_interval_s: float = 2.0,
+        min_crop_height: float = 96.0,
+        min_crop_confidence: float = 0.5,
     ):
         self.camera_id = camera_id
         self._post_json = api_post_json
@@ -53,7 +55,14 @@ class ReIDResolver:
         self.retry_interval_s = float(retry_interval_s)
         self._last_attempt: Dict[int, float] = {}
 
-        self.gate = CropQualityGate()
+        # Tunable because the right floor depends on the source resolution.
+        # 96px suits a 1080p+ main stream. On a 640x360 substream — often the
+        # only option over a WAN link — 96px is 27% of frame height, so only
+        # people very close to the camera are ever embedded and cross-camera
+        # identity quietly stops working for everyone else. Lowering it trades
+        # embedding quality for coverage; see docs/DEPLOY.md.
+        self.gate = CropQualityGate(min_height_px=float(min_crop_height),
+                                    min_confidence=float(min_crop_confidence))
         self.sampler = EmbeddingSampler(interval_s=interval_s,
                                         max_samples=max_samples,
                                         budget_per_frame=budget_per_frame)

@@ -36,8 +36,32 @@ reid:
   weights: models/osnet_x0_25_msmt17.pt
   device: "0"
   interval_seconds: 1.0
-  max_samples: 5
+  # More views per person than the default 5. Individual embeddings from a
+  # low-resolution substream are noisy, so the bank needs more of them before
+  # its average is trustworthy.
+  max_samples: 8
   budget_per_frame: 8
   min_samples_to_resolve: 2
+
+  # SET THIS TO MATCH YOUR SOURCE RESOLUTION.
+  #
+  # A person's bounding box must be at least this tall in PIXELS to be embedded.
+  # OSNet resizes every crop to 256x128, so the number is really "how much real
+  # detail is there to resize":
+  #     96px -> 2.7x upscale, good
+  #     64px -> 4x upscale, degraded but usable
+  #     48px -> 5.3x upscale, mostly noise - poisons the gallery
+  #
+  # As a share of frame height that means very different things:
+  #     1080p main stream : 96px  =  9% of frame   <- use 96
+  #     640x360 substream : 96px  = 27% of frame   <- far too strict, use 64
+  #
+  # At 96 on a 360p substream only people right in front of the camera are ever
+  # embedded, and cross-camera identity silently stops working for everyone
+  # else. Below ~48 the embeddings are too weak to match reliably and the same
+  # person splits into several identities instead — so this is a floor to lower
+  # carefully, not to remove.
+  min_crop_height: 64
+  min_crop_confidence: 0.5
 
 zones: []

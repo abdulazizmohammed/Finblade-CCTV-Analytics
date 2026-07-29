@@ -206,6 +206,42 @@ class TestDropAndSnapshot(unittest.TestCase):
         self.assertNotIn("banks", repr(snap))
 
 
+class TestCropGateTuning(unittest.TestCase):
+    """The gate floor has to follow the source resolution.
+
+    96px is 9% of a 1080p frame but 27% of a 640x360 substream — at that height
+    only people right in front of the camera are embedded at all, and
+    cross-camera identity quietly stops working for everyone else.
+    """
+
+    def test_default_gate_rejects_a_small_crop(self):
+        r = resolver()                       # default floor is 96px
+        r.observe(None, [track(1, 300.0, 100.0, 336.0, 180.0)], {1: 0.9},
+                  100.0, 640, 360)           # 80px tall
+        self.assertEqual(r.stats["embedded"], 0)
+        self.assertEqual(r.stats["gated_out"], 1)
+
+    def test_lowered_floor_accepts_it(self):
+        r = resolver(min_crop_height=64.0)
+        r.observe(None, [track(1, 300.0, 100.0, 336.0, 180.0)], {1: 0.9},
+                  100.0, 640, 360)
+        self.assertEqual(r.stats["embedded"], 1)
+
+    def test_floor_still_rejects_below_it(self):
+        # Lowering the floor must not disable the gate — a 40px crop upscaled
+        # to OSNet's 256px input is mostly interpolation, and those embeddings
+        # split one person into many.
+        r = resolver(min_crop_height=64.0)
+        r.observe(None, [track(1, 300.0, 100.0, 318.0, 140.0)], {1: 0.9},
+                  100.0, 640, 360)           # 40px tall
+        self.assertEqual(r.stats["embedded"], 0)
+
+    def test_crop_confidence_is_configurable(self):
+        r = resolver(min_crop_confidence=0.8)
+        r.observe(None, [track(1)], {1: 0.6}, 100.0, FRAME_W, FRAME_H)
+        self.assertEqual(r.stats["embedded"], 0)
+
+
 class TestLoadFailure(unittest.TestCase):
     def test_missing_weights_disables_rather_than_faking(self):
         r = ReIDResolver("CAM-A", FakePoster(),

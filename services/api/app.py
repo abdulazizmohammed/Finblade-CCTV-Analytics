@@ -9,9 +9,12 @@ Run: uvicorn services.api.app:app --host 0.0.0.0 --port 8000
 """
 
 import asyncio
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
+
+log = logging.getLogger("finblade.api")
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import (JSONResponse, HTMLResponse, Response,
@@ -87,6 +90,13 @@ async def _offline_monitor():
                 was = _cam_offline.get(cid, False)
                 if silent > OFFLINE_S and not was:
                     _cam_offline[cid] = True
+                    # A dead worker never releases its tracks, and a bound
+                    # identity is never expired — so without this its people
+                    # are counted as present forever.
+                    freed = id_svc.release_camera(cid)
+                    if freed:
+                        log.info("camera %s offline: released %d identity binding(s)",
+                                 cid, freed)
                     svc.raise_alert({"rule_id": "R-07", "severity": "RED",
                                      "message": f"camera {cid} offline >{int(OFFLINE_S)}s",
                                      "camera_id": cid, "ts": now, "kind": "FIRE"})

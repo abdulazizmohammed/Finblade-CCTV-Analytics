@@ -370,6 +370,56 @@ class TestUniqueCountingWithoutZones(unittest.TestCase):
         self.assertEqual(snap["live_by_camera"], {"CAM-A": 1})
 
 
+class TestCameraGoingOffline(unittest.TestCase):
+    """A worker that dies releases nothing, and a bound identity never expires.
+
+    Live symptom: site occupancy read 6 while the only two running cameras
+    reported 1 each — the other 4 were held by three dead camera processes.
+    """
+
+    def test_dead_camera_keeps_counting_until_released(self):
+        r = GlobalIdentityRegistry(topology=CameraTopology(), ttl_seconds=10.0)
+        r.resolve("CAM-DEAD", 1, bank(PERSON_A), now=100.0)
+        r.resolve("CAM-DEAD", 2, bank(PERSON_B), now=100.0)
+        self.assertEqual(r.site_occupancy(), 2)
+
+        # Long past the TTL, and still counted — expire() spares anything bound.
+        r.expire(now=10_000.0)
+        self.assertEqual(r.site_occupancy(), 2)
+
+        freed = r.release_camera("CAM-DEAD")
+        self.assertEqual(freed, 2)
+        self.assertEqual(r.site_occupancy(), 0)
+
+    def test_release_camera_leaves_other_cameras_alone(self):
+        topo = CameraTopology(overlapping=[("CAM-A", "CAM-B")])
+        r = GlobalIdentityRegistry(topology=topo)
+        r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0)
+        r.resolve("CAM-B", 2, bank(PERSON_B), now=100.0)
+        r.release_camera("CAM-A")
+        self.assertEqual(r.live_by_camera(), {"CAM-B": 1})
+
+    def test_identities_survive_so_the_person_can_reappear(self):
+        # Releasing bindings must not delete the identity: someone who walked
+        # out of a camera that then died may still show up on another.
+        r = GlobalIdentityRegistry(topology=CameraTopology())
+        ref = r.resolve("CAM-DEAD", 1, bank(PERSON_A), now=100.0).global_ref
+        r.release_camera("CAM-DEAD")
+        self.assertIsNotNone(r.get(ref))
+        self.assertEqual(r.unique_total(), 1)      # footfall unaffected
+
+    def test_releasing_lets_the_ttl_reclaim_them(self):
+        r = GlobalIdentityRegistry(topology=CameraTopology(), ttl_seconds=10.0)
+        ref = r.resolve("CAM-DEAD", 1, bank(PERSON_A), now=100.0).global_ref
+        r.release_camera("CAM-DEAD")
+        r.expire(now=500.0)
+        self.assertIsNone(r.get(ref))              # now reclaimable
+
+    def test_releasing_an_unknown_camera_is_harmless(self):
+        r = GlobalIdentityRegistry(topology=CameraTopology())
+        self.assertEqual(r.release_camera("NOPE"), 0)
+
+
 class TestJourneyAndSummary(unittest.TestCase):
     def test_journey_records_zone_sequence(self):
         r = GlobalIdentityRegistry(topology=CameraTopology())

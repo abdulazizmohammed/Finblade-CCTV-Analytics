@@ -361,6 +361,29 @@ class GlobalIdentityRegistry:
             self._identities[ref].active.discard(binding)
         return ref
 
+    def release_camera(self, camera_id: str) -> int:
+        """Release EVERY binding held by one camera. Returns how many.
+
+        Call this when a camera goes offline. A worker releases its tracks one
+        by one as they leave the scene, but a worker that dies — crash, kill,
+        network loss — releases nothing. Those bindings then pin their
+        identities permanently: expire() skips anything still bound, so the
+        identity never times out and keeps counting toward site occupancy
+        forever. Observed live as a site total of 6 people while the only two
+        running cameras reported 1 each, the other 4 coming from three dead
+        camera processes.
+
+        The identities themselves are kept — someone who walked out of a camera
+        that then died may still reappear elsewhere, and the normal TTL can now
+        reclaim them.
+        """
+        doomed = [b for b in self._bindings if b[0] == camera_id]
+        for binding in doomed:
+            ref = self._bindings.pop(binding, None)
+            if ref and ref in self._identities:
+                self._identities[ref].active.discard(binding)
+        return len(doomed)
+
     # ---- corrections ------------------------------------------------------
     def merge(self, keep_ref: str, drop_ref: str) -> bool:
         """Fold ``drop_ref`` into ``keep_ref`` (an operator or offline correction)."""

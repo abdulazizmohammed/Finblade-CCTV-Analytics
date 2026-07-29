@@ -166,6 +166,12 @@ class IdentityService:
         snap["ttl_seconds"] = self.registry.ttl_seconds
         return snap
 
+    def release_camera(self, camera_id: str) -> int:
+        """Drop every binding held by a camera that has gone offline."""
+        if not camera_id:
+            return 0
+        return self.registry.release_camera(camera_id)
+
     # -- GET /api/v1/identity/counts --
     def counts(self, now: Optional[float] = None) -> dict:
         """People counts that need no zones defined.

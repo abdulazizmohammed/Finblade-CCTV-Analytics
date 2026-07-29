@@ -267,14 +267,23 @@ works on cameras with no polygons drawn.
 | `per_camera[].live` / `.unique` | the same two numbers per camera |
 
 **Do not sum `per_camera` to get a site total.** It will exceed `unique_total`
-whenever someone was seen by two cameras — the difference is exactly the
-double-counting that de-duplication removed, and `cross_camera` equals it:
+whenever someone was seen by more than one camera — the difference is exactly
+the double-counting that de-duplication removed.
+
+The relationship is an inequality, NOT an equality:
 
 ```
-sum(per_camera[].unique) - unique_total == cross_camera
+sum(per_camera[].unique) - unique_total >= cross_camera
 ```
 
-Use that as a validation assertion; if it fails, the message is inconsistent.
+It is only equal when every cross-camera person was seen by exactly two
+cameras. Someone seen by three contributes 3 to the sum but 1 to
+`unique_total` — a difference of 2 — while counting only once in
+`cross_camera`. Observed live: sum 118, unique_total 93 (difference 25) against
+cross_camera 16, because several people were picked up by three cameras.
+
+Use the inequality as a validation assertion. An equality check will fail on
+any real multi-camera site.
 
 **`unique_total` resets to 0 when the CCTV service restarts.** It is cumulative
 within a session only. Treat a decrease as a restart boundary, not as bad data,

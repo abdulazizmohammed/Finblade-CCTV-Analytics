@@ -12,7 +12,16 @@ frame_height: 720
 
 model_path: models/yolov8n.pt
 device: cuda            # NVIDIA GPU; falls back to CPU if unavailable
-conf_threshold: 0.35
+# 0.35 was too permissive on real indoor CCTV: empty chairs and sofas were being
+# detected as people, which inflates occupancy and feeds furniture into the ReID
+# gallery. Chair-shaped false positives sit mostly in the 0.35-0.5 band,
+# especially at low resolution where a seat back has roughly human proportions.
+#
+# The trade is real — raising this also drops genuinely distant or partly
+# occluded people. If you find real people going undetected, lower it back
+# toward 0.4 and prefer fixing resolution instead (a 640x360 substream is the
+# root cause of most of these).
+conf_threshold: 0.5
 person_class_id: 0
 process_fps: 15
 imgsz: 1280

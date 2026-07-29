@@ -61,7 +61,7 @@ from finblade.metrics import (                           # noqa: E402
 from finblade.rules import RuleEngine                    # noqa: E402
 from finblade.tracking import TrackReaper                # noqa: E402
 from finblade.tracks import TrackRegistry                # noqa: E402
-from finblade.zones import zone_of                       # noqa: E402
+from finblade.zones import in_ignored_region, zone_of        # noqa: E402
 from services.inference.camera_worker import CameraWorker, CameraState  # noqa: E402
 from services.inference.reid_client import ReIDResolver                 # noqa: E402
 
@@ -151,6 +151,7 @@ BGR_RESTRICTED = (158, 71, 224)   # #e0479e restricted edge (magenta)
 BGR_CRITICAL   = (75, 75, 239)    # #ef4b4b live intrusion (red)
 BGR_WARNING    = (41, 160, 240)   # #f0a029 loitering highlight (amber)
 BGR_TEXT       = (240, 236, 220)  # #dcecf0
+BGR_IGNORED    = (128, 128, 128)  # muted grey — detection mask, not a status
 
 EVIDENCE = os.path.join(_REPO_ROOT, "evidence")
 FRAMES_DIR = os.path.join(EVIDENCE, "frames")
@@ -244,6 +245,16 @@ def annotate(frame, zones, tracks, occupancy, track_meta=None, overlay=None):
         for z in zones:
             pts = [(int(x), int(y)) for x, y in z.polygon]
             occ = occupancy.get(z.zone_id, 0)
+            if getattr(z, "zone_type", "") == "UNMONITORED":
+                # Detection mask (mirror, TV, poster, window). Muted grey and
+                # dashed: it is not a status and must not compete with the
+                # restricted magenta or the critical red for attention — it is
+                # simply a region the system has been told to ignore.
+                _draw_dashed_poly(frame, pts, BGR_IGNORED, 1)
+                px0, py0 = pts[0]
+                cv2.putText(frame, f"IGNORED: {z.zone_name}", (px0 + 4, py0 - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, BGR_IGNORED, 1)
+                continue          # no occupancy/density label — nothing is counted here
             if z.restricted:
                 # magenta dashed; flash red (solid overlay) when occupied = intrusion.
                 _draw_dashed_poly(frame, pts, BGR_RESTRICTED, 2)
@@ -442,6 +453,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     feet_total = 0          # foot points evaluated while zones were defined
     feet_outside = 0        # ...that landed in no zone at all
     feet_at_frame_edge = 0  # ...of those, ones sitting on the frame border
+    ignored_dets = 0        # detections dropped by an UNMONITORED mask zone
     last_zone_warn = 0.0
 
     interval = 1.0 / cfg.process_fps if cfg.process_fps and cfg.process_fps > 0 else 0
@@ -560,11 +572,21 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             confs = res.boxes.conf.cpu().numpy()
             for (x1, y1, x2, y2), tid, conf in zip(xyxy, ids, confs):
                 tid = int(tid)
+                _fx, _fy = foot_point(x1, y1, x2, y2)
+                # Detection mask. A person in a mirror, on a TV, or on a poster
+                # is genuinely person-shaped and the detector is right to fire —
+                # so the only reliable filter is a human-drawn polygon over the
+                # parts of the frame that are not real floor. Drop the whole
+                # detection here, before tracking, dwell, occupancy or ReID:
+                # a reflection that is merely uncounted still enters the
+                # identity gallery and becomes a phantom others can match on.
+                if in_ignored_region((_fx, _fy), cfg.zones):
+                    ignored_dets += 1
+                    continue
                 seen_ids.add(tid)
                 reaper.see(tid, vnow)
                 tracks.append((tid, x1, y1, x2, y2))
                 conf_by_tid[tid] = float(conf)
-                _fx, _fy = foot_point(x1, y1, x2, y2)
                 observed = zone_of((_fx, _fy), cfg.zones)
                 # Diagnostic for the commonest zone-drawing mistake. Occupancy
                 # counts FOOT points, and a person whose box is clipped by the
@@ -821,6 +843,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         "reid": reid.snapshot(),
         # Zone sanity: a high outside fraction means occupancy will read low
         # even though people are being tracked.
+        # Detections discarded by an UNMONITORED mask zone (reflections, screens,
+        # posters). A large number here is expected and healthy once a mask is
+        # drawn — it is the count of phantoms that did NOT reach occupancy or
+        # the identity gallery.
+        "ignored_detections": ignored_dets,
         "zone_fit": {
             "foot_points": feet_total,
             "outside_all_zones": feet_outside,

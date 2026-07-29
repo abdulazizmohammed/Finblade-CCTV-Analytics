@@ -1,5 +1,56 @@
 import unittest
 
+from finblade.zones import in_ignored_region, zone_from_dict
+
+
+def _mask(poly, enabled=True):
+    return zone_from_dict({"zone_id": "MASK", "zone_name": "TV",
+                           "zone_type": "UNMONITORED", "polygon": poly,
+                           "area_sqm": 1.0, "capacity_max": 0,
+                           "enabled": enabled}, 1280, 720)
+
+
+def _normal(poly):
+    return zone_from_dict({"zone_id": "FLOOR", "zone_name": "Floor",
+                           "zone_type": "MONITORED", "polygon": poly,
+                           "area_sqm": 50.0, "capacity_max": 20}, 1280, 720)
+
+
+SQUARE = [[100, 100], [300, 100], [300, 300], [100, 300]]
+
+
+class TestIgnoredRegions(unittest.TestCase):
+    """UNMONITORED zones are detection masks.
+
+    A detector cannot distinguish a person from a picture of one — a mirror, a
+    TV, a poster. Masking those regions is the only reliable filter, and the
+    detection must be dropped entirely rather than merely uncounted: a
+    reflection that is still tracked enters the identity gallery as a phantom.
+    """
+
+    def test_point_inside_a_mask_is_ignored(self):
+        self.assertTrue(in_ignored_region((200, 200), [_mask(SQUARE)]))
+
+    def test_point_outside_is_not(self):
+        self.assertFalse(in_ignored_region((500, 500), [_mask(SQUARE)]))
+
+    def test_a_normal_zone_is_never_a_mask(self):
+        # Only UNMONITORED masks. A MONITORED zone covering the same area must
+        # keep counting people, not silently discard them.
+        self.assertFalse(in_ignored_region((200, 200), [_normal(SQUARE)]))
+
+    def test_disabled_mask_does_not_apply(self):
+        self.assertFalse(in_ignored_region((200, 200), [_mask(SQUARE, enabled=False)]))
+
+    def test_no_zones_ignores_nothing(self):
+        self.assertFalse(in_ignored_region((200, 200), []))
+
+    def test_mask_and_floor_overlap_mask_wins(self):
+        # A TV mounted above monitored floor: the reflection's foot point falls
+        # in both polygons and must still be discarded.
+        zones = [_normal(SQUARE), _mask(SQUARE)]
+        self.assertTrue(in_ignored_region((200, 200), zones))
+
 from finblade.zones import Zone, zone_of, zone_from_dict, ZONE_TYPES
 
 

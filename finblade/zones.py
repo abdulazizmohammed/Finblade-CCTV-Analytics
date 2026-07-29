@@ -21,6 +21,19 @@ from .geometry import Point, point_in_polygon
 # used by later analytics (e.g. ENTRANCE/EXIT bias inflow/outflow).
 ZONE_TYPES = {"MONITORED", "RESTRICTED", "ENTRANCE", "EXIT", "TRANSITION", "UNMONITORED"}
 
+# An UNMONITORED zone is a DETECTION MASK, not just a zone that reports nothing.
+# Any detection whose foot point lands inside one is discarded outright.
+#
+# This exists because a detector cannot tell a person from a picture of one. A
+# figure in a mirror, a TV showing people, a printed poster, or a window onto a
+# neighbouring space are all genuinely person-shaped, and YOLO is right to fire
+# on them. They then inflate occupancy and, worse, enter the ReID gallery as
+# permanent phantom identities that other people can match against.
+#
+# The only reliable fix is human knowledge of which parts of the frame are not
+# real floor — which is exactly what drawing a polygon expresses.
+IGNORED_ZONE_TYPE = "UNMONITORED"
+
 
 @dataclass
 class Zone:
@@ -108,6 +121,22 @@ def zone_from_dict(d: dict, frame_width: float = None, frame_height: float = Non
         colour=d.get("colour"),
         enabled=bool(d.get("enabled", True)),
     )
+
+
+def in_ignored_region(point: Point, zones) -> bool:
+    """True if ``point`` falls inside an UNMONITORED zone (a detection mask).
+
+    Callers should test this BEFORE any other per-detection work and skip the
+    detection entirely — not merely leave it out of occupancy. A reflection that
+    still gets tracked and embedded pollutes the identity gallery even if no
+    zone counts it.
+    """
+    for z in zones:
+        if not getattr(z, "enabled", True):
+            continue
+        if getattr(z, "zone_type", "") == IGNORED_ZONE_TYPE and z.contains(point):
+            return True
+    return False
 
 
 def zone_of(point: Point, zones) -> Optional[str]:

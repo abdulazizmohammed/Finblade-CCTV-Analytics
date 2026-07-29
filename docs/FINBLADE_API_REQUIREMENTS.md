@@ -399,15 +399,101 @@ the identifiers in this specification. Raise it before designing for it.
 
 ---
 
-## 12. Open questions for FinBlade
+## 12. Transport, and the one bidirectional flow
+
+### Outbound (CCTV → FinBlade): REST, not WebSocket
+
+Everything in sections 3–7 is server-to-server bulk telemetry. REST is the right
+fit and the spec above assumes it:
+
+* **Retries need semantics.** At ~1M messages/day some deliveries will fail.
+  `2xx` accepted / `4xx` drop / `5xx` retry is unambiguous. A WebSocket that is
+  "open" tells the sender nothing about whether a message was processed, so you
+  would end up building an ack-and-replay protocol on top of it.
+* **Batching** is trivial over REST and cuts round trips ~10x.
+* **Backpressure** works: return `429`/`503` and the producer backs off. A socket
+  just queues in memory until something falls over.
+* Load balancers, gateways, auth headers, request logs and `curl` debugging all
+  work out of the box.
+
+**Transport will not make the data fresher.** Zone state is COMPUTED on a
+5-second cadence — pushing it over a socket delivers the same 5-second-old
+number sooner, not a newer one. The only genuinely latency-sensitive stream is
+alerts, and those are POSTed the moment a rule fires, so REST is already
+sub-second there.
+
+Use WebSockets between the FinBlade backend and FinBlade's own browsers. That is
+internal to FinBlade and needs nothing from this side.
+
+### Return path (FinBlade → CCTV): operator acknowledgements
+
+Confirmed in scope. When an operator acknowledges, resolves or dismisses an
+alert in FinBlade, this system must reflect it — otherwise the two alert feeds
+diverge and neither is authoritative.
+
+**The constraint: the CCTV host is usually not reachable inbound.** It sits on a
+site LAN, often behind NAT or a VPN, dialling out. Designing the return path as
+"FinBlade calls the CCTV host" fails on most real deployments.
+
+**Recommended: return acknowledgements in the RESPONSE BODY of the posts this
+system is already making.** No inbound connection, no firewall rules, no extra
+polling traffic — it rides on requests that exist anyway. This system already
+uses exactly this pattern internally: camera workers receive control commands in
+the response to their 5-second health post.
+
+So the alert POST response becomes:
+
+```json
+{
+  "accepted": true,
+  "pending_acks": [
+    {
+      "alert_id": "1042",
+      "action": "ACK",
+      "by": "operator@finblade",
+      "ts": 1785136999.1,
+      "note": "security dispatched"
+    }
+  ]
+}
+```
+
+`action` is one of `ACK`, `RESOLVED`, `DISMISSED`. `alert_id` is the id THIS
+system sent you in section 5 — echo it back unchanged; do not substitute a
+FinBlade-internal id, or we cannot match it.
+
+**Delivery rules:**
+
+* Keep returning an acknowledgement until this system confirms it. We will
+  re-apply the same one harmlessly — applying an ack twice is a no-op here.
+* Confirmation comes on the next post as `"acked_confirmed": ["1042"]` in the
+  request body. Drop those from your pending list.
+* Latency is not critical. An operator acknowledgement arriving within one
+  post cycle (5 seconds) is fine.
+
+**If the CCTV host IS reachable from FinBlade** — same LAN, or a VPN with a
+route in — you can skip all of that and call the existing endpoints directly:
+
+```
+POST /api/v1/alerts/{alert_id}/ack       {"acknowledged_by": "..."}
+POST /api/v1/alerts/{alert_id}/resolve   {"action": "RESOLVED"|"DISMISSED",
+                                          "resolved_by": "...", "note": "..."}
+```
+
+These already exist and are already used by this system's own dashboard. Simpler
+where reachability allows — please confirm which applies to your deployment.
+
+---
+
+## 13. Open questions for FinBlade
 
 1. Endpoint paths and base URL — accept the suggestions in §1, or specify yours?
 2. Authentication scheme and header name (§10)?
 3. Batch support: preferred envelope and max batch size (§8)?
 4. Snapshot images: you fetch, or we push (§9)?
-5. Should operator actions in FinBlade (acknowledge, resolve, dismiss an alert)
-   propagate back to the CCTV service? That would need a callback or a polled
-   endpoint on your side, and is the only bidirectional requirement identified.
+5. ~~Should operator actions propagate back?~~ **CONFIRMED — yes.** See §12.
+   Remaining sub-question: is the CCTV host reachable from FinBlade, or should
+   acknowledgements ride back in the response body? Reachability decides it.
 6. Retention and pre-aggregation preference for zone state (§10)?
 7. Do you want raw `DENSITY_UPDATE` events, given zone state already carries
    density every 5 seconds? Dropping them would cut event volume noticeably.

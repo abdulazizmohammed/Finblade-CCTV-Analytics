@@ -51,7 +51,12 @@ class CropQualityGate:
 
     min_height_px: float = 96.0     # below this, detail is gone at 256x128 input
     min_width_px: float = 32.0
-    min_confidence: float = 0.5     # stricter than the detector's 0.35
+    # Independent of the detector's own threshold. It is legitimate to COUNT a
+    # person you are only moderately sure about while refusing to put that same
+    # crop into the identity gallery, where a bad vector persists and corrupts
+    # later matches. Raise this above conf_threshold to be stricter about
+    # embedding than about counting.
+    min_confidence: float = 0.5
     max_aspect: float = 1.1         # w/h; a person taller than wide. Wider =>
                                     # merged detections or a person lying down
     min_aspect: float = 0.15        # implausibly thin => sliver of a box

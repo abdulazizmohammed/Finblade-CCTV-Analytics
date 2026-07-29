@@ -449,7 +449,18 @@ async def create_camera(request: Request):
 @app.delete("/api/v1/cameras/{camera_id}")
 async def delete_camera(camera_id: str):
     cam_mgr.stop(camera_id)                       # stop its pipeline if we launched one
+    # Release its identity bindings BEFORE the row goes. Deleting a camera is
+    # worse than one crashing: the offline monitor only walks registered
+    # cameras, so once the row is gone nothing would ever release these and the
+    # people it was tracking would count toward site occupancy permanently,
+    # with no recovery path.
+    freed = id_svc.release_camera(camera_id)
+    if freed:
+        log.info("camera %s deleted: released %d identity binding(s)",
+                 camera_id, freed)
     code, body = svc.delete_camera(camera_id)
+    if code == 200:
+        body["identity_bindings_released"] = freed
     return JSONResponse(status_code=code, content=body)
 
 
@@ -471,7 +482,12 @@ async def start_camera(camera_id: str, request: Request):
 
 @app.post("/api/v1/cameras/{camera_id}/stop")
 async def stop_camera(camera_id: str):
-    return {"ok": True, "camera_id": camera_id, "stopped": cam_mgr.stop(camera_id)}
+    # Same reasoning as delete: a stopped pipeline releases nothing on its way
+    # out, and a bound identity is never expired.
+    stopped = cam_mgr.stop(camera_id)
+    freed = id_svc.release_camera(camera_id)
+    return {"ok": True, "camera_id": camera_id, "stopped": stopped,
+            "identity_bindings_released": freed}
 
 
 @app.post("/api/v1/cameras/{camera_id}/simulate-failure")

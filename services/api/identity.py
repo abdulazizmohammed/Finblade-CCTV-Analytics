@@ -95,24 +95,137 @@ def validate_resolve(payload: dict) -> Tuple[bool, List[str]]:
 class IdentityService:
     """Thin, validated wrapper over GlobalIdentityRegistry."""
 
+    # Matching parameters, in precedence order: environment overrides the
+    # config file, which overrides these. Kept here rather than as bare code
+    # defaults so the values a deployment is actually running are inspectable
+    # and changeable without editing source.
+    _TUNING_DEFAULTS = {
+        "threshold": 0.70,
+        "margin": 0.06,
+        "ttl_seconds": 300.0,
+        "bank_capacity": 5,
+        "max_identities": 2000,
+    }
+    _ENV = {
+        "threshold": "FINBLADE_REID_THRESHOLD",
+        "margin": "FINBLADE_REID_MARGIN",
+        "ttl_seconds": "FINBLADE_REID_TTL",
+    }
+
     def __init__(self, registry: Optional[GlobalIdentityRegistry] = None,
                  topology_path: Optional[str] = None):
         topology = CameraTopology.empty()
         self.topology_source = "default(permissive)"
+        self.tuning_source = "defaults"
+        tuning = dict(self._TUNING_DEFAULTS)
+
+        raw = {}
         if topology_path and os.path.exists(topology_path):
             try:
-                topology = CameraTopology.load(topology_path)
+                import yaml
+                with open(topology_path, "r", encoding="utf-8") as fh:
+                    raw = yaml.safe_load(fh) or {}
+                topology = CameraTopology.from_dict(raw)
                 self.topology_source = topology_path
             except Exception as exc:                       # noqa: BLE001
                 # Never fail startup on a bad topology file: degrade to
                 # permissive and make the reason visible in /stats.
                 self.topology_source = f"failed({exc.__class__.__name__}) -> permissive"
+
+        block = raw.get("matching") or {}
+        if block:
+            for key in tuning:
+                if key in block:
+                    tuning[key] = block[key]
+            self.tuning_source = topology_path
+
+        # Environment wins — it is the knob you can turn on a running container
+        # without editing a file inside it.
+        for key, env in self._ENV.items():
+            val = os.environ.get(env)
+            if val is not None:
+                try:
+                    tuning[key] = float(val)
+                    self.tuning_source = "env"
+                except ValueError:
+                    pass
+
         # `is None`, not `or`: GlobalIdentityRegistry defines __len__, so an
         # empty registry is falsy and `registry or ...` would silently discard
         # the caller's registry (and its topology) at startup, when it is
         # always empty.
-        self.registry = (registry if registry is not None
-                         else GlobalIdentityRegistry(topology=topology))
+        self.registry = (registry if registry is not None else
+                         GlobalIdentityRegistry(
+                             topology=topology,
+                             threshold=float(tuning["threshold"]),
+                             margin=float(tuning["margin"]),
+                             ttl_seconds=float(tuning["ttl_seconds"]),
+                             bank_capacity=int(tuning["bank_capacity"]),
+                             max_identities=int(tuning["max_identities"])))
+
+    # -- GET/POST /api/v1/identity/tuning --
+    def get_tuning(self) -> dict:
+        r = self.registry
+        return {"threshold": r.threshold, "margin": r.margin,
+                "ttl_seconds": r.ttl_seconds, "bank_capacity": r.bank_capacity,
+                "max_identities": r.max_identities,
+                "source": self.tuning_source}
+
+    def set_tuning(self, payload: dict) -> Tuple[int, dict]:
+        """Adjust matching parameters on a RUNNING registry.
+
+        Tuning these needs live footage, and a restart throws away the gallery
+        — so you would be re-measuring from an empty state every time you
+        nudged a number. Changing them in place keeps the identities already
+        built and applies to the next resolve.
+
+        Not persisted: put the value you settle on into the topology file's
+        `matching:` block, or it is lost on restart.
+        """
+        if not isinstance(payload, dict):
+            return 422, {"ok": False, "errors": ["payload must be an object"]}
+
+        # Validate EVERYTHING before applying ANYTHING. Applying as we validate
+        # meant a payload with a good threshold and a bad margin returned 422
+        # having already changed the threshold — the caller is told the request
+        # failed while the registry has silently moved.
+        checks = (
+            ("threshold", lambda v: 0.0 < v <= 1.0, "a number in (0, 1]"),
+            ("margin", lambda v: v >= 0, "a number >= 0"),
+            ("ttl_seconds", lambda v: v > 0, "a number > 0"),
+        )
+        errors = []
+        applied = {}
+        for key, ok, expected in checks:
+            if key not in payload:
+                continue
+            try:
+                v = float(payload[key])
+            except (TypeError, ValueError):
+                errors.append(f"{key} must be {expected}")
+                continue
+            # isfinite rejects NaN and infinity together. An infinite margin
+            # passes a bare ">= 0" check and then makes every match impossible
+            # — matching would stop dead with nothing in the logs to say why.
+            if not math.isfinite(v) or not ok(v):
+                errors.append(f"{key} must be {expected} and finite")
+                continue
+            applied[key] = v
+
+        if errors:
+            return 422, {"ok": False, "errors": errors}
+
+        r = self.registry
+        for key, value in applied.items():
+            setattr(r, key, value)
+        if not applied:
+            return 422, {"ok": False,
+                         "errors": ["nothing to change: send threshold, margin "
+                                    "or ttl_seconds"]}
+        self.tuning_source = "runtime"
+        return 200, {"ok": True, "applied": applied, "current": self.get_tuning(),
+                     "note": "not persisted — put it in the topology file's "
+                             "matching: block to survive a restart"}
 
     # -- POST /api/v1/identity/resolve --
     def resolve(self, payload: dict) -> Tuple[int, dict]:

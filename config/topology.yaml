@@ -45,3 +45,43 @@ overlap_tolerance_seconds: 5.0
 # Set false on a fully surveyed site to reject any pair not listed above.
 # Strictest and safest setting once the topology is complete.
 allow_unknown_pairs: true
+
+# ---------------------------------------------------------------------------
+# Cross-camera MATCHING parameters.
+#
+# Override at runtime without a restart (the gallery is preserved):
+#     curl -X POST localhost:8000/api/v1/identity/tuning \
+#          -H 'Content-Type: application/json' \
+#          -d '{"threshold": 0.65}'
+# then write whatever you settle on back into this block. Environment variables
+# FINBLADE_REID_THRESHOLD / _MARGIN / _TTL override this file.
+# ---------------------------------------------------------------------------
+matching:
+  # Minimum cosine similarity to accept a match. This is a FLOOR, not a
+  # decision boundary. Measured on a synthetic second camera
+  # (evidence/cross_camera_eval_dense.json): true pairs min 0.80 / median 0.90,
+  # false pairs median 0.61 but MAX 0.83 — the distributions OVERLAP, so no
+  # value here separates them cleanly. What actually prevents bad merges is the
+  # margin below plus the transit gate above.
+  #
+  # That measurement came from an easy synthetic pair. Real cameras — and
+  # especially 640x360 substreams — push true-pair scores DOWN, so 0.70 may be
+  # too strict for your site. Lower it if genuine handovers are being missed.
+  threshold: 0.70
+
+  # The best candidate must beat the runner-up by this much. In a uniformed
+  # environment several people score alike, and the honest answer there is
+  # "I don't know" rather than "the top one by 0.01". Raising it splits more;
+  # 0.0 disables the check and restores pick-the-best.
+  margin: 0.06
+
+  # How long an identity stays matchable after it was last seen. Longer means
+  # someone can leave and return and still be recognised, at the cost of a
+  # larger gallery and more chances for a wrong match.
+  ttl_seconds: 300
+
+  # Views kept per person. More is steadier on noisy low-resolution sources.
+  bank_capacity: 5
+
+  # Gallery cap. Oldest inactive identities are evicted beyond this.
+  max_identities: 2000

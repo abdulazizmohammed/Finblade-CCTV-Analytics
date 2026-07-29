@@ -322,6 +322,24 @@ async def delete_orphaned_frames():
     return JSONResponse(status_code=status, content=body)
 
 
+@app.get("/api/v1/identity/tuning")
+async def get_identity_tuning():
+    """Current matching parameters and where they came from."""
+    return id_svc.get_tuning()
+
+
+@app.post("/api/v1/identity/tuning")
+async def set_identity_tuning(request: Request):
+    """Adjust matching on a RUNNING registry — no restart, gallery preserved.
+
+    Tuning needs live footage, and a restart empties the gallery, so you would
+    otherwise re-measure from scratch on every nudge. Not persisted: write the
+    value you settle on into the topology file's `matching:` block.
+    """
+    status, body = id_svc.set_tuning(await request.json())
+    return JSONResponse(status_code=status, content=body)
+
+
 @app.get("/api/v1/identity/counts")
 async def identity_counts():
     """Unique-people counts that work with NO zones defined.

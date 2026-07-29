@@ -471,17 +471,69 @@ FinBlade-internal id, or we cannot match it.
 * Latency is not critical. An operator acknowledgement arriving within one
   post cycle (5 seconds) is fine.
 
-**If the CCTV host IS reachable from FinBlade** — same LAN, or a VPN with a
-route in — you can skip all of that and call the existing endpoints directly:
+**CONFIRMED: the CCTV host IS reachable from FinBlade**, so the response-body
+mechanism above is not needed. Call these directly instead. Contract below is
+verified against a running instance, not proposed.
+
+**Acknowledge**
 
 ```
-POST /api/v1/alerts/{alert_id}/ack       {"acknowledged_by": "..."}
-POST /api/v1/alerts/{alert_id}/resolve   {"action": "RESOLVED"|"DISMISSED",
-                                          "resolved_by": "...", "note": "..."}
+POST /api/v1/alerts/{alert_id}/ack
+{"acknowledged_by": "operator@finblade"}
+
+200 {"acknowledged": true, "alert_id": "al-1",
+     "acknowledged_by": "operator@finblade", "acknowledged_at": 1785310240.25}
 ```
 
-These already exist and are already used by this system's own dashboard. Simpler
-where reachability allows — please confirm which applies to your deployment.
+**Resolve or dismiss**
+
+```
+POST /api/v1/alerts/{alert_id}/resolve
+{"action": "RESOLVED"|"DISMISSED", "resolved_by": "operator@finblade",
+ "note": "security dispatched"}
+
+200 {"ok": true, "alert_id": "al-1", "status": "RESOLVED",
+     "resolved_by": "operator@finblade", "resolved_at": 1785310240.26,
+     "note": "security dispatched"}
+```
+
+`alert_id` is the value sent in section 5. Pass it back unchanged.
+
+### 409 does not mean failure — do not retry it
+
+Repeating an action returns **409**, not 200:
+
+```
+re-ack       -> 409 {"acknowledged": false, "error": "unknown or already-acknowledged alert"}
+re-resolve   -> 409 {"ok": false, "error": "unknown or already-closed alert"}
+unknown id   -> 409 {"acknowledged": false, "error": "unknown or already-acknowledged alert"}
+```
+
+The effect is idempotent — state does not change — but the status code is 409 in
+all three cases, including an alert id that does not exist. So 409 means "this
+alert is already in that state, OR it is unknown"; the two are not
+distinguishable from the response. Treat 409 as terminal success-or-ignore and
+stop retrying. Retrying will never turn into a 200.
+
+### AUTHENTICATION IS REQUIRED BEFORE THIS GOES ANYWHERE REAL
+
+Verified on a running instance: **every call above succeeded with no
+credentials of any kind.** There is currently no authentication on this API.
+
+Reachable from FinBlade means reachable from anything else with a route to that
+host. These endpoints mutate state, and the same unauthenticated API also
+exposes `DELETE /api/v1/alerts` and `DELETE /api/v1/cameras/{id}`, plus every
+live video feed.
+
+This is tracked on the CCTV side and is not FinBlade's to fix, but it does gate
+the integration. One of the following must be in place first:
+
+* a shared API key or bearer token enforced on this API (smallest change), or
+* mutual TLS between the two services, or
+* network isolation that genuinely restricts the CCTV host to FinBlade traffic
+  only — not merely "it is on an internal VLAN".
+
+Tell us which scheme you want and it will be implemented on this side to match.
 
 ---
 
@@ -491,9 +543,11 @@ where reachability allows — please confirm which applies to your deployment.
 2. Authentication scheme and header name (§10)?
 3. Batch support: preferred envelope and max batch size (§8)?
 4. Snapshot images: you fetch, or we push (§9)?
-5. ~~Should operator actions propagate back?~~ **CONFIRMED — yes.** See §12.
-   Remaining sub-question: is the CCTV host reachable from FinBlade, or should
-   acknowledgements ride back in the response body? Reachability decides it.
+5. ~~Should operator actions propagate back? Is the host reachable?~~
+   **BOTH CONFIRMED.** Acknowledgements flow back via direct calls to
+   `/api/v1/alerts/{id}/ack` and `/resolve` — contract verified in §12.
+   **This now blocks on authentication**: those endpoints currently accept
+   unauthenticated calls. Choose a scheme (§12) and it will be implemented.
 6. Retention and pre-aggregation preference for zone state (§10)?
 7. Do you want raw `DENSITY_UPDATE` events, given zone state already carries
    density every 5 seconds? Dropping them would cut event volume noticeably.

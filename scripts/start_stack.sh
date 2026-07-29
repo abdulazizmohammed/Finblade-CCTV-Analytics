@@ -68,9 +68,21 @@ FINBLADE_TOPOLOGY="$TOPO" nohup $PY -m uvicorn services.api.app:app \
   --host 0.0.0.0 --port 8000 --log-level warning > scripts/api.log 2>&1 &
 sleep 1
 
+# Authenticate our own probes. With FINBLADE_API_KEY set every /api/v1 route
+# returns 401, and `curl -sf` treats 4xx as failure — so the readiness check
+# could never succeed and reported "API did not come up" about an API that was
+# running perfectly well.
+AUTH=()
+if [ -n "${FINBLADE_API_KEY:-}" ]; then
+  AUTH=(-H "Authorization: Bearer ${FINBLADE_API_KEY}")
+  echo "   (API key auth enabled)"
+fi
+
 up=0
 for _ in $(seq 1 40); do
-  if curl -sf "$API/api/v1/identity/stats" >/dev/null 2>&1; then up=1; break; fi
+  if curl -sf "${AUTH[@]}" "$API/api/v1/identity/stats" >/dev/null 2>&1; then
+    up=1; break
+  fi
   sleep 0.5
 done
 if [ "$up" = 0 ]; then
@@ -99,7 +111,7 @@ echo "== health =="
 # Health fields are top-level on each camera, not nested under "health".
 # Cameras from previous sessions persist in data/finblade.db, so flag anything
 # that has not reported recently rather than listing it as if it were live.
-curl -s "$API/api/v1/cameras" | $PY -c '
+curl -s "${AUTH[@]}" "$API/api/v1/cameras" | $PY -c '
 import json, sys, time
 try:
     cams = json.load(sys.stdin).get("cameras", [])
@@ -120,7 +132,7 @@ if stale:
     print("  (+%d camera(s) from earlier sessions, not reporting - see note below)" % stale)
 ' 2>/dev/null || echo "  (cameras endpoint not ready)"
 
-curl -s "$API/api/v1/identity/stats" | $PY -c '
+curl -s "${AUTH[@]}" "$API/api/v1/identity/stats" | $PY -c '
 import json, sys
 d = json.load(sys.stdin)
 print("  identity: %d identities, site_occupancy=%d, cross_camera=%d, topology=%s"

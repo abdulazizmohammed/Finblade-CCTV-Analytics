@@ -33,6 +33,12 @@ opencv-python-headless==4.10.0.84
 # --- API + web --------------------------------------------------------------
 fastapi==0.139.2
 uvicorn==0.51.0
+# Bare uvicorn has NO WebSocket support, so /ws refuses every upgrade and logs
+# "No supported WebSocket library detected" once per dashboard poll. The
+# dashboard degrades to 5s REST polling by design and still works, which is why
+# this went unnoticed — but the sub-second live push it advertises never
+# happened. Not pulled in by uvicorn itself; only by uvicorn[standard].
+websockets==15.0.1
 flask==3.0.3                 # per-camera MJPEG viewer
 requests==2.34.2             # camera workers post to the API
 PyYAML==6.0.2

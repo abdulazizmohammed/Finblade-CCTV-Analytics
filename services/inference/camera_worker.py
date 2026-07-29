@@ -42,8 +42,42 @@ def _default_open(source):
         # RECONNECTING with a multi-MB log of
         # "backend is generally available but can't be used to capture by name".
         # TCP is also what production CCTV deployments use, for this reason.
-        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+        # Low-latency capture. FFmpeg's defaults are tuned for SMOOTH PLAYBACK:
+        # it buffers to absorb jitter and reorders RTP packets so nothing is
+        # missing. For live inference that trade is backwards — we want the
+        # newest frame, and a frame that arrives late is worthless however
+        # complete it is. Over a WAN link (VPN, Tailscale) those buffers are
+        # where multi-second lag accumulates.
+        #   nobuffer      do not pre-buffer before delivering frames
+        #   low_delay     decode without waiting for future frames
+        #   max_delay 0   no demuxer reordering window
+        #   reorder_queue_size 0  do not hold packets waiting for stragglers
+        # Override with FINBLADE_FFMPEG_OPTS if a lossy link needs the buffers
+        # back — on a bad connection these settings trade smoothness for latency.
+        # OPT-IN, and deliberately so. The aggressive variants
+        # (max_delay;0, reorder_queue_size;0) leave no tolerance for
+        # out-of-order packets: in testing they produced 8 fps on one run and
+        # ZERO frames on the next. A stream that sometimes does not start is
+        # far worse than one with latency, so the default stays at plain TCP.
+        #
+        # FINBLADE_LOW_LATENCY=1 adds nobuffer + low_delay, the conservative
+        # pair. Measure on the real camera before and after — a looping local
+        # test clip cannot tell you anything useful here, because a fresh reader
+        # waits for a keyframe and the result is dominated by that.
+        opts = "rtsp_transport;tcp"
+        if os.environ.get("FINBLADE_LOW_LATENCY") == "1":
+            opts += "|fflags;nobuffer|flags;low_delay"
+        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                              os.environ.get("FINBLADE_FFMPEG_OPTS", opts))
         cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+        if cap is not None and cap.isOpened():
+            # Cap the decoded-frame queue. Without this the consumer can fall
+            # behind the stream and every read() returns a progressively older
+            # frame — latency that grows without bound rather than settling.
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass          # not honoured by every backend; harmless if not
     else:
         cap = cv2.VideoCapture(source)
     if cap is None or not cap.isOpened():

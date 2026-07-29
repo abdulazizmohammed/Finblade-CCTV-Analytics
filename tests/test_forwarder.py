@@ -192,6 +192,77 @@ class TestOperatorAcks(unittest.TestCase):
         self.assertEqual(applied, [])
 
 
+class TestSnapshots(unittest.TestCase):
+    """Periodic JPEG thumbnails — explicitly NOT continuous video.
+
+    Streaming live video would be 20-40 Mbit/s per viewer; one frame per camera
+    every 30s is ~2 KB/s. Four orders of magnitude, and enough for a dashboard
+    tile or incident context.
+    """
+
+    def setUp(self):
+        self.store = InMemoryStore()
+        self.poster = FakePoster()
+        self.jpeg = b"\xff\xd8\xff" + b"x" * 500        # plausible JPEG bytes
+        self.store.mark_camera_seen("CAM-A", time.time(), "S")
+        self.store.record_camera_health(
+            "CAM-A", {"state": "ONLINE", "resolution": [640, 360]},
+            time.time(), "S")
+
+    def _fwd(self, interval=30.0, fetch=None):
+        return FinBladeForwarder(
+            self.store, base_url="http://fb.test", post=self.poster,
+            snapshot_interval=interval,
+            fetch_snapshot=fetch if fetch is not None else (lambda cid: self.jpeg))
+
+    def test_snapshot_is_sent_base64(self):
+        import base64
+        f = self._fwd()
+        f.tick()
+        sent = [p for path, p in self.poster.calls if path.endswith("/snapshots")]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(base64.b64decode(sent[0]["image_base64"]), self.jpeg)
+        self.assertEqual(sent[0]["format"], "jpeg")
+        self.assertEqual(sent[0]["camera_id"], "CAM-A")
+
+    def test_disabled_by_zero_interval(self):
+        f = self._fwd(interval=0)
+        f.tick()
+        self.assertNotIn("/api/v1/cctv/snapshots", self.poster.paths())
+
+    def test_rate_limited_independently_of_the_tick(self):
+        # Telemetry ticks every 5s; images must not ride every tick.
+        f = self._fwd(interval=3600)
+        f.tick()
+        f.tick()
+        f.tick()
+        sent = [p for p, _ in self.poster.calls if p.endswith("/snapshots")]
+        self.assertEqual(len(sent), 1)
+
+    def test_offline_cameras_are_skipped(self):
+        # A snapshot from an offline camera is a stale frame from before it
+        # dropped — worse than none, because it looks live.
+        self.store.record_camera_health(
+            "CAM-A", {"state": "OFFLINE"}, time.time() - 600, "S")
+        f = self._fwd()
+        f.tick()
+        self.assertNotIn("/api/v1/cctv/snapshots", self.poster.paths())
+
+    def test_a_camera_that_cannot_be_grabbed_is_skipped_quietly(self):
+        def boom(cid):
+            raise RuntimeError("camera busy")
+
+        f = self._fwd(fetch=boom)
+        f.tick()                                        # must not raise
+        self.assertNotIn("/api/v1/cctv/snapshots", self.poster.paths())
+
+    def test_bytes_are_accounted(self):
+        f = self._fwd()
+        f.tick()
+        self.assertEqual(f.stats["snapshots"], 1)
+        self.assertEqual(f.stats["snapshot_bytes"], len(self.jpeg))
+
+
 class TestStatus(unittest.TestCase):
     def test_status_shape(self):
         store = InMemoryStore()

@@ -1,0 +1,40 @@
+Push camera snapshots to FinBlade; add a single-frame endpoint
+
+Adds a sixth stream: one annotated JPEG per online camera, base64 in the
+payload, every 30s by default.
+
+Deliberately thumbnails rather than video. Continuous MJPEG is 20-40 Mbit/s PER
+VIEWER at 1080p with no fan-out, because frames are re-encoded as JPEG at ~10x
+the size of the equivalent H.265 - unusable across a WAN and disproportionate
+for a dashboard tile. One frame per camera per 30s is ~2 KB/s, four orders of
+magnitude less, and enough for a tile, incident context, or a "what did it look
+like" view. Genuine live video stays a PULL over a link that can carry it.
+
+New GET /api/v1/cameras/{id}/snapshot returns a single JPEG. The camera already
+holds the frame it encoded for the stream, so this is essentially free, whereas
+opening an MJPEG stream to grab one frame costs a held connection and a
+continuous encode.
+
+Snapshots are rate-limited independently of the 5s telemetry tick, and only
+ONLINE cameras send: a snapshot from an offline camera is a stale frame from
+before it dropped, which is worse than none because it looks live.
+
+Fixes an env var collision I introduced with the auth work: FINBLADE_API_KEY was
+serving as BOTH the inbound key callers present to us and the outbound
+credential we present to FinBlade. Those are different secrets held by different
+parties - sharing one variable would hand FinBlade the key that unlocks this API,
+and rotating either would silently break the other. Outbound is now
+FINBLADE_OUTBOUND_KEY.
+
+Also fixes a fragile liveness check found by the tests: the filter keyed on
+effective_state, which only the SQLite store computes, so snapshots would have
+silently never sent on any other backend. Now falls back to the raw state and
+requires a recent heartbeat either way.
+
+Verified against a live camera and a stand-in receiver: the snapshot endpoint
+returned a valid 59 KB JPEG, and 7 snapshots were pushed and decoded intact
+(62,495 bytes declared and received, valid JPEG magic).
+
+398 tests, 6 new.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>

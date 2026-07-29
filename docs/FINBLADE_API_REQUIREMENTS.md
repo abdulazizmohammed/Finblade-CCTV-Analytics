@@ -16,7 +16,7 @@ correlated and displayed there instead.
 **Direction is one-way: CCTV → FinBlade.** The CCTV side is the producer. It
 already has its own database; FinBlade is an additional sink, not a replacement.
 
-**You are building five receiving endpoints.** Suggested paths, all `POST`:
+**You are building six receiving endpoints.** Suggested paths, all `POST`:
 
 | Stream | Endpoint | Cadence | Volume per camera |
 |---|---|---|---|
@@ -25,6 +25,7 @@ already has its own database; FinBlade is an additional sink, not a replacement.
 | Alerts | `/api/v1/cctv/alerts` | on rule fire/clear | low; bursty |
 | Camera health | `/api/v1/cctv/camera-health` | every 5 s per camera | 720/hour/camera |
 | People counts | `/api/v1/cctv/people-counts` | every 5 s (site-wide) | 720/hour total |
+| Snapshots | `/api/v1/cctv/snapshots` | every 30 s per camera | 120/hour/camera, ~2 KB/s |
 
 All payloads are JSON, `Content-Type: application/json`, UTF-8.
 
@@ -288,6 +289,57 @@ any real multi-camera site.
 **`unique_total` resets to 0 when the CCTV service restarts.** It is cumulative
 within a session only. Treat a decrease as a restart boundary, not as bad data,
 and do not compute deltas across it.
+
+---
+
+## 7b. Camera snapshots — `POST /api/v1/cctv/snapshots`
+
+Periodic JPEG thumbnails, one message per online camera. **This is not video.**
+
+```json
+{
+  "camera_id": "CAM-01",
+  "site_id": "RUH-01",
+  "ts": 1785311800.4,
+  "format": "jpeg",
+  "resolution": "640x360",
+  "people_in_view": 2,
+  "bytes": 62495,
+  "image_base64": "/9j/4AAQSkZJRgABAQ..."
+}
+```
+
+The image is the **annotated** frame — the same one the operator sees, with
+boxes, track ids and zone polygons drawn on it.
+
+### Why thumbnails and not a video stream
+
+Continuous video is not pushed, deliberately. Frames are re-encoded as JPEG at
+roughly 10x the size of the equivalent H.265, which is **20-40 Mbit/s per
+viewer** at 1080p with no fan-out — ten dashboards mean ten encodes. That is
+unusable across a WAN and disproportionate for a dashboard tile.
+
+One frame per camera every 30 seconds is about **2 KB/s per camera** — four
+orders of magnitude less — and is enough for a dashboard tile, incident context
+or a "what did it look like" view. Measured: 62 KB per frame at 640x360.
+
+Cadence is configurable per deployment (`FINBLADE_SNAPSHOT_INTERVAL`, seconds;
+0 disables). At the 30s default with 10 cameras that is ~20 KB/s.
+
+**Only ONLINE cameras send.** A snapshot from an offline camera would be a stale
+frame from before it dropped — worse than none, because it looks live.
+
+### If you need genuine live video
+
+PULL it instead — see `FINBLADE_CLIENT_GUIDE.md` §6:
+
+```
+GET /api/v1/cameras/{camera_id}/stream        MJPEG, embeddable in <img>
+GET /api/v1/cameras/{camera_id}/snapshot      one JPEG, on demand
+```
+
+Only do that over a link that can carry it. On a WAN, prefer the pushed
+thumbnails and open the live stream on demand for a single camera at a time.
 
 ---
 

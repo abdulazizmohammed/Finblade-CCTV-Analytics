@@ -149,11 +149,30 @@ def _apply_finblade_ack(ack: dict) -> None:
         svc.resolve(aid, action, who, ts, note=ack.get("note"))
 
 
+def _fetch_camera_snapshot(camera_id: str):
+    """One JPEG from a camera, over loopback. Used by the forwarder."""
+    port = _camera_local_port(camera_id)
+    if port is None:
+        return None
+    import requests
+    r = requests.get(f"http://127.0.0.1:{port}/snapshot", timeout=4.0)
+    return r.content if r.status_code == 200 else None
+
+
 forwarder = FinBladeForwarder(
     store, identity_service=id_svc,
     base_url=os.environ.get("FINBLADE_URL"),
-    api_key=os.environ.get("FINBLADE_API_KEY"),
+    # DISTINCT from FINBLADE_API_KEY. That one is INBOUND — the key callers must
+    # present to us. This is OUTBOUND — the credential we present to FinBlade.
+    # They are different secrets held by different parties; sharing one variable
+    # would mean handing FinBlade the key that unlocks this API, and rotating
+    # either would silently break the other.
+    api_key=os.environ.get("FINBLADE_OUTBOUND_KEY"),
     apply_ack=_apply_finblade_ack,
+    # 0 disables. Kept well above the 5s telemetry tick because a JPEG is ~1000x
+    # the size of the JSON — see the note in forwarder.py.
+    snapshot_interval=float(os.environ.get("FINBLADE_SNAPSHOT_INTERVAL", "30")),
+    fetch_snapshot=_fetch_camera_snapshot,
 )
 FORWARD_INTERVAL = float(os.environ.get("FINBLADE_FORWARD_INTERVAL", "5"))
 
@@ -362,6 +381,44 @@ async def camera_stream(camera_id: str, request: Request):
 
     return StreamingResponse(
         relay(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+def _camera_local_port(camera_id: str):
+    """Loopback port for a camera's MJPEG server, however it was started."""
+    port = cam_mgr.local_port(camera_id)
+    if port is not None:
+        return port
+    cam = next((c for c in svc.cameras() if c.get("camera_id") == camera_id), None)
+    url = (cam or {}).get("stream_url") or ""
+    try:
+        return int(url.rsplit(":", 1)[1].split("/")[0])
+    except (IndexError, ValueError):
+        return None
+
+
+@app.get("/api/v1/cameras/{camera_id}/snapshot")
+async def camera_snapshot(camera_id: str):
+    """A single annotated JPEG — far cheaper than opening the MJPEG stream.
+
+    Use this for thumbnails, alert context, or anything that needs an image
+    rather than continuous video. Opening a stream to grab one frame costs a
+    held connection and a continuous encode.
+    """
+    port = _camera_local_port(camera_id)
+    if port is None:
+        return JSONResponse(status_code=404,
+                            content={"error": f"no stream known for {camera_id}"})
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"http://127.0.0.1:{port}/snapshot")
+    except Exception as exc:                           # noqa: BLE001
+        return JSONResponse(status_code=502,
+                            content={"error": f"camera unreachable: {exc}"})
+    if r.status_code != 200:
+        return JSONResponse(status_code=r.status_code,
+                            content={"error": "no frame available"})
+    return Response(content=r.content, media_type="image/jpeg")
 
 
 @app.delete("/api/v1/alerts")

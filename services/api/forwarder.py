@@ -49,6 +49,8 @@ class FinBladeForwarder:
         post: Optional[Callable] = None,
         batch_limit: int = 500,
         apply_ack: Optional[Callable] = None,
+        snapshot_interval: float = 0.0,
+        fetch_snapshot: Optional[Callable] = None,
     ):
         self.store = store
         self.identity = identity_service
@@ -58,13 +60,29 @@ class FinBladeForwarder:
         self._post = post or self._http_post
         self._apply_ack = apply_ack
 
+        # Periodic JPEG thumbnails — NOT continuous video.
+        #
+        # Streaming live video to FinBlade is not viable over a WAN: frames are
+        # re-encoded as JPEG at roughly 10x the size of the equivalent H.265,
+        # which is 20-40 Mbit/s PER VIEWER at 1080p, with no fan-out. Pushing
+        # one frame per camera every 30s is ~2 KB/s per camera instead — four
+        # orders of magnitude less — and is enough for a dashboard tile,
+        # incident context, or a "what did it look like" thumbnail.
+        #
+        # For genuine live video FinBlade should PULL the MJPEG endpoint, and
+        # only over a link that can carry it.
+        self.snapshot_interval = float(snapshot_interval or 0.0)
+        self._fetch_snapshot = fetch_snapshot
+        self._last_snapshot = 0.0
+
         # Start from "now": on first run we forward what happens next, not the
         # entire history. Backfilling a site's whole database into FinBlade on
         # first connect is rarely what anyone wants.
         now = time.time()
         self.cursors = {"events": now, "alerts": now}
         self.stats = {"events": 0, "alerts": 0, "zone_state": 0, "health": 0,
-                      "counts": 0, "acks_applied": 0, "failures": 0, "ticks": 0}
+                      "counts": 0, "snapshots": 0, "snapshot_bytes": 0,
+                      "acks_applied": 0, "failures": 0, "ticks": 0}
         self.last_error: Optional[str] = None
         self.last_success: Optional[float] = None
 
@@ -162,11 +180,71 @@ class FinBladeForwarder:
             if self.identity is not None:
                 counts = self.identity.counts()
                 self._send("/api/v1/cctv/people-counts", counts, "counts", 1)
+
+            self._push_snapshots(cams)
         except Exception as exc:                       # noqa: BLE001
             # A forwarding fault must never reach video processing or alerting.
             self.stats["failures"] += 1
             self.last_error = f"tick: {exc.__class__.__name__}: {exc}"
             log.exception("forwarder tick failed")
+
+    @staticmethod
+    def _camera_is_live(cam: dict, now: float, max_age: float = 60.0) -> bool:
+        """Is this camera currently producing frames?
+
+        Deliberately not just `effective_state == ONLINE`: that field is
+        computed by the SQLite store and absent from others, so keying on it
+        alone made snapshots silently never send on any other backend. Falls
+        back to the raw state, and requires a recent heartbeat either way —
+        a camera whose row says ONLINE but stopped reporting ten minutes ago
+        is not live.
+        """
+        state = (cam.get("effective_state") or cam.get("state") or "").upper()
+        if state and state != "ONLINE":
+            return False
+        last = cam.get("last_seen") or cam.get("health_ts") or 0
+        return bool(state) and (now - float(last)) <= max_age
+
+    def _push_snapshots(self, cameras) -> None:
+        """Send one JPEG per online camera, at most every snapshot_interval.
+
+        Rate-limited independently of the tick so the interval can be far longer
+        than 5 seconds — images are three orders of magnitude larger than the
+        telemetry and should not ride every tick.
+
+        Only ONLINE cameras: a snapshot from an offline camera is a stale frame
+        from before it dropped, which is worse than none because it looks live.
+        """
+        if not self.snapshot_interval or not self._fetch_snapshot:
+            return
+        now = time.time()
+        if (now - self._last_snapshot) < self.snapshot_interval:
+            return
+        self._last_snapshot = now
+
+        import base64
+        for cam in cameras or []:
+            cid = cam.get("camera_id")
+            if not cid or not self._camera_is_live(cam, now):
+                continue
+            try:
+                jpeg = self._fetch_snapshot(cid)
+            except Exception:                          # noqa: BLE001
+                continue
+            if not jpeg:
+                continue
+            payload = {
+                "camera_id": cid,
+                "site_id": cam.get("site_id"),
+                "ts": now,
+                "format": "jpeg",
+                "resolution": cam.get("resolution"),
+                "people_in_view": cam.get("people_in_view"),
+                "bytes": len(jpeg),
+                "image_base64": base64.b64encode(jpeg).decode("ascii"),
+            }
+            if self._send("/api/v1/cctv/snapshots", payload, "snapshots", 1):
+                self.stats["snapshot_bytes"] += len(jpeg)
 
     # ---- observability ----------------------------------------------------
     def status(self) -> dict:
@@ -179,5 +257,6 @@ class FinBladeForwarder:
                                      if self.last_success else None,
             "last_error": self.last_error,
             "cursors": dict(self.cursors),
+            "snapshot_interval": self.snapshot_interval or None,
             "stats": dict(self.stats),
         }

@@ -919,6 +919,24 @@ def _serve(port=8080):
                 time.sleep(0.05)
         return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
+    @app.route("/snapshot")
+    def snapshot():
+        """ONE annotated JPEG, not a stream.
+
+        Opening an MJPEG stream to grab a single frame is wasteful — it costs a
+        held connection and a continuous encode for one image. This returns the
+        frame already encoded for the stream, so it is effectively free, and it
+        is what makes pushing periodic thumbnails to FinBlade cheap enough to
+        do at all (a frame every 30s per camera instead of 20-40 Mbit/s of
+        continuous MJPEG).
+        """
+        from flask import Response as FlaskResponse
+        with _lock:
+            buf = _latest_jpeg["buf"]
+        if buf is None:
+            return {"error": "no frame yet"}, 503
+        return FlaskResponse(buf, mimetype="image/jpeg")
+
     @app.route("/health")
     def health():
         w = _worker["ref"]

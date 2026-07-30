@@ -49,6 +49,54 @@ prompt for it. Do not treat that as a way in — every data route is gated.
 
 ---
 
+## 2b. Calling this API from another app or host
+
+**CORS is already open.** `allow_origins=["*"]`, all methods, all headers. A
+browser app on any origin can call every route without a server-side change, and
+the `Authorization` header passes through. Nothing to request from us here.
+
+**Network.** The API listens on **TCP 8000**. Give us the egress IP or CIDR your
+app calls from and we will allow it; the port is deliberately not open to
+`0.0.0.0/0`, because these responses include live video of people.
+
+**If your app is served over HTTPS, browser calls to this API will be blocked**
+before they leave the page — not by CORS and not by our auth, but by mixed-content
+policy: an `https://` page cannot fetch `http://`. The console says the request
+was blocked, which reads like a network fault and is not one.
+
+Three ways out, in order of how little work they are:
+
+* **Call us from your backend instead of the browser.** Server-to-server has no
+  mixed-content rule, and it keeps the API key off the client — where it would
+  otherwise be readable by anyone who opens devtools. Recommended regardless.
+* **We put TLS in front of the API** (ALB + ACM certificate, or Caddy/nginx on
+  the host). Note this needs a domain we control: a public CA will not issue for
+  an `ec2-*.compute-1.amazonaws.com` hostname, so this is not a same-afternoon
+  change.
+* **Serve your app over HTTP too.** Works, but the wrong direction for anything
+  going to production.
+
+**WebSocket scheme must follow the page.** An `https://` page cannot open a
+`ws://` socket; it needs `wss://`, which again depends on TLS being terminated in
+front of us. The dashboard already switches automatically based on
+`location.protocol`.
+
+**Quick check from your own machine**, before wiring anything up:
+
+```bash
+KEY=your-api-key
+CCTV=http://<cctv-host>:8000
+
+curl -s -o /dev/null -w 'with key:    %{http_code}\n' -H "Authorization: Bearer $KEY" $CCTV/api/v1/cameras
+curl -s -o /dev/null -w 'without key: %{http_code}\n'                                 $CCTV/api/v1/cameras
+```
+
+**200 then 401** means auth and reachability are both correct. A hang or timeout
+on the first is a firewall or security-group matter, not a key problem — the two
+fail differently and it is worth telling them apart before asking us.
+
+---
+
 ## 3. Live state — the endpoints a dashboard needs
 
 ### Cameras and people counts

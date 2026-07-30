@@ -46,8 +46,11 @@ desktop ones — see §3.
 **AMI: Ubuntu 22.04 LTS — check this carefully.** It matches the environment
 everything was built and tested on, down to Python 3.10.12.
 
-**Ubuntu 24.04 will not work as written.** It ships Python 3.12 and renames
-several packages, so you get:
+**Anything newer than 22.04 will not work as written** — 24.04, 25.x and 26.04
+all fail, in slightly different ways. Confirm what you actually booted with
+`lsb_release -a` before installing; the AMI picker defaults move on every release.
+
+The symptoms, on 24.04 and later:
 
 ```
 Error: Unable to locate package python3.10-venv
@@ -55,26 +58,47 @@ Note, selecting 'libglib2.0-0t64' instead of 'libglib2.0-0'
 ```
 
 That `t64` suffix is the giveaway — it is the 64-bit `time_t` transition, which
-only exists from 24.04. Confirm with `lsb_release -a` before installing.
+only exists from 24.04.
 
-On 24.04 you have two options:
+**The hard constraint is `numpy==1.26.4`: its wheels stop at cp312, so Python
+3.12 is the ceiling.** Python 3.13 support only arrived in numpy 2.1, and 2.x is
+the ABI break the constraints file exists to prevent. So on any release shipping
+Python 3.13+ (25.10 and later, including 26.04) the **system Python cannot
+install this stack at all**, and bumping numpy to work around that is not a fix —
+it trades a clean failure for a runtime segfault.
 
-* **Add Python 3.10** and use it explicitly. Keeps the tested combination:
+**Relaunch from a 22.04 AMI.** On a disposable test instance this is faster than
+fighting the toolchain, and it is the environment the 398 tests were verified on:
 
-  ```bash
-  sudo add-apt-repository -y ppa:deadsnakes/ppa
-  sudo apt update
-  sudo apt install -y python3.10 python3.10-venv python3.10-dev
-  sudo apt install -y libgl1 libglib2.0-0t64 git curl
-  python3.10 -m venv .venv          # NOT python3
-  ```
+```bash
+aws ec2 describe-images --owners 099720109477 \
+  --filters 'Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*' \
+            'Name=state,Values=available' \
+  --query 'reverse(sort_by(Images,&CreationDate))[:3].[ImageId,Name,CreationDate]' \
+  --output table
+```
 
-* **Use the system Python 3.12.** The pinned packages are recent enough to
-  publish cp312 wheels and it will probably work — but it is an untested
-  combination here, so run the full suite before trusting it. A missing wheel
-  shows up as `No matching distribution found`.
+If you must keep a newer instance, install **Python 3.12 — not 3.10**:
 
-Relaunching from a 22.04 AMI is cleanest if the instance is still disposable.
+```bash
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt update
+sudo apt install -y python3.12 python3.12-venv python3.12-dev
+sudo apt install -y libgl1 libglib2.0-0t64 git curl     # note the t64 suffix
+python3.12 -m venv .venv          # NOT python3
+```
+
+Two ways this still dead-ends, both meaning "go back to 22.04" rather than
+"relax a pin":
+
+* **deadsnakes has no build for your release.** On very new Ubuntu the PPA lags,
+  and it has dropped 3.10 for recent codenames — `Couldn't find any package by
+  glob 'python3.10-venv'` is that, not a typo.
+* **No `+cu128` wheel for your interpreter** — `No matching distribution found
+  for torch==2.11.0+cu128`.
+
+Either way, run the full suite before trusting a non-3.10 install; it is an
+untested combination here.
 
 *Shortcut:* the **AWS Deep Learning AMI (Ubuntu 22.04)** ships with NVIDIA
 drivers already installed, which lets you skip §3. It is a larger image but

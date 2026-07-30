@@ -181,7 +181,41 @@ function filteredQuery(){
   return q;
 }
 
-function exportCsv(){ window.open(`${API}/api/v1/reports/occupancy.csv?${filteredQuery()}`,'_blank'); }
+// Download through fetch(), NOT window.open().
+//
+// window.open and <a href> are browser NAVIGATIONS, and a navigation cannot
+// carry an Authorization header — only fetch() can, which is what apikey.js
+// wraps. So with the API key enabled the export opened a tab containing
+// {"error":"unauthorized"} instead of a file.
+//
+// The alternative would be widening ?key= to cover the report routes, as the
+// video feed and the WebSocket do. Not worth it: those two exist because an
+// <img> and a WebSocket physically cannot send headers. A download can, via a
+// blob, so putting the key in a URL here would leak it into browser history and
+// access logs for no reason.
+async function downloadAuthed(url, filename){
+  const btn=$('csv'); const label=btn.textContent;
+  btn.textContent='Preparing…'; btn.disabled=true;
+  try{
+    const r=await fetch(url);                       // wrapped: sends the key
+    if(!r.ok){ alert(`Export failed (${r.status}). ${r.status===401?'Check the API key.':''}`); return; }
+    const blob=await r.blob();
+    const href=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=href; a.download=filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    // Revoke late: revoking immediately can cancel the download in some browsers.
+    setTimeout(()=>URL.revokeObjectURL(href), 30000);
+  }catch(e){ alert('Export failed: '+e);
+  }finally{ btn.textContent=label; btn.disabled=false; }
+}
+
+function exportCsv(){
+  const {from,to}=bounds();
+  const stamp=($('from').value||'start')+'_to_'+($('to').value||'now');
+  downloadAuthed(`${API}/api/v1/reports/occupancy.csv?${filteredQuery()}`,
+                 `finblade-occupancy_${stamp}.csv`);
+}
 
 async function saveReport(){
   const {from,to}=bounds();
@@ -202,8 +236,24 @@ async function loadRecent(){
     <span class="k">${esc(r.kind||'report')}</span>
     <span class="g">${fmt(r.generated_at)}</span>
     <span>peak ${r.peak_occupancy||0} · ${r.total_alerts||0} alerts</span>
-    <span class="s"><a href="${API}/api/v1/reports/${esc(r.report_id)}" target="_blank">view JSON</a></span>
+    <span class="s"><a href="#" data-report="${esc(r.report_id)}">view JSON</a></span>
   </div>`).join('');
+  // Same problem as the CSV export: a plain link is a navigation and cannot send
+  // the key, so this used to open a tab of {"error":"unauthorized"}. Fetch it and
+  // hand the browser a blob instead.
+  $('rlist').querySelectorAll('a[data-report]').forEach(a=>{
+    a.addEventListener('click', async ev=>{
+      ev.preventDefault();
+      try{
+        const r=await fetch(`${API}/api/v1/reports/${encodeURIComponent(a.dataset.report)}`);
+        if(!r.ok){ alert(`Could not load report (${r.status}).`); return; }
+        const href=URL.createObjectURL(new Blob([JSON.stringify(await r.json(),null,2)],
+                                               {type:'application/json'}));
+        window.open(href,'_blank');
+        setTimeout(()=>URL.revokeObjectURL(href), 30000);
+      }catch(e){ alert('Could not load report: '+e); }
+    });
+  });
 }
 
 // init
@@ -211,18 +261,6 @@ const today=new Date().toISOString().slice(0,10);
 $('from').value=today; $('to').value=today;
 $('gen').addEventListener('click', generate);
 $('csv').addEventListener('click', exportCsv);
-// Default the range to YESTERDAY rather than leaving it blank. Blank meant
-// from=0, and unlike the history page this one cannot be saved by a row limit:
-// the occupancy figures are an AGGREGATE over every zone-state sample in range,
-// so an open-ended query reads the whole table. Measured at 1.9s over 506k rows
-// and growing by roughly 380 MB of samples a day.
-function defaultRange(){
-  if($('from').value) return;
-  const d=new Date(Date.now()-86400000);
-  const p=n=>String(n).padStart(2,'0');
-  $('from').value=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
-}
-defaultRange();
 $('save').addEventListener('click', saveReport);
 $('print').addEventListener('click', ()=>window.print());
 loadFilters().then(generate);

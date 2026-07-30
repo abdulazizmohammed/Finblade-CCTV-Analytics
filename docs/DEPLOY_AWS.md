@@ -78,27 +78,31 @@ aws ec2 describe-images --owners 099720109477 \
   --output table
 ```
 
-If you must keep a newer instance, install **Python 3.12 — not 3.10**:
+**Do not expect deadsnakes to rescue a too-new AMI.** Measured on a real 26.04
+instance: the PPA adds cleanly and then has *neither* 3.10 nor 3.12 for
+`resolute`, so both fallbacks fail identically —
 
-```bash
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo apt update
-sudo apt install -y python3.12 python3.12-venv python3.12-dev
-sudo apt install -y libgl1 libglib2.0-0t64 git curl     # note the t64 suffix
-python3.12 -m venv .venv          # NOT python3
+```
+N: Unable to locate package python3.12-venv
+N: Couldn't find any package by glob 'python3.12-venv'
 ```
 
-Two ways this still dead-ends, both meaning "go back to 22.04" rather than
-"relax a pin":
+That is the PPA lagging a new release, not a typo, and no amount of retrying
+changes it. Relaunch.
 
-* **deadsnakes has no build for your release.** On very new Ubuntu the PPA lags,
-  and it has dropped 3.10 for recent codenames — `Couldn't find any package by
-  glob 'python3.10-venv'` is that, not a typo.
-* **No `+cu128` wheel for your interpreter** — `No matching distribution found
-  for torch==2.11.0+cu128`.
+If you want a newer LTS than 22.04, **24.04 is the only one that can work, and
+only on its system Python** — it ships 3.12.3, which is exactly the numpy
+ceiling, so no PPA is involved at all:
 
-Either way, run the full suite before trusting a non-3.10 install; it is an
-untested combination here.
+```bash
+sudo apt install -y python3-venv python3-pip libgl1 libglib2.0-0t64 git curl
+python3 -m venv .venv          # system python3 IS 3.12 here
+```
+
+Untested here, so run the full suite before building anything on top of it. If
+pip reports `No matching distribution found for torch==2.11.0+cu128`, there is no
+`+cu128` wheel for that interpreter — go back to 22.04 rather than relaxing the
+pin.
 
 *Shortcut:* the **AWS Deep Learning AMI (Ubuntu 22.04)** ships with NVIDIA
 drivers already installed, which lets you skip §3. It is a larger image but

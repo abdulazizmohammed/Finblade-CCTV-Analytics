@@ -17,9 +17,21 @@
 # on both AT THE SAME MOMENT, so dt near zero is expected — and simultaneous
 # presence is evidence FOR a match. This is also what makes site occupancy
 # stop double-counting someone standing in the overlap.
-overlapping_pairs: []
-  # - a: CAM-A-01
-  #   b: CAM-B-02
+overlapping_pairs:
+  # Confirmed by the operator 2026-07-30: CAM-03 covers the entrance, CAM-04
+  # covers the reception seats AND sees part of the entrance. A person standing
+  # in that overlap is visible to both AT THE SAME MOMENT.
+  #
+  # Before this was declared, that simultaneity was being read as "impossible" —
+  # dt~0 fell under the 2.0s default minimum — so every correct match here was
+  # rejected before appearance was even scored, and one person standing in the
+  # entrance counted as two on the site total.
+  - a: CAM-03
+    b: CAM-04
+
+  # STILL UNSURVEYED. Add any other pair that shares floor area, and put walk
+  # times in `transits` for pairs separated by a route. Order does not matter;
+  # pairs are stored normalised.
 
 # Pairs separated by a walk. min_seconds is the fastest a person could
 # physically cover it; max_seconds is the longest gap still worth treating as
@@ -35,7 +47,17 @@ transits: []
 # rather than silently refusing every handover. Unknown pairs are reported as
 # reason="unknown_pair" so you can see which pairs still need surveying.
 default_transit:
-  min_seconds: 2.0
+  # min_seconds is 0.0, matching the reasoned default in finblade/topology.py.
+  # It used to be 2.0 here, which silently overrode that: a non-zero minimum is
+  # an ASSUMPTION that two cameras are far apart, and for an unsurveyed pair we
+  # do not know that. Where it was wrong — any pair that actually overlaps — it
+  # rejected every correct match as "physically impossible" and cross-camera
+  # matching quietly did nothing while the logs looked healthy. Measured on this
+  # site: 786 rejected_topology against 75 matched.
+  #
+  # Raise this only for a pair you have surveyed, and raise it in `transits`
+  # for that specific pair rather than here.
+  min_seconds: 0.0
   max_seconds: 120.0
 
 # Independent camera processes keep their own clocks. An overlapping pair can

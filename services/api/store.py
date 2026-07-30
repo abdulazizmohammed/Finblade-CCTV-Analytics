@@ -150,11 +150,17 @@ class InMemoryStore(Store):
         return False
 
     def latest_zone_states(self) -> List[dict]:
-        latest: Dict[str, dict] = {}
+        # Keyed on (camera_id, zone_id), NOT zone_id alone. Zone ids are only
+        # unique within a camera — the editor numbers each camera's zones from
+        # ZONE-01 — so keying on the id alone makes two cameras' zones overwrite
+        # each other and only the last writer survives. Site occupancy then
+        # silently omits whole zones, and which ones it omits changes from one
+        # request to the next.
+        latest: Dict[Tuple[str, str], dict] = {}
         for s in self._zone_ts:
-            zid = s["zone_id"]
-            if zid not in latest or s["ts"] >= latest[zid]["ts"]:
-                latest[zid] = s
+            key = (s.get("camera_id"), s["zone_id"])
+            if key not in latest or s["ts"] >= latest[key]["ts"]:
+                latest[key] = s
         return _fresh_zones(list(latest.values()))
 
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]:

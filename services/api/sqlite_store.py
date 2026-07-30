@@ -300,8 +300,16 @@ class SQLiteStore(Store):
                 "SELECT zone_id,camera_id,zone_name,zone_type,restricted,ts,occupancy,density,"
                 "capacity_pct,peak_occupancy,avg_occupancy,trend,extra,"
                 "inflow AS inflow_per_min,outflow AS outflow_per_min,status "
+                # GROUP BY zone_id AND camera_id. Zone ids are unique only
+                # within a camera - the editor numbers each camera's zones from
+                # ZONE-01 - so grouping on zone_id alone collapsed two cameras'
+                # zones into one row and returned whichever wrote last.
+                # Measured on a six-camera site: seven zones existed, every
+                # response returned five, and the pairs sharing an id alternated
+                # between requests. Site occupancy therefore omitted two zones
+                # at all times, and which two changed constantly.
                 "FROM zone_state_ts WHERE id IN "
-                "(SELECT MAX(id) FROM zone_state_ts GROUP BY zone_id)")
+                "(SELECT MAX(id) FROM zone_state_ts GROUP BY zone_id, camera_id)")
             out = _row(cur)
         for r in out:
             r["restricted"] = bool(r.get("restricted"))

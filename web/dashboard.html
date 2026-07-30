@@ -454,15 +454,53 @@ async function pollCounts(){
   catch(e){}
 }
 
+// Re-render only what CHANGED.
+//
+// apply() runs on every socket message, about twice a second. Each of these
+// render functions rebuilds its section with innerHTML, so before this guard the
+// page was recreating every zone card, every alert row and the camera strip 2x a
+// second, for ever. With a long alert list that is a great deal of layout and
+// paint work, and it made the whole browser sluggish — including navigating to
+// other pages.
+//
+// It was previously masked: /ws returned 401 before the WebSocket was
+// authenticated, so the dashboard sat on the 5s REST fallback and did this a
+// tenth as often. Turning the socket on exposed a cost that was always there.
+//
+// Signatures deliberately EXCLUDE timestamps. Including ts would make every
+// payload look different and defeat the whole thing — the point is to compare
+// what is actually drawn.
+const SIG={cams:null, zones:null, alerts:null};
+const sigCams=c=>JSON.stringify((c||[]).map(x=>[x.camera_id,x.effective_state,x.stream_url]));
+const sigZones=z=>JSON.stringify((z||[]).map(x=>[x.zone_id,x.camera_id,x.zone_name,x.occupancy,
+  x.density,x.status,x.trend,x.peak_occupancy,x.avg_occupancy,x.capacity_pct,
+  x.inflow_per_min,x.outflow_per_min,x.net_flow,x.restricted]));
+const sigAlerts=a=>JSON.stringify((a||[]).map(x=>[x.alert_id,x.status,x.severity,x.message,x.frame]));
+
 function apply(d){
-  const zones=d.zones||[], alerts=d.alerts||[];
+  // Sort zones to a FIXED order. The server returns them in whatever order the
+  // underlying map yields, which varies between responses — so the cards were
+  // being reshuffled on screen on every update, and no change-detection could
+  // work because an identical set of zones produced a different signature each
+  // time. An operator watching a wall display should find a given zone in the
+  // same place every time they look at it.
+  const zones=(d.zones||[]).slice().sort((a,b)=>
+    String(a.camera_id).localeCompare(String(b.camera_id)) ||
+    String(a.zone_id).localeCompare(String(b.zone_id)));
+  const alerts=d.alerts||[];
   if(zones[0]&&zones[0].camera_id)$('site').textContent=zones[0].camera_id;
-  // The socket carries cameras now, so people counts refresh at push rate rather
-  // than waiting on the 3s poll. Must run BEFORE renderKpis, which reads the
-  // LAST_CAMS that renderCameras sets — otherwise the headline uses stale counts
-  // for one cycle and appears to lag the feed beside it.
-  if(d.cameras)renderCameras(d.cameras);
-  renderKpis(zones,alerts,LAST_COUNTS,LAST_CAMS);renderZones(zones);renderAlerts(alerts);
+  if(d.cameras){
+    // LAST_CAMS must be updated every time even when the DOM is not, because
+    // renderKpis reads it for the live people count.
+    LAST_CAMS=d.cameras;
+    const s=sigCams(d.cameras);
+    if(s!==SIG.cams){SIG.cams=s;renderCameras(d.cameras);}
+  }
+  // Cheap: a handful of textContent writes, no innerHTML. Left unguarded so the
+  // headline figures stay live at socket rate.
+  renderKpis(zones,alerts,LAST_COUNTS,LAST_CAMS);
+  const zs=sigZones(zones); if(zs!==SIG.zones){SIG.zones=zs;renderZones(zones);}
+  const as=sigAlerts(alerts); if(as!==SIG.alerts){SIG.alerts=as;renderAlerts(alerts);}
 }
 
 let ws=null,pollTimer=null;

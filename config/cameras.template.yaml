@@ -28,6 +28,20 @@ device: cuda            # NVIDIA GPU; falls back to CPU if unavailable
 #
 # Raise toward 0.5 only if you have no masks drawn and prefer missing people to
 # counting furniture.
+#
+# MEASURED 2026-07-29 on a Hikvision 4MP, same scene, both streams
+# (scripts/probe_confidence.py, 120s each, ~3600 frames):
+#
+#                        chair (static)        real people (moving)
+#   sub  640x360  (/102) median 0.16-0.23      median 0.309, only 37% >= 0.4
+#   main 2688x1520(/101) median 0.232, MAX     median 0.77-0.91, 75-100% >= 0.4
+#                        0.263, NEVER >= 0.4
+#
+# So the threshold was never the problem — the SUBSTREAM was. At 640x360 people
+# and furniture land in the same narrow band and no cut separates them; at full
+# resolution they are half a point apart and 0.4 excludes the chair by itself.
+# Before touching this number, check what stream the camera is actually on:
+# /Streaming/Channels/102 is the Hikvision substream, 101 is main.
 conf_threshold: 0.4
 person_class_id: 0
 process_fps: 15

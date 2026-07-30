@@ -191,15 +191,27 @@ class SQLiteStore(Store):
             return cur.rowcount > 0
 
     def mark_camera_seen(self, camera_id: str, ts: float, site_id: str = None) -> None:
+        """Liveness only. Must NOT touch the people counts.
+
+        It used to end with people_in_view=excluded.people_in_view — but the
+        INSERT above supplies only camera_id, site_id and last_seen, so
+        `excluded.people_in_view` was the column DEFAULT of 0. Every event
+        ingested therefore RESET the counts to zero, and this runs on every
+        event and zone-state post, far more often than the health snapshot that
+        actually carries the numbers.
+
+        Visible as: the dashboard showing 0 people with someone plainly in
+        frame, or counts flickering between the real value and 0, while
+        seconds_since_seen stayed fresh — because last_seen was being updated by
+        the very call that was wiping the counts.
+        """
         if not camera_id:
             return
         with self._lock:
             self._conn.execute(
                 "INSERT INTO cameras(camera_id,site_id,last_seen) VALUES (?,?,?) "
                 "ON CONFLICT(camera_id) DO UPDATE SET last_seen=excluded.last_seen, "
-                "site_id=COALESCE(excluded.site_id, cameras.site_id), "
-                "people_in_view=excluded.people_in_view, "
-                "people_in_zones=excluded.people_in_zones",
+                "site_id=COALESCE(excluded.site_id, cameras.site_id)",
                 (camera_id, site_id, ts))
             self._conn.commit()
 

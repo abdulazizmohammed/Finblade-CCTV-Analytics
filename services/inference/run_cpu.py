@@ -114,13 +114,38 @@ def _auth_headers():
 LIVE_POST_INTERVAL = float(os.environ.get("FINBLADE_HEALTH_INTERVAL", "1.0"))
 LIVE_WINDOW_SECONDS = float(os.environ.get("FINBLADE_LIVE_WINDOW", "1.5"))
 
+# Report N people if at least (1 - this) of the window saw N or more. 0.75 means
+# a quarter of the frames agreeing is enough. See _presence_count.
+PRESENCE_QUANTILE = float(os.environ.get("FINBLADE_PRESENCE_QUANTILE", "0.75"))
 
-def _median_int(values, fallback=0):
-    """Upper median of a small int sequence. Deterministic, and never a .5."""
+
+def _presence_count(values, fallback=0, quantile=None):
+    """Upper-quantile person count over the window.
+
+    NOT a median, and the reason is measured rather than theoretical. On the
+    reception camera a man sitting still was tracked in only 52% of frames, so a
+    median sat exactly on the knife-edge and published ZERO people while he was
+    plainly sitting there. Raising the publish rate had made that worse, not
+    better, because the wrong value now arrived promptly.
+
+    The asymmetry is the whole point. A detection is positive evidence that
+    somebody is present. A non-detection is WEAK evidence of absence - it is
+    equally consistent with a frame the detector simply missed, which at 640x360
+    on a seated subject is roughly half of them. So the estimator has to lean
+    toward presence rather than sit in the middle.
+
+    A quantile rather than max() because max lets one phantom frame invent a
+    person: this same camera once reported three people from one real one, on
+    detections that occupied 0.3% of frames. At the 0.75 default, a count has to
+    hold across a quarter of the window before it is published, which admits a
+    subject detected half the time and rejects a blip.
+    """
     if not values:
         return fallback
+    q = PRESENCE_QUANTILE if quantile is None else quantile
     s = sorted(values)
-    return int(s[len(s) // 2])
+    idx = min(len(s) - 1, int(len(s) * q))
+    return int(s[idx])
 
 
 def _check_auth(r, path):
@@ -591,9 +616,9 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             # Median over the recent window, not this frame's value — see the
             # LIVE_POST_INTERVAL note. Falls back to the instantaneous count only
             # before the window has filled.
-            hv["people_in_view"] = _median_int(
+            hv["people_in_view"] = _presence_count(
                 [w[1] for w in live_window], people_in_view)
-            hv["people_in_zones"] = _median_int(
+            hv["people_in_zones"] = _presence_count(
                 [w[2] for w in live_window], people_in_zones)
             resp = _post_json("/api/v1/cameras/health",
                               {"camera_id": cfg.camera_id, "site_id": cfg.site_id,

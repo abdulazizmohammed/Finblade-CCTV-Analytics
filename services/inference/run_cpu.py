@@ -660,11 +660,30 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         vnow = now                           # wall-clock epoch: stamps events/state
 
         if not last_still:
+            # The zone editor draws on this still, so if it never lands the
+            # operator cannot create zones at all — and without zones there is no
+            # occupancy, no density and no rules. Worth getting right.
+            #
+            # cv2.imwrite returns False rather than raising when the directory is
+            # missing, so the old `except` never fired: on a fresh clone (nothing
+            # under media/ is tracked) the write failed silently, last_still was
+            # set anyway so it never retried, and the editor hung with no error
+            # logged anywhere. Create the directory, check the result, and only
+            # stop retrying once a frame is actually on disk.
+            still_dir = os.path.join(_REPO_ROOT, "media")
             try:
-                cv2.imwrite(os.path.join(_REPO_ROOT, "media", f"{slug}_frame.jpg"), frame)
-            except Exception:
-                log.warning("could not save reference still for %s", cfg.camera_id)
-            last_still = True
+                os.makedirs(still_dir, exist_ok=True)
+                ok = cv2.imwrite(os.path.join(still_dir, f"{slug}_frame.jpg"), frame)
+            except Exception as exc:
+                ok = False
+                log.warning("could not save reference still for %s: %s",
+                            cfg.camera_id, exc)
+            if ok:
+                last_still = True
+            else:
+                log.warning("reference still for %s not written to %s — the zone "
+                            "editor will have no frame to draw on",
+                            cfg.camera_id, still_dir)
 
         res = model.track(frame, persist=True, classes=[cfg.person_class_id],
                           conf=cfg.conf_threshold, iou=cfg.iou, imgsz=cfg.imgsz,

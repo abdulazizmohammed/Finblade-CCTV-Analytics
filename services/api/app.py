@@ -259,8 +259,14 @@ if os.path.isdir(_TOOLS_DIR):
 # Serve reference stills (media/<camera>_frame.jpg) so the zone editor can load
 # the frame straight from the server instead of a manual file picker.
 _MEDIA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "media"))
-if os.path.isdir(_MEDIA_DIR):
-    app.mount("/media", StaticFiles(directory=_MEDIA_DIR), name="media")
+# Create it, then mount UNCONDITIONALLY. This used to be `if os.path.isdir(...)`,
+# which silently disabled the whole route on a fresh clone: nothing under media/
+# is tracked by git, so the directory does not exist until a camera worker writes
+# its first still — and the mount is decided once, at startup, before any worker
+# has run. The zone editor then had no reference frame to draw on and simply hung,
+# with no error anywhere, on every fresh deployment.
+os.makedirs(_MEDIA_DIR, exist_ok=True)
+app.mount("/media", StaticFiles(directory=_MEDIA_DIR), name="media")
 
 
 # --- history / logs (date-filterable) --------------------------------------

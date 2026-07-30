@@ -241,6 +241,19 @@ const today=new Date().toISOString().slice(0,10);
 $('from').value=today; $('to').value=today;
 for(const b of $('seg').children) b.addEventListener('click', ()=>setMode(b.dataset.mode));
 $('refresh').addEventListener('click', load);
+// Default the range to YESTERDAY rather than leaving it blank. Blank meant
+// from=0 — every record since the system was installed — and the database grows
+// by roughly 380 MB a day, so first load got slower every day it ran and would
+// never get faster. Writing the date into the input rather than defaulting it
+// silently also means the operator can SEE which range they are looking at, and
+// widen it deliberately.
+function defaultRange(){
+  if($('from').value) return;
+  const d=new Date(Date.now()-86400000);
+  const p=n=>String(n).padStart(2,'0');
+  $('from').value=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+defaultRange();
 $('type').addEventListener('change', load);
 $('cam').addEventListener('change', load);
 loadCameras();

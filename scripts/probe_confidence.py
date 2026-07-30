@@ -65,6 +65,7 @@ class Cluster:
         self.confs = [conf]
         self.centres = [self._centre(box)]
         self.boxes = [box]
+        self.frames = [frame_idx]
         self.first = self.last = frame_idx
 
     @staticmethod
@@ -81,6 +82,7 @@ class Cluster:
         self.confs.append(conf)
         self.centres.append(self._centre(box))
         self.boxes.append(box)
+        self.frames.append(frame_idx)
         self.last = frame_idx
 
     def displacement(self):
@@ -95,10 +97,12 @@ class Cluster:
     def summary(self, diag, prod_conf, frames_total):
         disp = self.displacement()
         confs = sorted(self.confs)
+        seen_frames = len(set(self.frames))
         return {
             "cluster_id": self.cid,
-            "frames_seen": len(self.confs),
-            "seen_pct": round(100.0 * len(self.confs) / max(frames_total, 1), 1),
+            "frames_seen": seen_frames,
+            "detections": len(self.confs),
+            "seen_pct": round(100.0 * seen_frames / max(frames_total, 1), 1),
             "conf_min": round(confs[0], 3),
             "conf_median": round(statistics.median(confs), 3),
             "conf_max": round(confs[-1], 3),
@@ -121,8 +125,10 @@ def main():
                     help="probe threshold; keep BELOW production to see the whole picture")
     ap.add_argument("--config", default="config/cameras.template.yaml")
     ap.add_argument("--out", default="evidence/confidence_probe")
-    ap.add_argument("--match-px-pct", type=float, default=8.0,
-                    help="centre distance (%% of frame diagonal) to join a cluster")
+    ap.add_argument("--match-px-pct", type=float, default=4.0,
+                    help="centre distance (%% of frame diagonal) to join a cluster. "
+                         "8%% merged a chair with a passing person at 640x360; "
+                         "lower it further if clusters still look merged")
     args = ap.parse_args()
 
     with open(args.config, "r", encoding="utf-8") as f:
@@ -169,21 +175,33 @@ def main():
 
         res = model.predict(frame, conf=args.conf, classes=[person_cls],
                             imgsz=imgsz, device=device, verbose=False)[0]
-        for b in res.boxes:
+        # At most ONE detection per cluster per frame. Without this, two people
+        # standing near each other both join the same cluster, frames_seen
+        # exceeds the frame count (a >100% "seen" is the giveaway), and a static
+        # object merged with a moving one reads as MOVING with a meaningless
+        # median. Highest confidence claims the cluster first.
+        claimed = set()
+        dets = sorted(res.boxes, key=lambda b: -float(b.conf[0]))
+        for b in dets:
             box = [float(v) for v in b.xyxy[0].tolist()]
             conf = float(b.conf[0])
             cx, cy = Cluster._centre(box)
             best, best_d = None, None
             for c in clusters:
+                if c.cid in claimed:
+                    continue
                 ccx, ccy = c.centre()
                 d = math.hypot(cx - ccx, cy - ccy)
                 if d <= join_px and (best_d is None or d < best_d):
                     best, best_d = c, d
             if best is None:
-                clusters.append(Cluster(next_cid, box, conf, frames))
+                c = Cluster(next_cid, box, conf, frames)
+                clusters.append(c)
                 next_cid += 1
             else:
-                best.add(box, conf, frames)
+                c = best
+                c.add(box, conf, frames)
+            claimed.add(c.cid)
 
     cap.release()
     if frames == 0:

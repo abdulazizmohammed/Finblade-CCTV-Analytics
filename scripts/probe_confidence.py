@@ -212,7 +212,19 @@ def main():
 
     cap.release()
     if frames == 0:
-        raise SystemExit("[BLOCKER] no frames read; nothing measured")
+        # isOpened() succeeded above, so the URL was ACCEPTED and then delivered
+        # nothing. With RTSP that almost always means the path exists as far as
+        # the server is concerned but carries no video — most often a stream the
+        # camera has not been enabled to publish. Worth distinguishing from a bad
+        # URL, because the fix is in the camera's settings, not the URL.
+        raise SystemExit(
+            "[BLOCKER] connected to the source but read 0 frames.\n"
+            "  The URL was accepted, so this is usually a stream the camera is\n"
+            "  not publishing rather than a wrong path. On Hikvision the third\n"
+            "  stream (…/Streaming/Channels/103) ships DISABLED on many models.\n"
+            "  Check what the camera actually offers:\n"
+            "    curl -s -u 'user:pass' http://<camera-ip>/ISAPI/Streaming/channels\n"
+            "  or fall back to the main stream (…/101) reconfigured to 1080p.")
 
     # Drop one-off blips. This floor is FIXED, not a fraction of the run: it used
     # to be frames//100, which meant a 120s run demanded 36 frames and therefore

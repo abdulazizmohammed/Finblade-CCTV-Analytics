@@ -17,6 +17,7 @@ evidence/*_check.jpg
 evidence/scenario_first_frame.jpg
 evidence/metrics_*.json
 evidence/contact_*.jpg
+evidence/confidence_probe/
 
 # Local SQLite history db (regenerated at runtime)
 data/

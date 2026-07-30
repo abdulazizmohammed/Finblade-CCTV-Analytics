@@ -132,6 +132,13 @@ def main():
     ap.add_argument("--out", default="evidence/confidence_probe")
     ap.add_argument("--min-frames", type=int, default=3,
                     help="ignore clusters seen in fewer frames than this (default 3)")
+    ap.add_argument("--resize", default=None, metavar="WxH",
+                    help="downscale each decoded frame to WxH before detection, "
+                         "e.g. 1920x1080. Lets you measure what a LOWER-resolution "
+                         "stream would score without reconfiguring the camera — "
+                         "useful when the camera also feeds a live deployment. "
+                         "Slightly optimistic: a real stream at WxH is also "
+                         "re-encoded at a lower bitrate, which this does not model.")
     ap.add_argument("--match-px-pct", type=float, default=4.0,
                     help="centre distance (%% of frame diagonal) to join a cluster. "
                          "8%% merged a chair with a passing person at 640x360; "
@@ -151,13 +158,30 @@ def main():
               f"{prod_conf}; you will not see sub-threshold detections",
               file=sys.stderr)
 
+    resize_to = None
+    if args.resize:
+        try:
+            w, h = (int(v) for v in args.resize.lower().split("x"))
+            resize_to = (w, h)
+        except Exception:
+            raise SystemExit(f"[BLOCKER] --resize wants WxH, got {args.resize!r}")
+
     os.makedirs(args.out, exist_ok=True)
     print(f"model={model_path} imgsz={imgsz} device={device} "
-          f"production conf_threshold={prod_conf} probe conf={args.conf}")
+          f"production conf_threshold={prod_conf} probe conf={args.conf}"
+          + (f" resize={args.resize}" if resize_to else ""))
 
     model = YOLO(model_path)
-    cap = cv2.VideoCapture(args.source)
-    if not cap.isOpened():
+    # Open it the way the PRODUCTION worker does, by calling the same factory
+    # rather than a plain VideoCapture. It forces rtsp_transport;tcp, and FFmpeg
+    # defaults to UDP — which silently delivers zero frames wherever UDP does not
+    # route back (behind NAT, e.g. WSL). A probe that opens the stream
+    # differently from the pipeline is measuring a different thing, which defeats
+    # its purpose.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from services.inference.camera_worker import _default_open
+    cap = _default_open(args.source)
+    if cap is None or not cap.isOpened():
         raise SystemExit(f"[BLOCKER] cannot open source: {args.source}")
 
     clusters = []
@@ -173,6 +197,11 @@ def main():
             print("[warn] stream read failed; stopping early", file=sys.stderr)
             break
         frames += 1
+        # Resize BEFORE anything else so diag, clusters and clusters.jpg all live
+        # in one coordinate space — mixing native and resized boxes would make
+        # displacement thresholds meaningless.
+        if resize_to is not None and (frame.shape[1], frame.shape[0]) != resize_to:
+            frame = cv2.resize(frame, resize_to, interpolation=cv2.INTER_AREA)
         last_frame = frame
         if diag is None:
             h, w = frame.shape[:2]

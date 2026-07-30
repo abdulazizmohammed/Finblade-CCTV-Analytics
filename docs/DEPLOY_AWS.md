@@ -43,8 +43,38 @@ Sizing comes from measurements, not guesses: VRAM is not the constraint,
 The L4 is a **data-centre** GPU, so prefer the `-server` driver packages over the
 desktop ones — see §3.
 
-**AMI:** Ubuntu 22.04 LTS. It matches the environment everything was built and
-tested on — same Python 3.10.12.
+**AMI: Ubuntu 22.04 LTS — check this carefully.** It matches the environment
+everything was built and tested on, down to Python 3.10.12.
+
+**Ubuntu 24.04 will not work as written.** It ships Python 3.12 and renames
+several packages, so you get:
+
+```
+Error: Unable to locate package python3.10-venv
+Note, selecting 'libglib2.0-0t64' instead of 'libglib2.0-0'
+```
+
+That `t64` suffix is the giveaway — it is the 64-bit `time_t` transition, which
+only exists from 24.04. Confirm with `lsb_release -a` before installing.
+
+On 24.04 you have two options:
+
+* **Add Python 3.10** and use it explicitly. Keeps the tested combination:
+
+  ```bash
+  sudo add-apt-repository -y ppa:deadsnakes/ppa
+  sudo apt update
+  sudo apt install -y python3.10 python3.10-venv python3.10-dev
+  sudo apt install -y libgl1 libglib2.0-0t64 git curl
+  python3.10 -m venv .venv          # NOT python3
+  ```
+
+* **Use the system Python 3.12.** The pinned packages are recent enough to
+  publish cp312 wheels and it will probably work — but it is an untested
+  combination here, so run the full suite before trusting it. A missing wheel
+  shows up as `No matching distribution found`.
+
+Relaunching from a 22.04 AMI is cleanest if the instance is still disposable.
 
 *Shortcut:* the **AWS Deep Learning AMI (Ubuntu 22.04)** ships with NVIDIA
 drivers already installed, which lets you skip §3. It is a larger image but

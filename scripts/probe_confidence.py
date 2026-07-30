@@ -125,6 +125,8 @@ def main():
                     help="probe threshold; keep BELOW production to see the whole picture")
     ap.add_argument("--config", default="config/cameras.template.yaml")
     ap.add_argument("--out", default="evidence/confidence_probe")
+    ap.add_argument("--min-frames", type=int, default=3,
+                    help="ignore clusters seen in fewer frames than this (default 3)")
     ap.add_argument("--match-px-pct", type=float, default=4.0,
                     help="centre distance (%% of frame diagonal) to join a cluster. "
                          "8%% merged a chair with a passing person at 640x360; "
@@ -207,9 +209,13 @@ def main():
     if frames == 0:
         raise SystemExit("[BLOCKER] no frames read; nothing measured")
 
-    # Drop one-off blips: a cluster seen once in 300 frames tells you nothing and
-    # crowds out the signal.
-    kept = [c for c in clusters if len(c.confs) >= max(2, frames // 100)]
+    # Drop one-off blips. This floor is FIXED, not a fraction of the run: it used
+    # to be frames//100, which meant a 120s run demanded 36 frames and therefore
+    # hid exactly the brief intermittent detections a longer run is meant to
+    # catch. Longer runs must reveal more, never less.
+    total_dets = sum(len(c.confs) for c in clusters)
+    kept = [c for c in clusters if len(set(c.frames)) >= args.min_frames]
+    dropped = len(clusters) - len(kept)
     kept.sort(key=lambda c: -len(c.confs))
     rows = [c.summary(diag, prod_conf, frames) for c in kept]
 
@@ -242,6 +248,10 @@ def main():
         "imgsz": imgsz,
         "production_conf_threshold": prod_conf,
         "probe_conf": args.conf,
+        "raw_detections": total_dets,
+        "clusters_found": len(clusters),
+        "clusters_dropped_below_min_frames": dropped,
+        "min_frames": args.min_frames,
         "clusters": rows,
     }
     with open(os.path.join(args.out, "confidence_probe.json"), "w",
@@ -249,6 +259,20 @@ def main():
         json.dump(out, f, indent=2)
 
     print(f"\nframes probed: {frames}")
+    # An empty table is ambiguous unless we say WHY it is empty: nothing detected
+    # at all, or detected and filtered. Those point at opposite next steps.
+    print(f"raw detections above conf {args.conf}: {total_dets} "
+          f"in {len(clusters)} cluster(s); {dropped} dropped "
+          f"(seen in < {args.min_frames} frames)")
+    if total_dets == 0:
+        print(f"\n>>> NOTHING was detected at all, even at conf {args.conf}.")
+        print(">>> Either the frame genuinely held no person-shaped object for the")
+        print(">>> whole run, or the source is not showing what you think. Check")
+        print(f">>> {os.path.join(args.out, 'clusters.jpg')} — it is the last frame")
+        print(">>> read, so it tells you what the camera actually sees.")
+    elif not rows:
+        print(f"\n>>> {len(clusters)} cluster(s) found but ALL were briefer than")
+        print(f">>> --min-frames {args.min_frames}. Re-run with --min-frames 1.")
     print(f"{'id':>3} {'seen':>6} {'conf min':>9} {'median':>7} {'max':>6} "
           f"{'>=prod':>7} {'move px':>8}  verdict")
     for r in rows:

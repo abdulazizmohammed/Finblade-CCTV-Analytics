@@ -78,12 +78,41 @@ except Exception:
 _API = {"base": None}
 _STREAM = {"url": None}   # this runner's MJPEG stream URL (for the health screen)
 
+# The worker is a first-class API client, so it needs the key like any other.
+# Without it, under FINBLADE_API_KEY every call below 401s, and a 401 is NOT an
+# exception in requests — so the failure is completely silent. Three things then
+# break at once, none of them obviously auth-related:
+#   * heartbeats stop landing -> the camera ages into OFFLINE -> the API drops
+#     its stream_url -> the dashboard's feed tiles vanish
+#   * _fetch_zones_raw reads the 401 body as "no zones" -> occupancy goes to 0
+#   * identity resolve stops -> no cross-camera matching
+# The key comes from the environment, which the API's camera_manager already
+# passes down when it spawns us.
+_AUTH_WARNED = {"done": False}
+
+
+def _auth_headers():
+    key = os.environ.get("FINBLADE_API_KEY")
+    return {"Authorization": "Bearer %s" % key} if key else {}
+
+
+def _check_auth(r, path):
+    """Say so, once, if the API is rejecting us. Silence here cost a deployment."""
+    if r is not None and r.status_code == 401 and not _AUTH_WARNED["done"]:
+        _AUTH_WARNED["done"] = True
+        print("[BLOCKER] API returned 401 for %s — this worker has no valid API "
+              "key. Heartbeats, zones and identity are ALL failing silently. "
+              "Set FINBLADE_API_KEY in the worker's environment." % path,
+              file=sys.stderr, flush=True)
+    return r
+
 
 def _post(path, payload):
     if not _API["base"] or requests is None:
         return
     try:
-        requests.post(_API["base"] + path, json=payload, timeout=0.5)
+        _check_auth(requests.post(_API["base"] + path, json=payload,
+                                  headers=_auth_headers(), timeout=0.5), path)
     except Exception:
         pass  # dashboard is best-effort; never block the pipeline on it
 
@@ -93,7 +122,10 @@ def _post_json(path, payload):
     if not _API["base"] or requests is None:
         return None
     try:
-        r = requests.post(_API["base"] + path, json=payload, timeout=0.5)
+        r = _check_auth(requests.post(_API["base"] + path, json=payload,
+                                      headers=_auth_headers(), timeout=0.5), path)
+        if r.status_code == 401:
+            return None          # not a result — don't let callers parse the error body
         return r.json()
     except Exception:
         return None
@@ -107,8 +139,16 @@ def _fetch_zones_raw(camera_id):
     if requests is None or not _API["base"]:
         return None
     try:
-        r = requests.get(_API["base"] + "/api/v1/zones",
-                         params={"camera_id": camera_id}, timeout=1.0)
+        r = _check_auth(requests.get(_API["base"] + "/api/v1/zones",
+                                     params={"camera_id": camera_id},
+                                     headers=_auth_headers(), timeout=1.0),
+                        "/api/v1/zones")
+        # A 401 must read as "unreachable", NOT as "no zones". The error body has
+        # no "zones" key, so .get("zones", []) would return [] and silently wipe
+        # every zone this camera has — occupancy reading 0 with boxes plainly on
+        # people. Keeping what we have is the safe failure.
+        if r.status_code == 401:
+            return None
         return r.json().get("zones", [])
     except Exception:
         return None

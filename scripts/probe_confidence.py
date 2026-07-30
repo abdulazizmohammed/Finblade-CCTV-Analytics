@@ -215,6 +215,7 @@ def main():
 
     # The artifact that makes this usable: every cluster boxed and numbered on a
     # real frame, so a human can map id -> object in one look. I cannot do that.
+    clusters_jpg = None
     if last_frame is not None:
         canvas = last_frame.copy()
         for c, row in zip(kept, rows):
@@ -225,7 +226,13 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
                         cv2.LINE_AA)
         path = os.path.join(args.out, "clusters.jpg")
-        cv2.imwrite(path, canvas)
+        # imwrite returns False rather than raising, so an unchecked call lets the
+        # summary below claim it wrote a file that is not there.
+        if not cv2.imwrite(path, canvas):
+            print(f"[BLOCKER] could not write {path}", file=sys.stderr)
+            clusters_jpg = None
+        else:
+            clusters_jpg = path
 
     out = {
         "source": args.source,
@@ -251,7 +258,13 @@ def main():
               f"{r['movement']}")
 
     print(f"\nwrote {args.out}/confidence_probe.json")
-    print(f"wrote {args.out}/clusters.jpg   <-- OPEN THIS")
+    if clusters_jpg:
+        print(f"wrote {os.path.abspath(clusters_jpg)}   <-- OPEN THIS")
+        print("  view in a browser (no API key needed on /bookmarks):")
+        print(f"    cp {clusters_jpg} evidence/bookmarks/")
+        print("    then open http://<host>:8000/bookmarks/clusters.jpg")
+    else:
+        print("clusters.jpg was NOT written — see the BLOCKER above")
     print("\nNEEDS YOUR EYES: match a cluster id in clusters.jpg to the chair.")
     print("Then read its row above:")
     print(f"  conf_max well below {prod_conf}  -> already excluded; not your false positive")

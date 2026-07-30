@@ -91,4 +91,6 @@ def render_report_html(zone_states: List[dict], generated_at: float,
       {''.join(rows) if rows else '<tr><td colspan="7">No zone data yet.</td></tr>'}
     </tbody>
   </table>
-</div></body></html>"""
+</div>
+<footer class="fb-footer">&copy; 2026 FinBladeAi. All Rights Reserved</footer>
+</body></html>"""

@@ -113,6 +113,22 @@ body {
 }
 
 /* ------------------------------------------------------------
+   Footer — attribution line, present on every page and on the
+   generated report. Faint by design: it is the least important
+   thing on an operations screen and must never compete with a
+   density figure or an alert for attention.
+   ------------------------------------------------------------ */
+.fb-footer {
+  font-family: var(--fb-font-ui);
+  font-size: 11px;
+  color: var(--fb-text-faint);
+  text-align: center;
+  padding: 18px 16px 22px;
+  margin-top: 24px;
+  border-top: 1px solid var(--fb-line);
+}
+
+/* ------------------------------------------------------------
    Panels
    ------------------------------------------------------------ */
 .fb-panel {

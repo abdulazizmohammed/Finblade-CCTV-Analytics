@@ -104,6 +104,11 @@ class Cluster:
             "detections": len(self.confs),
             "seen_pct": round(100.0 * seen_frames / max(frames_total, 1), 1),
             "conf_min": round(confs[0], 3),
+            # Both, because they answer different questions: the mean is what
+            # people ask for, but a single high spike drags it while leaving the
+            # median flat — and for "does this ever cross the threshold" the max
+            # and pct_above_prod_threshold matter more than either.
+            "conf_mean": round(statistics.fmean(confs), 3),
             "conf_median": round(statistics.median(confs), 3),
             "conf_max": round(confs[-1], 3),
             # What matters for a threshold decision: how often this thing would
@@ -273,10 +278,11 @@ def main():
     elif not rows:
         print(f"\n>>> {len(clusters)} cluster(s) found but ALL were briefer than")
         print(f">>> --min-frames {args.min_frames}. Re-run with --min-frames 1.")
-    print(f"{'id':>3} {'seen':>6} {'conf min':>9} {'median':>7} {'max':>6} "
-          f"{'>=prod':>7} {'move px':>8}  verdict")
+    print(f"{'id':>3} {'seen':>6} {'n':>5} {'conf min':>9} {'mean':>6} {'median':>7} "
+          f"{'max':>6} {'>=prod':>7} {'move px':>8}  verdict")
     for r in rows:
-        print(f"{r['cluster_id']:>3} {r['seen_pct']:>5.0f}% {r['conf_min']:>9.3f} "
+        print(f"{r['cluster_id']:>3} {r['seen_pct']:>5.0f}% {r['frames_seen']:>5} "
+              f"{r['conf_min']:>9.3f} {r['conf_mean']:>6.3f} "
               f"{r['conf_median']:>7.3f} {r['conf_max']:>6.3f} "
               f"{r['pct_above_prod_threshold']:>6.0f}% {r['displacement_px']:>8.1f}  "
               f"{r['movement']}")

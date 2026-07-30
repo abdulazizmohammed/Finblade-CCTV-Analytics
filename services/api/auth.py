@@ -8,14 +8,15 @@ THREE WAYS TO PRESENT IT, and the third exists for a real reason:
 
   Authorization: Bearer <key>     preferred, server-to-server
   X-API-Key: <key>                equivalent, some clients find it simpler
-  ?key=<key>                      query string — ONLY accepted on the MJPEG
-                                  stream route
+  ?key=<key>                      query string — ONLY on the MJPEG stream and
+                                  the /ws WebSocket
 
-The query-string form is not laziness. The video feed is consumed by an
-``<img src="...">``, and a browser cannot attach headers to an image request.
-There is no header-based way to authenticate that element. It is restricted to
-that one route because a key in a URL leaks into access logs, browser history
-and Referer headers — acceptable for a feed, not for anything that mutates.
+The query-string form is not laziness. Both exceptions are browser primitives
+that CANNOT send headers: the video feed is an ``<img src="...">``, and the
+WebSocket constructor takes a URL and nothing else. There is no header-based way
+to authenticate either one. It stays restricted to those two because a key in a
+URL leaks into access logs, browser history and Referer headers — acceptable for
+a read-only feed, not for anything that mutates.
 
 Comparison is constant-time: a naive == leaks key length and prefix through
 timing, which is cheap to avoid.
@@ -33,8 +34,8 @@ from typing import Optional
 _OPEN_PREFIXES = ("/web", "/tools", "/bookmarks", "/media", "/logo",
                   "/docs", "/openapi.json", "/redoc", "/favicon")
 
-# The only route where ?key= is honoured. See the module docstring.
-_QUERY_KEY_SUFFIX = "/stream"
+# The only routes where ?key= is honoured. See the module docstring.
+_QUERY_KEY_SUFFIXES = ("/stream", "/ws")
 
 
 def configured_key() -> Optional[str]:
@@ -73,8 +74,8 @@ def request_is_authorised(path: str, headers, query_params) -> bool:
     if _matches(headers.get("x-api-key"), key):
         return True
 
-    # Query string, video feed only.
-    if path.endswith(_QUERY_KEY_SUFFIX) and _matches(query_params.get("key"), key):
+    # Query string: video feed and WebSocket only.
+    if path.endswith(_QUERY_KEY_SUFFIXES) and _matches(query_params.get("key"), key):
         return True
 
     return False

@@ -21,6 +21,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 
 log = logging.getLogger("finblade.inference")
 
@@ -94,6 +95,32 @@ _AUTH_WARNED = {"done": False}
 def _auth_headers():
     key = os.environ.get("FINBLADE_API_KEY")
     return {"Authorization": "Bearer %s" % key} if key else {}
+
+
+# How often the worker publishes live counts, and how much history it smooths
+# over. These were effectively 5s and "no smoothing", which produced the visible
+# complaint: the dashboard showed 1 person while 2 were standing there.
+#
+# Two separate faults, and both had to go:
+#   * the POST happened every 5s, so any change waited up to 5s to be published
+#   * the value sent was the count from the SINGLE frame that coincided with the
+#     tick. A person detected in 80% of frames is missed by 1 sample in 5, and
+#     that wrong number then sat on screen for the whole interval.
+# Publishing a MEDIAN over a short window fixes the second: one bad frame cannot
+# move a median, so the number is both responsive and steady.
+#
+# The 5s cadence for zone-state aggregates, density events and rule evaluation is
+# UNCHANGED — that is a specified aggregation window, not a UI refresh rate.
+LIVE_POST_INTERVAL = float(os.environ.get("FINBLADE_HEALTH_INTERVAL", "1.0"))
+LIVE_WINDOW_SECONDS = float(os.environ.get("FINBLADE_LIVE_WINDOW", "1.5"))
+
+
+def _median_int(values, fallback=0):
+    """Upper median of a small int sequence. Deterministic, and never a .5."""
+    if not values:
+        return fallback
+    s = sorted(values)
+    return int(s[len(s) // 2])
 
 
 def _check_auth(r, path):
@@ -500,6 +527,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     # `tracks` there raised UnboundLocalError and killed the camera process.
     people_in_view = 0
     people_in_zones = 0
+    live_window = deque()      # (ts, people_in_view, people_in_zones) per frame
     last_zone_warn = 0.0
 
     interval = 1.0 / cfg.process_fps if cfg.process_fps and cfg.process_fps > 0 else 0
@@ -549,7 +577,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # Push a health snapshot to the API every 5s so the camera-health screen
         # reflects live state; the response carries the desired control state,
         # which we apply here (central simulate/restore, no inbound socket needed).
-        if now - last_health_post >= 5.0:
+        if now - last_health_post >= LIVE_POST_INTERVAL:
             last_health_post = now
             hv = worker.health(now)
             hv["stream_url"] = _STREAM["url"]
@@ -560,8 +588,13 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             # site with some zoned and some unzoned cameras still totals
             # correctly. Independent of ReID too — a person counts here the
             # moment they are tracked, without waiting to be identified.
-            hv["people_in_view"] = people_in_view
-            hv["people_in_zones"] = people_in_zones
+            # Median over the recent window, not this frame's value — see the
+            # LIVE_POST_INTERVAL note. Falls back to the instantaneous count only
+            # before the window has filled.
+            hv["people_in_view"] = _median_int(
+                [w[1] for w in live_window], people_in_view)
+            hv["people_in_zones"] = _median_int(
+                [w[2] for w in live_window], people_in_zones)
             resp = _post_json("/api/v1/cameras/health",
                               {"camera_id": cfg.camera_id, "site_id": cfg.site_id,
                                "ts": now, "health": hv})
@@ -750,6 +783,12 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # so a camera with nothing drawn still says how many people it can see.
         people_in_view = len(tracks)
         people_in_zones = sum(occupancy.values()) if occupancy else 0
+        # Feed the smoothing window every processed frame, then drop what has
+        # aged out. At process_fps 15 this holds ~22 samples over 1.5s, which is
+        # enough for a median to ignore a single-frame dropout.
+        live_window.append((vnow, people_in_view, people_in_zones))
+        while live_window and vnow - live_window[0][0] > LIVE_WINDOW_SECONDS:
+            live_window.popleft()
 
         det_counts.append(len(tracks))
         processed += 1

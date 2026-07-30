@@ -452,6 +452,11 @@ async function pollCounts(){
 function apply(d){
   const zones=d.zones||[], alerts=d.alerts||[];
   if(zones[0]&&zones[0].camera_id)$('site').textContent=zones[0].camera_id;
+  // The socket carries cameras now, so people counts refresh at push rate rather
+  // than waiting on the 3s poll. Must run BEFORE renderKpis, which reads the
+  // LAST_CAMS that renderCameras sets — otherwise the headline uses stale counts
+  // for one cycle and appears to lag the feed beside it.
+  if(d.cameras)renderCameras(d.cameras);
   renderKpis(zones,alerts,LAST_COUNTS,LAST_CAMS);renderZones(zones);renderAlerts(alerts);
 }
 
@@ -469,7 +474,11 @@ function startPoll(){if(pollTimer)return;poll();pollTimer=setInterval(poll,5000)
 function stopPoll(){clearInterval(pollTimer);pollTimer=null;}
 function connect(){
   try{
-    ws=new WebSocket(WS);
+    // A WebSocket cannot carry an Authorization header, so the key goes in the
+    // query string — the server accepts ?key= on this route and the MJPEG feed
+    // only. Without it, /ws is refused whenever the API key is enabled and the
+    // dashboard silently drops to 5s polling.
+    ws=new WebSocket(window.fbStreamUrl?window.fbStreamUrl(WS):WS);
     ws.onopen=()=>{setConn('websocket');stopPoll();};
     ws.onmessage=m=>{try{apply(JSON.parse(m.data));}catch(e){}};
     ws.onclose=()=>{setConn('rest · 5s');startPoll();setTimeout(connect,4000);};

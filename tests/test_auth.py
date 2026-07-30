@@ -80,6 +80,24 @@ class TestQueryKeyIsStreamOnly(unittest.TestCase):
         self.assertFalse(auth.request_is_authorised(
             "/api/v1/cameras/CAM-A/stream", hdr(), {"key": "wrong"}))
 
+    def test_query_key_works_on_the_websocket(self):
+        """A browser cannot set headers on a WebSocket either, so /ws is the
+        second and only other place ?key= is honoured."""
+        self.assertTrue(auth.request_is_authorised(
+            "/ws", hdr(), {"key": "s3cret"}))
+
+    def test_wrong_query_key_rejected_on_the_websocket(self):
+        self.assertFalse(auth.request_is_authorised(
+            "/ws", hdr(), {"key": "wrong"}))
+
+    def test_websocket_requires_a_key_at_all(self):
+        """Regression guard. /ws is NOT covered by the @app.middleware("http")
+        gate — Starlette's BaseHTTPMiddleware never sees websocket scope — so it
+        served zone states and alerts unauthenticated while every REST route was
+        gated. The route now checks this function itself; if this assertion ever
+        flips to True, that hole is back open."""
+        self.assertFalse(auth.request_is_authorised("/ws", hdr(), {}))
+
 
 class TestOpenPaths(unittest.TestCase):
     """The dashboard itself must load without a key, or nothing can bootstrap —

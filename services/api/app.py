@@ -558,8 +558,13 @@ def _effective_state(c: dict, now: float) -> str:
     return c.get("state") or "ONLINE"
 
 
-@app.get("/api/v1/cameras")
-async def cameras():
+def _camera_list():
+    """Camera rows with derived state.
+
+    Shared by GET /cameras and the /ws push so the two can never disagree — the
+    dashboard reads people counts from whichever arrives first, and a poll that
+    reported different numbers from the socket would be untraceable.
+    """
     now = time.time()
     out = []
     for c in svc.cameras():
@@ -569,7 +574,12 @@ async def cameras():
         last = c.get("last_seen")
         c["seconds_since_seen"] = round(now - last, 1) if last is not None else None
         out.append(c)
-    return {"cameras": out}
+    return out
+
+
+@app.get("/api/v1/cameras")
+async def cameras():
+    return {"cameras": _camera_list()}
 
 
 @app.post("/api/v1/cameras/health")
@@ -722,12 +732,27 @@ async def occupancy_report():
 
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
-    """Sub-second push of zone states + unacked alerts (UC-45). The dashboard
-    falls back to 5s REST polling of the GET endpoints if this drops (UC-46)."""
+    """Sub-second push of cameras + zone states + unacked alerts (UC-45). The
+    dashboard falls back to 5s REST polling of the GET endpoints if this drops
+    (UC-46)."""
+    # Enforce the key HERE. The /api/v1 gate is @app.middleware("http"), and
+    # Starlette's BaseHTTPMiddleware only sees scope["type"] == "http" — so a
+    # WebSocket bypasses it entirely. Until this check existed, /ws served zone
+    # states and alerts to anyone who could reach the port while every REST route
+    # was gated. A browser cannot set headers on a WebSocket, so ?key= is
+    # accepted here, exactly as for the MJPEG stream.
+    if not _auth.request_is_authorised("/ws", websocket.headers,
+                                       websocket.query_params):
+        await websocket.close(code=1008)   # 1008 = policy violation
+        return
     await websocket.accept()
     try:
         while True:
             await websocket.send_json({
+                # Cameras ride the socket too. Without this the dashboard pushed
+                # zones at 2/s while people_in_view still waited on a 3s poll, so
+                # the headline count lagged the room by up to 8s and looked stuck.
+                "cameras": _camera_list(),
                 "zones": svc.zone_states(),
                 # Active feed = OPEN + ACK (resolved/dismissed drop out); operators
                 # resolve acked alerts from here, so it can't be unacked-only.

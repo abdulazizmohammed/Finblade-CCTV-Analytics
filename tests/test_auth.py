@@ -80,6 +80,18 @@ class TestQueryKeyIsStreamOnly(unittest.TestCase):
         self.assertFalse(auth.request_is_authorised(
             "/api/v1/cameras/CAM-A/stream", hdr(), {"key": "wrong"}))
 
+    def test_query_key_works_on_a_snapshot(self):
+        """Snapshots are loaded by <img src> exactly as the MJPEG stream is, and
+        the dashboard now uses them by default: a live stream never closes, so
+        six camera tiles hold every connection the browser allows to one origin
+        and the rest of the page queues behind them."""
+        self.assertTrue(auth.request_is_authorised(
+            "/api/v1/cameras/CAM-A/snapshot", hdr(), {"key": "s3cret"}))
+
+    def test_wrong_query_key_rejected_on_a_snapshot(self):
+        self.assertFalse(auth.request_is_authorised(
+            "/api/v1/cameras/CAM-A/snapshot", hdr(), {"key": "wrong"}))
+
     def test_query_key_works_on_the_websocket(self):
         """A browser cannot set headers on a WebSocket either, so /ws is the
         second and only other place ?key= is honoured."""

@@ -34,8 +34,11 @@ from typing import Optional
 _OPEN_PREFIXES = ("/web", "/tools", "/bookmarks", "/media", "/logo",
                   "/docs", "/openapi.json", "/redoc", "/favicon")
 
-# The only routes where ?key= is honoured. See the module docstring.
-_QUERY_KEY_SUFFIXES = ("/stream", "/ws")
+# The only routes where ?key= is honoured. See the module docstring. All three
+# are consumed by a browser primitive that cannot send a header: <img src> for
+# the MJPEG stream and for single-frame snapshots, and the WebSocket
+# constructor. All three are read-only.
+_QUERY_KEY_SUFFIXES = ("/stream", "/snapshot", "/ws")
 
 
 def configured_key() -> Optional[str]:

@@ -189,6 +189,8 @@ body{
           <label><input type="checkbox" data-ovl="ids" checked> IDs</label>
           <label><input type="checkbox" data-ovl="feet" checked> Foot points</label>
           <label><input type="checkbox" data-ovl="dwell" checked> Dwell</label>
+          <span class="ovllbl" style="margin-left:auto;">Video</span>
+          <label title="Live video holds one connection per camera. With several cameras that uses up the browser's connection budget and the rest of the page slows down. Snapshots refresh about once a second and keep it responsive."><input type="checkbox" id="liveToggle"> Live</label>
         </div>
         <div class="feeds" id="feeds">
           <div class="feed fb-bracket"><div class="ph">no camera streams yet — add a camera on the Cameras page</div></div>
@@ -237,13 +239,65 @@ const feedTiles={};   // camera_id -> {tile,img,streamUrl}
 // per-camera MJPEG ports (8090, 8091, …) are not reachable from a browser on
 // any deployment where only the API port is exposed, which showed up as a feed
 // stuck on "connecting…" while every number on the page updated fine.
+// SNAPSHOTS BY DEFAULT, live MJPEG only on request.
+//
+// An MJPEG response never ends — multipart/x-mixed-replace stays open for as
+// long as the tile is on screen. A browser allows about six connections per
+// origin on HTTP/1.1, so six camera tiles hold every one of them permanently.
+// Everything else on the page then queues for ever: the camera and counts polls
+// sat at (pending) with 0 bytes and stacked up, the WebSocket could not get a
+// connection so the page fell back to 5s polling, and clicking a link hung
+// because even the navigation had to wait for a free slot.
+//
+// A snapshot is a normal request that completes and releases its connection, so
+// the slots stay available. At roughly a frame a second the tiles are perfectly
+// readable for occupancy work, and anyone who wants smooth video can turn Live
+// on — accepting that it costs connections while it is enabled.
+const SNAP_INTERVAL_MS=1200;
+let LIVE_VIDEO=false;
+
+function overlayParams(){
+  return Object.keys(OVL).filter(k=>!OVL[k]).map(k=>`${k}=0`);
+}
+function withKey(url){
+  // An <img src> cannot carry an Authorization header, so the key goes in the
+  // query string. The server accepts ?key= on the stream, snapshot and socket
+  // routes only — the three a browser cannot authenticate any other way.
+  return (window.fbStreamUrl ? window.fbStreamUrl(url) : url);
+}
 function feedUrl(streamUrl, cameraId){
   const base=`${API}/api/v1/cameras/${encodeURIComponent(cameraId)}/stream`;
-  const off=Object.keys(OVL).filter(k=>!OVL[k]).map(k=>`${k}=0`);
-  const url=off.length ? base+'?'+off.join('&')+'&_='+Date.now() : base;
-  // An <img src> cannot carry an Authorization header, so the key goes in the
-  // query string. The server accepts ?key= on this route only.
-  return (window.fbStreamUrl ? window.fbStreamUrl(url) : url);
+  const off=overlayParams();
+  return withKey(off.length ? base+'?'+off.join('&')+'&_='+Date.now() : base);
+}
+function snapUrl(cameraId){
+  const base=`${API}/api/v1/cameras/${encodeURIComponent(cameraId)}/snapshot`;
+  const off=overlayParams();
+  // Cache-buster is mandatory here: without it the browser serves the first
+  // frame back for ever and the tile looks frozen rather than live.
+  return withKey(base+'?'+(off.length?off.join('&')+'&':'')+'_='+Date.now());
+}
+
+// Refresh each tile on its own stagger so six requests never leave together.
+function startSnapshots(){
+  Object.values(feedTiles).forEach((t,i)=>{
+    if(t.snapTimer||!t.camId)return;
+    const tick=()=>{ if(!LIVE_VIDEO && document.visibilityState==='visible') t.img.src=snapUrl(t.camId); };
+    setTimeout(()=>{ tick(); t.snapTimer=setInterval(tick, SNAP_INTERVAL_MS); }, i*180);
+  });
+}
+function stopSnapshots(){
+  Object.values(feedTiles).forEach(t=>{ if(t.snapTimer){clearInterval(t.snapTimer);t.snapTimer=null;} });
+}
+function paintTile(t, cameraId, streamUrl){
+  t.camId=cameraId;
+  if(LIVE_VIDEO){
+    if(t.snapTimer){clearInterval(t.snapTimer);t.snapTimer=null;}
+    if(t.streamUrl!==streamUrl){t.streamUrl=streamUrl;t.img.src=feedUrl(streamUrl,cameraId);}
+  }else{
+    t.streamUrl=streamUrl;          // remembered so Live can switch straight over
+    if(!t.snapTimer) startSnapshots();
+  }
 }
 function renderFeeds(cameras){
   const host=$('feeds');
@@ -283,11 +337,11 @@ function renderFeeds(cameras){
     const ph=t.tile.querySelector('.ph');
     const online=c.effective_state!=='OFFLINE'&&c.effective_state!=='DISABLED';
     if(online){
-      if(t.streamUrl!==c.stream_url){t.streamUrl=c.stream_url;t.camId=c.camera_id;
-        t.img.src=feedUrl(c.stream_url,c.camera_id);}
+      paintTile(t, c.camera_id, c.stream_url);
       if(ph && !t.img.parentNode){ph.style.display='';ph.textContent='connecting…';}
     }else{
       if(t.img.parentNode) t.img.remove();
+      if(t.snapTimer){clearInterval(t.snapTimer);t.snapTimer=null;}
       t.streamUrl=null;
       if(ph){ph.style.display='';ph.textContent='no signal · '+(c.effective_state||'offline').toLowerCase();}
     }
@@ -295,8 +349,28 @@ function renderFeeds(cameras){
 }
 document.querySelectorAll('#ovlbar input[data-ovl]').forEach(cb=>cb.addEventListener('change',()=>{
   OVL[cb.getAttribute('data-ovl')]=cb.checked;
-  Object.values(feedTiles).forEach(t=>{if(t.streamUrl)t.img.src=feedUrl(t.streamUrl,t.camId);});
+  // Force a repaint with the new overlay set. In snapshot mode the next tick
+  // picks it up anyway, but waiting up to a second for a checkbox to take
+  // effect reads as an unresponsive control.
+  Object.values(feedTiles).forEach(t=>{
+    if(!t.camId)return;
+    t.img.src = LIVE_VIDEO ? feedUrl(t.streamUrl,t.camId) : snapUrl(t.camId);
+  });
 }));
+
+$('liveToggle').addEventListener('change',e=>{
+  LIVE_VIDEO=e.target.checked;
+  if(LIVE_VIDEO){
+    stopSnapshots();
+    Object.values(feedTiles).forEach(t=>{ if(t.camId&&t.streamUrl) t.img.src=feedUrl(t.streamUrl,t.camId); });
+  }else{
+    // Point every tile at a snapshot FIRST. Assigning a new src is what aborts
+    // the open MJPEG request and hands the connection back; clearing the timer
+    // alone would leave six sockets held open with nothing reading them.
+    Object.values(feedTiles).forEach(t=>{ if(t.camId) t.img.src=snapUrl(t.camId); });
+    startSnapshots();
+  }
+});
 
 function renderKpis(zones,alerts,counts,cameras){
   // Two different measures, and a mixed site needs BOTH:

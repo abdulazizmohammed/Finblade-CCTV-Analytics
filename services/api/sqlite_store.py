@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from typing import List, Optional
 
 from .store import Store, _fresh_zones
@@ -28,6 +29,13 @@ CREATE TABLE IF NOT EXISTS zone_state_ts(
   peak_occupancy INTEGER, avg_occupancy REAL, trend TEXT, extra TEXT,
   inflow REAL, outflow REAL, status TEXT);
 CREATE INDEX IF NOT EXISTS ix_zst_zone_ts ON zone_state_ts(zone_id, ts);
+-- Covers "latest state per camera+zone", which the dashboard asks for twice a
+-- second over the WebSocket. Without it SQLite cannot satisfy the grouping from
+-- ix_zst_zone_ts and falls back to a temp B-tree over the whole table: measured
+-- at 1.9s against 1.6M rows, versus 0.16s with this index. That cost lands in
+-- the event loop and was enough to starve the socket, which connected and then
+-- dropped back to REST polling within a second.
+CREATE INDEX IF NOT EXISTS ix_zst_zone_cam_id ON zone_state_ts(zone_id, camera_id, id);
 
 CREATE TABLE IF NOT EXISTS alerts(
   alert_id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id TEXT, severity TEXT, message TEXT,
@@ -70,6 +78,13 @@ class SQLiteStore(Store):
         self._migrate()
         self._conn.commit()
         self._lock = threading.Lock()
+        # Short cache for latest_zone_states. The WebSocket pushes a full
+        # snapshot twice a second and EVERY connected dashboard runs its own
+        # loop, so without this the query load multiplies by the number of
+        # people watching — three tabs was enough to saturate the event loop and
+        # make sockets drop. The underlying figures are a 5s aggregate, so a
+        # sub-second cache cannot make them meaningfully staler.
+        self._zone_cache = None          # (built_at, rows)
 
     def _migrate(self) -> None:
         """Add columns introduced after a DB was first created (older files)."""
@@ -294,7 +309,14 @@ class SQLiteStore(Store):
         with self._lock:
             return [self._alert_out(r) for r in _row(self._conn.execute(q))]
 
+    # Kept well under the 5s aggregation window, so the numbers are never
+    # meaningfully older than they would be anyway.
+    _ZONE_CACHE_TTL = 1.0
+
     def latest_zone_states(self) -> List[dict]:
+        cached = self._zone_cache
+        if cached is not None and (time.time() - cached[0]) < self._ZONE_CACHE_TTL:
+            return cached[1]
         with self._lock:
             cur = self._conn.execute(
                 "SELECT zone_id,camera_id,zone_name,zone_type,restricted,ts,occupancy,density,"
@@ -319,7 +341,9 @@ class SQLiteStore(Store):
                     r.update(json.loads(extra))
                 except Exception:
                     pass
-        return _fresh_zones(out)   # drop zones no longer reporting (removed/renamed)
+        out = _fresh_zones(out)   # drop zones no longer reporting (removed/renamed)
+        self._zone_cache = (time.time(), out)
+        return out
 
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]:
         with self._lock:

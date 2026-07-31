@@ -424,7 +424,14 @@ async def camera_snapshot(camera_id: str):
     if r.status_code != 200:
         return JSONResponse(status_code=r.status_code,
                             content={"error": "no frame available"})
-    return Response(content=r.content, media_type="image/jpeg")
+    # no-store, because the dashboard now refreshes these tiles about once a
+    # second per camera and each URL carries a cache-buster, so every response is
+    # unique. Without this the browser writes all of them into its HTTP disk
+    # cache — six cameras at roughly 46 KB a frame is on the order of half a
+    # gigabyte an hour of pure churn. They are live video frames: there is never
+    # a reason to keep one.
+    return Response(content=r.content, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.delete("/api/v1/alerts")

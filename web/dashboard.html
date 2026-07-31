@@ -602,7 +602,7 @@ function apply(d){
   const as=sigAlerts(alerts); if(as!==SIG.alerts){SIG.alerts=as;renderAlerts(alerts);}
 }
 
-let ws=null,pollTimer=null,wsRetry=null;
+let ws=null,pollTimer=null,wsRetry=null,wsLastMsg=0;
 const setConn=(t,off)=>{const c=$('conn');c.innerHTML=`<span class="dot"></span> ${t}`;c.classList.toggle('off',!!off);};
 async function poll(){
   try{
@@ -631,8 +631,8 @@ function connect(){
     // only. Without it, /ws is refused whenever the API key is enabled and the
     // dashboard silently drops to 5s polling.
     ws=new WebSocket(window.fbStreamUrl?window.fbStreamUrl(WS):WS);
-    ws.onopen=()=>{setConn('websocket');stopPoll();};
-    ws.onmessage=m=>{try{apply(JSON.parse(m.data));}catch(e){}};
+    ws.onopen=()=>{setConn('websocket');stopPoll();wsLastMsg=Date.now();};
+    ws.onmessage=m=>{wsLastMsg=Date.now();try{apply(JSON.parse(m.data));}catch(e){}};
     ws.onclose=()=>{setConn('rest · 5s');startPoll();scheduleReconnect(4000);};
     ws.onerror=()=>{try{ws.close();}catch(e){}};
   }catch(e){startPoll();scheduleReconnect(4000);}
@@ -655,6 +655,25 @@ function wakeUp(){
   if(!wsLive())connect();
   poll();
 }
+// Watchdog for a socket that has died WITHOUT firing onclose.
+//
+// visibilitychange covers coming back to a hidden tab, but not the case that
+// matters most here: a dashboard left open on a screen for an hour. A TCP
+// connection dropped by a NAT table, a firewall idle timeout or a sleeping
+// laptop can leave the browser believing the socket is still OPEN, so no close
+// event ever arrives, no retry is scheduled, and the header keeps saying
+// WEBSOCKET over data that stopped updating.
+//
+// The server pushes about twice a second, so silence for 15 seconds means it is
+// gone whatever readyState claims.
+const WS_SILENCE_MS=15000;
+setInterval(()=>{
+  if(document.visibilityState!=='visible')return;   // throttled anyway while hidden
+  if(!ws||ws.readyState!==WebSocket.OPEN)return;    // onclose/retry handles those
+  if(Date.now()-wsLastMsg<WS_SILENCE_MS)return;
+  try{ws.close();}catch(e){}                        // triggers onclose -> retry
+},5000);
+
 document.addEventListener('visibilitychange',wakeUp);
 // Same treatment after a suspend/resume or a dropped network: the socket is gone
 // but nothing has told the page.

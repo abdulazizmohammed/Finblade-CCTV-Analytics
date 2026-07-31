@@ -253,7 +253,17 @@ const feedTiles={};   // camera_id -> {tile,img,streamUrl}
 // the slots stay available. At roughly a frame a second the tiles are perfectly
 // readable for occupancy work, and anyone who wants smooth video can turn Live
 // on — accepting that it costs connections while it is enabled.
-const SNAP_INTERVAL_MS=1200;
+// A snapshot takes roughly a second to produce, so refreshing six tiles every
+// 1.2s left them occupying almost every connection anyway — the page loaded, but
+// the WebSocket still could not get a slot and stayed on REST. Cap how many
+// snapshots may be in flight at once so several connections are ALWAYS free for
+// the socket and the API polls.
+// Measured on the deployment: a snapshot is about 0.26s, so six tiles at 1.5s
+// average roughly one connection in use. The cap is the guarantee, not the
+// average — it holds even if the cameras or the link slow down.
+const SNAP_INTERVAL_MS=1500;
+const SNAP_MAX_INFLIGHT=2;
+let snapInflight=0;
 let LIVE_VIDEO=false;
 
 function overlayParams(){
@@ -282,12 +292,24 @@ function snapUrl(cameraId){
 function startSnapshots(){
   Object.values(feedTiles).forEach((t,i)=>{
     if(t.snapTimer||!t.camId)return;
-    const tick=()=>{ if(!LIVE_VIDEO && document.visibilityState==='visible') t.img.src=snapUrl(t.camId); };
+    const tick=()=>{
+      if(LIVE_VIDEO || document.visibilityState!=='visible') return;
+      // Skip this turn rather than queueing. A tile that misses a round simply
+      // updates a beat later; a tile that queues holds a connection the socket
+      // needs.
+      if(snapInflight>=SNAP_MAX_INFLIGHT || t.snapBusy) return;
+      t.snapBusy=true; snapInflight++;
+      t.img.src=snapUrl(t.camId);
+    };
     setTimeout(()=>{ tick(); t.snapTimer=setInterval(tick, SNAP_INTERVAL_MS); }, i*180);
   });
 }
 function stopSnapshots(){
-  Object.values(feedTiles).forEach(t=>{ if(t.snapTimer){clearInterval(t.snapTimer);t.snapTimer=null;} });
+  Object.values(feedTiles).forEach(t=>{
+    if(t.snapTimer){clearInterval(t.snapTimer);t.snapTimer=null;}
+    t.snapBusy=false;
+  });
+  snapInflight=0;   // nothing is pending once the timers are gone; do not leak the cap
 }
 function paintTile(t, cameraId, streamUrl){
   t.camId=cameraId;
@@ -321,9 +343,13 @@ function renderFeeds(cameras){
         +'<div class="cnt" data-cnt hidden></div>';
       host.appendChild(tile);
       const img=new Image();
-      img.onload=()=>{const p=tile.querySelector('.ph');if(p)p.style.display='none';if(!img.parentNode)tile.insertBefore(img,tile.firstChild);};
-      img.onerror=()=>{};
-      t=feedTiles[c.camera_id]={tile,img,streamUrl:null};
+      // Release the in-flight slot on BOTH paths. Miss the error case and the
+      // counter only ever climbs, until it sticks at the cap and every tile
+      // freezes.
+      const release=()=>{ if(t&&t.snapBusy){t.snapBusy=false;snapInflight=Math.max(0,snapInflight-1);} };
+      img.onload=()=>{release();const p=tile.querySelector('.ph');if(p)p.style.display='none';if(!img.parentNode)tile.insertBefore(img,tile.firstChild);};
+      img.onerror=release;
+      t=feedTiles[c.camera_id]={tile,img,streamUrl:null,snapBusy:false};
     }
     t.tile.querySelector('.cap').textContent=`${c.camera_id}${c.name?' · '+c.name:''}`;
     // Live / cumulative-unique for THIS camera, from the identity counts.

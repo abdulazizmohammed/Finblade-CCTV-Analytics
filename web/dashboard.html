@@ -502,7 +502,7 @@ function apply(d){
   const as=sigAlerts(alerts); if(as!==SIG.alerts){SIG.alerts=as;renderAlerts(alerts);}
 }
 
-let ws=null,pollTimer=null;
+let ws=null,pollTimer=null,wsRetry=null;
 const setConn=(t,off)=>{const c=$('conn');c.innerHTML=`<span class="dot"></span> ${t}`;c.classList.toggle('off',!!off);};
 async function poll(){
   try{
@@ -514,7 +514,17 @@ async function poll(){
 }
 function startPoll(){if(pollTimer)return;poll();pollTimer=setInterval(poll,5000);}
 function stopPoll(){clearInterval(pollTimer);pollTimer=null;}
+const wsLive=()=>ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING);
+
+// One pending retry at a time. Every onclose used to schedule its own, so a few
+// failures in quick succession left several timers racing to open sockets.
+function scheduleReconnect(ms){
+  if(wsRetry)return;
+  wsRetry=setTimeout(()=>{wsRetry=null;connect();},ms);
+}
+
 function connect(){
+  if(wsLive())return;
   try{
     // A WebSocket cannot carry an Authorization header, so the key goes in the
     // query string — the server accepts ?key= on this route and the MJPEG feed
@@ -523,10 +533,33 @@ function connect(){
     ws=new WebSocket(window.fbStreamUrl?window.fbStreamUrl(WS):WS);
     ws.onopen=()=>{setConn('websocket');stopPoll();};
     ws.onmessage=m=>{try{apply(JSON.parse(m.data));}catch(e){}};
-    ws.onclose=()=>{setConn('rest · 5s');startPoll();setTimeout(connect,4000);};
+    ws.onclose=()=>{setConn('rest · 5s');startPoll();scheduleReconnect(4000);};
     ws.onerror=()=>{try{ws.close();}catch(e){}};
-  }catch(e){startPoll();}
+  }catch(e){startPoll();scheduleReconnect(4000);}
 }
+
+// Come back to the tab and reconnect IMMEDIATELY, rather than waiting on a timer
+// that may never fire.
+//
+// The 4s retry above is a setTimeout, and browsers throttle timers in hidden
+// tabs to roughly once a minute — Chrome then freezes the tab altogether after a
+// few minutes and may discard it. So a dashboard left in the background for ten
+// or fifteen minutes loses the socket, and nothing wakes it up when the operator
+// returns: the page sits on 5s polling, which is exactly what it looks like.
+//
+// Reconnecting on the way back also refreshes the data at once, so the first
+// thing on screen is current rather than however old the last poll was.
+function wakeUp(){
+  if(document.visibilityState!=='visible')return;
+  if(wsRetry){clearTimeout(wsRetry);wsRetry=null;}
+  if(!wsLive())connect();
+  poll();
+}
+document.addEventListener('visibilitychange',wakeUp);
+// Same treatment after a suspend/resume or a dropped network: the socket is gone
+// but nothing has told the page.
+window.addEventListener('online',wakeUp);
+window.addEventListener('pageshow',wakeUp);
 
 setInterval(()=>{
   $('clock').textContent=new Date().toLocaleTimeString('en-GB');

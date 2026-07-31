@@ -870,6 +870,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # 5s cadence: heartbeat (local record), density events, zone-state, rules
         heartbeat_event = None
         if agg.due(vnow):
+            # Claim the tick. Without this the aggregator never learns an
+            # emission happened, due() stays True on every frame, and this whole
+            # block — density events, zone-state posts, heartbeats and rule
+            # evaluation — runs at the processing rate instead of every 5s.
+            agg.mark(vnow)
             eng.camera.heartbeat(cfg.camera_id, vnow)
             heartbeat_event = new_event(CAMERA_HEARTBEAT, cfg.camera_id, cfg.site_id, vnow)
             for z in cfg.zones:

@@ -153,6 +153,20 @@ class ZoneStateAggregator:
     def due(self, now: float) -> bool:
         return self._last_emit is None or (now - self._last_emit) >= self.period_s
 
+    def mark(self, now: float) -> None:
+        """Record that the caller emitted for this tick.
+
+        Needed because ``due()`` only stops returning True once something says
+        an emission happened, and the only thing that used to say so was
+        ``snapshot()``. A caller that computes its own figures — the camera
+        runner does, so it can reuse values it already has — therefore left
+        ``_last_emit`` at None for ever and ``due()`` answered True on EVERY
+        frame. The block it guards, commented "5s cadence", ran at the full
+        processing rate: measured at 21 rows/s against an expected 0.4, writing
+        1.8 million density events a day instead of 24 thousand.
+        """
+        self._last_emit = now
+
     def snapshot(self, zone, occupancy: int, flow: FlowCounter, now: float) -> ZoneState:
         self._last_emit = now
         d = density_per_sqm(occupancy, zone.area_sqm)

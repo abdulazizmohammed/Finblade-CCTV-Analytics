@@ -208,7 +208,6 @@ body{
         <div class="panel alerts" id="alerts"><span class="empty">no active alerts</span></div>
       </section>
     </div>
-    <div class="foot">FinBlade Crowd Analytics · GPU inference · air-gapped build</div>
   </div>
 
 <script src="apikey.js"></script>
@@ -571,6 +570,9 @@ $('clearAll').addEventListener('click',()=>clearAlerts('all'));
 pollCameras();setInterval(pollCameras,3000);   // cameras/feeds refresh independently of WS
 pollCounts();setInterval(pollCounts,3000);     // unique-people counts (zone-independent)
 </script>
-<footer class="fb-footer">&copy; 2026 FinBladeAi. All Rights Reserved</footer>
+<footer class="fb-footer">
+  <div class="fb-footer-build">FinBlade Crowd Analytics &middot; GPU inference &middot; air-gapped build</div>
+  <div>&copy; 2026 FinBladeAi. All Rights Reserved</div>
+</footer>
 </body>
 </html>

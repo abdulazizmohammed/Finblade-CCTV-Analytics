@@ -10,7 +10,7 @@ source: ""              # overridden with --source (the RTSP URL / file)
 frame_width: 1280
 frame_height: 720
 
-model_path: models/yolov8n.pt
+model_path: models/yolo11s.pt
 device: cuda            # NVIDIA GPU; falls back to CPU if unavailable
 # Detection sensitivity. This has been moved twice on real footage:
 #   0.35 -> empty chairs and sofas detected as people

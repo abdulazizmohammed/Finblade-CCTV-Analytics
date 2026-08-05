@@ -129,13 +129,33 @@ GET /api/v1/summary
 ```
 ```json
 {
+  "site_id": "SITE-01",
   "cameras": [ ... same shape as GET /api/v1/cameras ... ],
   "zones":   [ ... same shape as GET /api/v1/zones/state ... ],
   "alerts":  [ ... same shape as GET /api/v1/alerts ... ],
   "counts":  { ... same shape as GET /api/v1/identity/counts ... },
+  "summary": {
+    "people_in_zones": 12,
+    "people_live": 14,
+    "cameras": {"online": 11, "degraded": 1, "reconnecting": 0,
+                "offline": 0, "disabled": 0},
+    "zones":   {"normal": 8, "warning": 2, "critical": 1},
+    "alerts":  {"open_total": 5, "amber": 3, "red": 1, "critical": 1, "info": 0}
+  },
   "ts": 1785394227.13
 }
 ```
+
+The `summary` block is the same data pre-tallied, so a tile does not reduce
+three arrays to render one number and every consumer counts the same way.
+
+**`people_in_zones` is `null`, never `0`, when no polygons are drawn.**
+Occupancy that cannot be computed is not an empty site. Fall back to
+`counts.live`, or render "zones not configured".
+
+`site_id` is `FINBLADE_SITE_ID` if configured, otherwise derived from the
+cameras — and `null` if they disagree, because a wrong site label is worse than
+an absent one for a platform routing records by it.
 
 The `/ws` frame in REST form. Every section is built by the same code as the
 individual route it mirrors, so a poller and the socket cannot disagree.
@@ -362,13 +382,51 @@ A WebSocket through a corporate proxy is not a given.
 
 ---
 
+### Filtering and one alert by id
+
+`/alerts` and `/zones/state` take optional filters; omitting them returns
+everything, exactly as before.
+
+```
+GET /api/v1/alerts?severity=RED&status=OPEN&zone_id=&camera_id=&rule_id=&site_id=
+GET /api/v1/zones/state?camera_id=&zone_id=&site_id=
+GET /api/v1/alerts/{alert_id}          # open OR closed
+```
+
+Filters are case-insensitive. `/alerts/{id}` is how you follow up on an alert
+you were pushed — scanning the active feed misses it the moment an operator
+resolves it out of the feed. It adds `frame_url` when an incident image exists.
+
+### Health — which part is broken
+
+```
+GET /healthz          open, liveness only
+GET /readyz           open, terse readiness
+GET /api/v1/health    keyed, full breakdown
+```
+```json
+{"healthy": true, "site_id": "SITE-01", "checks": {
+  "store": {"ok": true},
+  "cameras": {"ok": true, "total": 12, "online": 11, "offline": 0},
+  "forwarder": {"ok": true, "enabled": true, "last_error": null,
+                "seconds_since_success": 3.2},
+  "report_scheduler": {"ok": true, "errors": 0},
+  "offline_monitor": {"ok": true, "errors": 0}}}
+```
+
+Use this to tell **CCTV analytics down** from **one camera down** from **the
+push to FinBlade failing** — three problems with three different owners. A
+disabled forwarder reports `ok: true`; off is not broken.
+
+---
+
 ## 4. History and reports
 
 ```
-GET /api/v1/history/events?from=<epoch>&to=<epoch>&limit=500
-        &camera_id=&zone_id=&event_type=&person_ref=
-GET /api/v1/history/alerts?from=<epoch>&to=<epoch>&limit=500
-        &camera_id=&rule_id=
+GET /api/v1/history/events?from=<epoch>&to=<epoch>&limit=500&offset=0
+        &camera_id=&zone_id=&event_type=&person_ref=&site_id=
+GET /api/v1/history/alerts?from=<epoch>&to=<epoch>&limit=500&offset=0
+        &camera_id=&rule_id=&severity=&status=&zone_id=&site_id=
 GET /api/v1/reports/occupancy.json?from=<epoch>&to=<epoch>&camera_id=&zone_id=
 GET /api/v1/reports/occupancy.csv?from=<epoch>&to=<epoch>
 GET /api/v1/movement?minutes=15&camera_id=      # zone-to-zone transition counts
@@ -376,6 +434,33 @@ GET /api/v1/movement?minutes=15&camera_id=      # zone-to-zone transition counts
 
 All timestamps are **Unix epoch seconds as floats**, UTC. `from`/`to` are query
 parameters spelled exactly that way.
+
+**Pagination.** Both history routes return a `page` block alongside the array:
+
+```json
+{"alerts": [ ... ], "page": {"limit": 500, "offset": 0, "returned": 500,
+                             "has_more": true}}
+```
+
+`has_more` is derived by reading one row past the window, so it is a fact, not
+an inference from `returned == limit`. Page with `offset`. Without this a full
+page and the end of the data look identical, which is how a report quietly
+loses a day.
+
+`/movement` accepts `from`/`to` as well as `minutes` — `minutes` counts back
+from now and cannot express "last Tuesday".
+
+### Incident images
+
+```
+GET /api/v1/incidents/{alert_id}/frame
+```
+
+The frame captured **when the incident happened**, by alert id. Prefer it to
+both `/bookmarks/<file>` (a filesystem-shaped path, not a contract) and the
+live camera snapshot — for an alert raised twenty minutes ago, a live snapshot
+is a different scene wearing the incident's label. Present for R-02 and R-06
+only; `404` with a reason otherwise.
 
 ---
 

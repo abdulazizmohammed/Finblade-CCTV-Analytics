@@ -47,7 +47,13 @@ DEFAULT_TIMEOUT = 5.0
 #   alerts                            on rule fire
 ROUTES: Dict[str, Tuple[str, float]] = {
     # One call, one instant — prefer this to stitching the next three together.
+    # Carries a `summary` block with camera states, zone statuses and alert
+    # severities already tallied, so a tile does not reduce three arrays.
     "summary":      ("/api/v1/summary",                  1.0),
+
+    # Is the CCTV side healthy, and if not, which part? Distinguishes analytics
+    # down from one camera down from the push to FinBlade failing.
+    "health":       ("/api/v1/health",                   5.0),
 
     "cameras":      ("/api/v1/cameras",                  1.0),
     "zones":        ("/api/v1/zones",                   60.0),   # static config
@@ -202,6 +208,59 @@ class CCTVClient:
             raise CCTVError(f"POST {path}: HTTP {resp.status_code}")
         return resp.json()
 
+    def alert(self, alert_id: str) -> dict:
+        """One alert by id, open or closed.
+
+        Use this to follow up on an alert you were pushed. Scanning the active
+        feed instead will miss it the moment an operator resolves it, and
+        "the alert vanished" is indistinguishable from "it never existed".
+        """
+        return self.read_path(f"/api/v1/alerts/{alert_id}", ttl=5.0)
+
+    def incident_frame(self, alert_id: str) -> bytes:
+        """The frame captured WHEN the incident happened.
+
+        Not the same as frame() — that is the room NOW. For an alert raised
+        twenty minutes ago a live snapshot is a different scene wearing the
+        incident's label, which is worse than showing no image at all.
+        Present for R-02 and R-06 only; 404 otherwise.
+        """
+        path = f"/api/v1/incidents/{alert_id}/frame"
+        try:
+            resp = self._get(path, {}, stream=True)
+        except Exception as exc:                # noqa: BLE001
+            raise CCTVError(f"GET {path}: {exc.__class__.__name__}: {exc}") from exc
+        if resp.status_code == 404:
+            raise CCTVError(f"alert {alert_id} has no incident frame")
+        if resp.status_code >= 400:
+            raise CCTVError(f"GET {path}: HTTP {resp.status_code}")
+        return resp.content
+
+    def read_path(self, path: str, ttl: float = 5.0, **params):
+        """Cached GET of a path built from an id.
+
+        Separate from read() on purpose: read() is allowlisted by NAME so a
+        typo cannot reach a destructive route, and that guarantee would be lost
+        if it accepted arbitrary paths. This one is constrained to the two
+        id-addressed read routes above and is not a general escape hatch.
+        """
+        if not path.startswith(("/api/v1/alerts/", "/api/v1/incidents/")):
+            raise CCTVError(f"{path!r} is not an id-addressed read route")
+        key = ("path", path, tuple(sorted(params.items())))
+        hit = self._cache.get(key)
+        if hit and (time.monotonic() - hit[0]) < ttl:
+            return hit[1]
+        with self._lock_for(key):
+            try:
+                resp = self._get(path, params)
+            except Exception as exc:            # noqa: BLE001
+                raise CCTVError(f"GET {path}: {exc.__class__.__name__}: {exc}") from exc
+            if resp.status_code >= 400:
+                raise CCTVError(f"GET {path}: HTTP {resp.status_code}")
+            data = resp.json()
+            self._cache[key] = (time.monotonic(), data)
+            return data
+
     # ---- helpers for the tiles --------------------------------------------
     def site_occupancy(self, summary: dict = None) -> Optional[int]:
         """People on the monitored floor, or None if it cannot be computed.
@@ -216,6 +275,9 @@ class CCTVClient:
         shown per camera and never added up.
         """
         summary = summary if summary is not None else self.read("summary")
+        block = summary.get("summary")
+        if isinstance(block, dict) and "people_in_zones" in block:
+            return block["people_in_zones"]     # already null when uncomputable
         zones = summary.get("zones") or []
         if not zones:
             return None

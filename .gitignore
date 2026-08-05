@@ -29,6 +29,8 @@ scripts/*.log
 scripts/bin/
 auto.crt
 auto.key
+# Locally generated API key — never commit a live credential
+.local_key
 
 # Model weights — fetched via scripts/get_weights.py, not committed
 models/*.pt

@@ -122,9 +122,24 @@ class TestOpenPaths(unittest.TestCase):
 
     def test_pages_and_assets_are_open(self):
         for path in ("/web/dashboard.html", "/web/apikey.js",
-                     "/tools/zone-editor.html", "/bookmarks/x.jpg",
-                     "/media/CAM-01_frame.jpg", "/openapi.json", "/"):
+                     "/tools/zone-editor.html", "/openapi.json", "/"):
             self.assertTrue(auth.request_is_authorised(path, hdr(), {}), path)
+
+    def test_saved_frames_are_NOT_open(self):
+        """This assertion used to be the opposite way round.
+
+        /bookmarks and /media were listed as open so an <img src> could load
+        them without a header — which also served every incident snapshot, and
+        every reference still of the monitored space, to anyone who could reach
+        the port. They are images of people; they are the only identifying
+        artifact this system produces. They now take the key via ?key=, exactly
+        like the MJPEG stream, and the two pages that display them were updated
+        to append it. Full coverage in test_snapshot_access.py.
+        """
+        for path in ("/bookmarks/x.jpg", "/media/CAM-01_frame.jpg"):
+            self.assertFalse(auth.request_is_authorised(path, hdr(), {}), path)
+            self.assertTrue(
+                auth.request_is_authorised(path, hdr(), {"key": "s3cret"}), path)
 
     def test_api_is_not_open(self):
         for path in ("/api/v1/alerts", "/api/v1/cameras",

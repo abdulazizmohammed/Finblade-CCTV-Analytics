@@ -227,7 +227,9 @@ function wireRows(){
   });
 }
 function openFrame(fr, cap){
-  $('modalImg').src=`${API}${fr}`;
+  // Saved frames now require the key. An <img> cannot send a header, so it goes
+  // in the query string — the same route the MJPEG feed already uses.
+  $('modalImg').src=window.fbStreamUrl?window.fbStreamUrl(`${API}${fr}`):`${API}${fr}`;
   $('modalCap').textContent=cap;
   $('modal').classList.add('on');
 }

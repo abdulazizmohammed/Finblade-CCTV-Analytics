@@ -23,6 +23,7 @@ from fastapi.responses import (JSONResponse, HTMLResponse, Response,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from . import redact as _redact
 from .service import IngestService
 from .store import InMemoryStore
 from .bus import InMemoryBus
@@ -212,6 +213,35 @@ async def lifespan(app):
 
 
 app = FastAPI(title="FinBlade CCTV API", version="1.0", lifespan=lifespan)
+
+def _openapi_with_auth():
+    """Publish the auth scheme in the generated spec.
+
+    The key is enforced by @app.middleware("http"), which FastAPI cannot see, so
+    without this the spec says every route is public. A client generated from it
+    then sends no credential and gets a 401 the integrator has no way to explain
+    from the contract they were given.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+    spec = get_openapi(title=app.title, version=app.version, routes=app.routes)
+    spec.setdefault("components", {})["securitySchemes"] = {
+        "BearerKey": {"type": "http", "scheme": "bearer",
+                      "description": "Authorization: Bearer <API key>"},
+        "ApiKeyHeader": {"type": "apiKey", "in": "header", "name": "X-API-Key",
+                         "description": "Equivalent to the bearer form."},
+        "QueryKey": {"type": "apiKey", "in": "query", "name": "key",
+                     "description": "Accepted ONLY on /stream, /snapshot, /ws, "
+                                    "/bookmarks/* and /media/* — browser <img> "
+                                    "and WebSocket cannot send headers."},
+    }
+    spec["security"] = [{"BearerKey": []}, {"ApiKeyHeader": []}]
+    app.openapi_schema = spec
+    return spec
+
+
+app.openapi = _openapi_with_auth
 
 # Air-gapped LAN demo: allow the dashboard (file:// or another origin) to call us.
 app.add_middleware(
@@ -448,6 +478,61 @@ async def camera_snapshot(camera_id: str):
                     headers={"Cache-Control": "no-store"})
 
 
+def _find_alert(alert_id: str):
+    """An alert by id, open or closed. None if unknown."""
+    for a in svc.list_alerts(unacked_only=False):
+        if str(a.get("alert_id")) == str(alert_id):
+            return a
+    for a in store.list_alerts_history(0, time.time() + 86400, limit=100000):
+        if str(a.get("alert_id")) == str(alert_id):
+            return a
+    return None
+
+
+@app.get("/api/v1/incidents/{alert_id}/frame")
+async def incident_frame(alert_id: str):
+    """The frame captured WHEN the incident happened, by alert id.
+
+    Integrations should use this rather than /bookmarks/<file> or the live
+    camera snapshot:
+
+    * /bookmarks exposes a filesystem-shaped path, which is not a contract —
+      the layout may change and the name is guessable.
+    * A live snapshot is a picture of the room NOW. For an alert raised twenty
+      minutes ago that is not evidence of anything; it is a different scene
+      wearing the incident's label.
+
+    Only R-02 (critical density) and R-06 (restricted intrusion) carry a frame;
+    everything else returns 404 with a reason.
+    """
+    alert = _find_alert(alert_id)
+    if alert is None:
+        return JSONResponse(status_code=404,
+                            content={"error": "unknown alert", "alert_id": alert_id})
+    ref = alert.get("frame")
+    if not ref:
+        return JSONResponse(status_code=404, content={
+            "error": "this alert has no incident frame",
+            "detail": "frames are captured for R-02 and R-06 only",
+            "alert_id": alert_id, "rule_id": alert.get("rule_id")})
+
+    # The stored ref is a URL path (/bookmarks/<name>.jpg). Resolve it inside
+    # the bookmarks directory and refuse anything that escapes — the value
+    # reaches here from the database, and a traversal in it must not become a
+    # file read.
+    name = os.path.basename(str(ref))
+    path = os.path.realpath(os.path.join(_BOOKMARKS_DIR, name))
+    if not path.startswith(os.path.realpath(_BOOKMARKS_DIR) + os.sep):
+        return JSONResponse(status_code=400, content={"error": "invalid frame reference"})
+    if not os.path.isfile(path):
+        return JSONResponse(status_code=404, content={
+            "error": "frame no longer on disk", "alert_id": alert_id,
+            "detail": "incident frames are removed when their alert is cleared"})
+    with open(path, "rb") as fh:
+        return Response(content=fh.read(), media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=300"})
+
+
 @app.delete("/api/v1/alerts")
 async def clear_alerts(scope: str = Query("closed"),
                        delete_frames: bool = Query(True)):
@@ -585,12 +670,17 @@ def _effective_state(c: dict, now: float) -> str:
     return c.get("state") or "ONLINE"
 
 
-def _camera_list():
+def _camera_list(drop_source: bool = False):
     """Camera rows with derived state.
 
     Shared by GET /cameras and the /ws push so the two can never disagree — the
     dashboard reads people counts from whichever arrives first, and a poll that
     reported different numbers from the socket would be untraceable.
+
+    Credentials are masked on the way out (see redact.py): a camera source is
+    normally rtsp://user:password@host, and that secret unlocks the camera, not
+    this API. `drop_source` removes the field entirely for integration callers,
+    who never need it.
     """
     now = time.time()
     out = []
@@ -600,13 +690,19 @@ def _camera_list():
         c["online"] = c["effective_state"] not in ("OFFLINE", "DISABLED")
         last = c.get("last_seen")
         c["seconds_since_seen"] = round(now - last, 1) if last is not None else None
-        out.append(c)
+        out.append(_redact.redact_camera(c, drop_source=drop_source))
     return out
 
 
+def _is_integration(request) -> bool:
+    """True when the caller presented the scoped integration key."""
+    return _auth.presented_role(request.url.path, request.headers,
+                                request.query_params) == _auth.ROLE_INTEGRATION
+
+
 @app.get("/api/v1/cameras")
-async def cameras():
-    return {"cameras": _camera_list()}
+async def cameras(request: Request):
+    return {"cameras": _camera_list(drop_source=_is_integration(request))}
 
 
 @app.post("/api/v1/cameras/health")
@@ -771,7 +867,7 @@ def _remote_camera_view(cam: dict) -> dict:
       correct things to proxy. Relative because the consumer's proxy, not this
       host, decides the public origin.
     """
-    cam = dict(cam)
+    cam = _redact.redact_camera(cam, drop_source=True)
     cam.pop("stream_url", None)
     camera_id = cam.get("camera_id")
     if camera_id:
@@ -823,6 +919,10 @@ async def ws(websocket: WebSocket):
                                        websocket.query_params):
         await websocket.close(code=1008)   # 1008 = policy violation
         return
+    # Same projection rule as GET /cameras: an integration key never receives a
+    # camera source, and the frame is credential-masked for everyone.
+    drop_source = _auth.presented_role("/ws", websocket.headers,
+                                       websocket.query_params) == _auth.ROLE_INTEGRATION
     await websocket.accept()
     try:
         while True:
@@ -830,7 +930,7 @@ async def ws(websocket: WebSocket):
                 # Cameras ride the socket too. Without this the dashboard pushed
                 # zones at 2/s while people_in_view still waited on a 3s poll, so
                 # the headline count lagged the room by up to 8s and looked stuck.
-                "cameras": _camera_list(),
+                "cameras": _camera_list(drop_source=drop_source),
                 "zones": svc.zone_states(),
                 # Active feed = OPEN + ACK (resolved/dismissed drop out); operators
                 # resolve acked alerts from here, so it can't be unacked-only.

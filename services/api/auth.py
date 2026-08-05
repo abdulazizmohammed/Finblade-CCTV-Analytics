@@ -47,10 +47,15 @@ from typing import Optional, Tuple
 
 # Paths that must work without a key, or nothing can bootstrap:
 #   /web, /tools   the dashboard itself (it then asks the user for the key)
-#   /bookmarks     alert snapshots, loaded as <img> by the dashboard
-#   /media         reference stills for the zone editor
 #   /docs, /openapi.json, /redoc   API documentation
-_OPEN_PREFIXES = ("/web", "/tools", "/bookmarks", "/media", "/logo",
+#
+# /bookmarks and /media are NOT here, though they were. They serve incident
+# snapshots and reference stills — images of people in a monitored space, the
+# only identifying artifact this system produces. Anyone who could reach the
+# port could enumerate them (`bm_<camera>_<seq>.jpg` is a guessable name) with
+# no credential at all, while every JSON route was gated. They now require the
+# key like anything else, via ?key= because they load as <img src>.
+_OPEN_PREFIXES = ("/web", "/tools", "/logo",
                   "/docs", "/openapi.json", "/redoc", "/favicon")
 
 # The only routes where ?key= is honoured. See the module docstring. All three
@@ -58,6 +63,10 @@ _OPEN_PREFIXES = ("/web", "/tools", "/bookmarks", "/media", "/logo",
 # the MJPEG stream and for single-frame snapshots, and the WebSocket
 # constructor. All three are read-only.
 _QUERY_KEY_SUFFIXES = ("/stream", "/snapshot", "/ws")
+
+# Same reasoning, by prefix: saved frames are loaded as <img src> by the history
+# page and the zone editor, which cannot attach a header either. Read-only.
+_QUERY_KEY_PREFIXES = ("/bookmarks/", "/media/")
 
 ROLE_FULL = "full"
 ROLE_INTEGRATION = "integration"
@@ -121,8 +130,8 @@ def presented_role(path: str, headers, query_params) -> Optional[str]:
     x_api_key = headers.get("x-api-key")
     if x_api_key:
         candidates.append(x_api_key)
-    # Query string: video feed, snapshot and WebSocket only.
-    if path.endswith(_QUERY_KEY_SUFFIXES):
+    # Query string: video feed, snapshot, WebSocket and saved frames only.
+    if path.endswith(_QUERY_KEY_SUFFIXES) or path.startswith(_QUERY_KEY_PREFIXES):
         query_key = query_params.get("key")
         if query_key:
             candidates.append(query_key)

@@ -188,7 +188,10 @@ $('file').onchange = e=>{ const f=e.target.files[0]; if(f) useImage(URL.createOb
 function frameUrl(){
   const cam=v('camera').trim().replace(/\//g,'_');
   const api=v('api').replace(/\/$/,'');
-  return `${api}/media/${encodeURIComponent(cam)}_frame.jpg`;
+  // Reference stills now require the key; an <img> cannot send a header, so it
+  // rides the query string like the MJPEG feed does.
+  const url=`${api}/media/${encodeURIComponent(cam)}_frame.jpg`;
+  return window.fbStreamUrl?window.fbStreamUrl(url):url;
 }
 function tryLoadFrame(){ if(v('camera').trim()) useImage(frameUrl(), 'frame loaded from server'); }
 

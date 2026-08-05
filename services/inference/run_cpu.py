@@ -25,6 +25,20 @@ from collections import deque
 
 log = logging.getLogger("finblade.inference")
 
+# Credential masking for anything that reaches a log file. Imported from the API
+# package so there is one definition; falls back to a no-network-safe local copy
+# if this runner is deployed without the API alongside it.
+try:
+    from services.api.redact import mask_credentials as _mask_credentials
+except Exception:                                  # noqa: BLE001
+    import re as _re
+    _CREDS = _re.compile(r"([a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@:\s]+(?::[^/@\s]*)?@")
+
+    def _mask_credentials(value):
+        if not isinstance(value, str) or "@" not in value:
+            return value
+        return _CREDS.sub(r"\1***:***@", value)
+
 # --- hard dependency gate: fail loudly, never fake -------------------------
 _MISSING = []
 try:
@@ -432,7 +446,10 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         cfg.site_id = site_id
     if source:
         cfg.source = source                       # --source overrides the YAML clip
-        log.info("source overridden to %s", source)
+        # NEVER log the raw source. It is normally rtsp://user:password@host and
+        # this line lands in scripts/cam_<id>.log in cleartext, where the secret
+        # unlocks the camera itself rather than this service.
+        log.info("source overridden to %s", _mask_credentials(source))
     if str(cfg.source).startswith("rtsp"):
         # RTSP over TCP is far more reliable than the UDP default on LAN/loopback.
         os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
@@ -489,7 +506,8 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         fps = probe.get(cv2.CAP_PROP_FPS) if opened else 0.0
         probe.release()
         if not opened:
-            print(f"[BLOCKER] cannot open source: {src}", file=sys.stderr)
+            print(f"[BLOCKER] cannot open source: {_mask_credentials(src)}",
+                  file=sys.stderr)
             sys.exit(2)
         pace = fps if fps and fps > 0 else 25.0
 

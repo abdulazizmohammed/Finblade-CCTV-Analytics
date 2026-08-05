@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS zone_state_ts(
   id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT, camera_id TEXT, zone_name TEXT,
   zone_type TEXT, restricted INTEGER, ts REAL, occupancy INTEGER, density REAL, capacity_pct REAL,
   peak_occupancy INTEGER, avg_occupancy REAL, trend TEXT, extra TEXT,
-  inflow REAL, outflow REAL, status TEXT);
+  inflow REAL, outflow REAL, status TEXT, site_id TEXT);
 CREATE INDEX IF NOT EXISTS ix_zst_zone_ts ON zone_state_ts(zone_id, ts);
 -- Covers "latest state per camera+zone", which the dashboard asks for twice a
 -- second over the WebSocket. Without it SQLite cannot satisfy the grouping from
@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS alerts(
   alert_id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id TEXT, severity TEXT, message TEXT,
   zone_id TEXT, camera_id TEXT, person_ref TEXT, ts REAL, frame TEXT, kind TEXT,
   acknowledged_by TEXT, acknowledged_at REAL,
-  status TEXT DEFAULT 'OPEN', note TEXT, resolved_by TEXT, resolved_at REAL);
+  status TEXT DEFAULT 'OPEN', note TEXT, resolved_by TEXT, resolved_at REAL,
+  site_id TEXT);
 CREATE INDEX IF NOT EXISTS ix_alerts_ts ON alerts(ts);
 
 CREATE TABLE IF NOT EXISTS cameras(
@@ -104,10 +105,17 @@ class SQLiteStore(Store):
                 self._conn.execute(f"ALTER TABLE cameras ADD COLUMN {col} {typ}")
         al = {r[1] for r in self._conn.execute("PRAGMA table_info(alerts)")}
         al_add = {"status": "TEXT DEFAULT 'OPEN'", "note": "TEXT",
-                  "resolved_by": "TEXT", "resolved_at": "REAL"}
+                  "resolved_by": "TEXT", "resolved_at": "REAL",
+                  # So a record can be attributed to a site without the consumer
+                  # having to join camera data. Existing rows stay NULL; the API
+                  # derives the site from the camera when one is missing.
+                  "site_id": "TEXT"}
         for col, typ in al_add.items():
             if col not in al:
                 self._conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} {typ}")
+        zst = {r[1] for r in self._conn.execute("PRAGMA table_info(zone_state_ts)")}
+        if "site_id" not in zst:
+            self._conn.execute("ALTER TABLE zone_state_ts ADD COLUMN site_id TEXT")
 
     # -- writes -------------------------------------------------------------
     def save_event(self, evt: dict) -> None:
@@ -129,26 +137,26 @@ class SQLiteStore(Store):
                                        "capacity_max", "area_sqm") if k in s}
             self._conn.execute(
                 "INSERT INTO zone_state_ts(zone_id,camera_id,zone_name,zone_type,restricted,ts,"
-                "occupancy,density,capacity_pct,peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "occupancy,density,capacity_pct,peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status,site_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (s["zone_id"], s.get("camera_id"), s.get("zone_name"), s.get("zone_type"),
                  1 if s.get("restricted") else 0, float(s["ts"]), int(s["occupancy"]),
                  float(s["density"]), float(s["capacity_pct"]),
                  int(s.get("peak_occupancy", s["occupancy"])), float(s.get("avg_occupancy", 0)),
                  s.get("trend", "flat"), json.dumps(extra),
                  float(s.get("inflow_per_min", 0)), float(s.get("outflow_per_min", 0)),
-                 s.get("status")))
+                 s.get("status"), s.get("site_id")))
             self._conn.commit()
 
     def save_alert(self, a: dict) -> str:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO alerts(rule_id,severity,message,zone_id,camera_id,person_ref,"
-                "ts,frame,kind,acknowledged_by,acknowledged_at,status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,'OPEN')",
+                "ts,frame,kind,acknowledged_by,acknowledged_at,status,site_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,'OPEN',?)",
                 (a.get("rule_id"), a.get("severity"), a.get("message"), a.get("zone_id"),
                  a.get("camera_id"), a.get("person_ref"), float(a.get("ts", 0)),
-                 a.get("frame"), a.get("kind", "FIRE")))
+                 a.get("frame"), a.get("kind", "FIRE"), a.get("site_id")))
             self._conn.commit()
             return str(cur.lastrowid)
 
@@ -295,8 +303,8 @@ class SQLiteStore(Store):
             self._conn.commit()
 
     # -- reads --------------------------------------------------------------
-    _ALERT_COLS = ("alert_id,rule_id,severity,message,zone_id,camera_id,person_ref,ts,"
-                   "frame,kind,acknowledged_by,acknowledged_at,"
+    _ALERT_COLS = ("alert_id,rule_id,severity,message,zone_id,camera_id,site_id,"
+                   "person_ref,ts,frame,kind,acknowledged_by,acknowledged_at,"
                    "COALESCE(status,'OPEN') AS status,note,resolved_by,resolved_at")
 
     def list_alerts(self, unacked_only: bool = False) -> List[dict]:
@@ -319,7 +327,8 @@ class SQLiteStore(Store):
             return cached[1]
         with self._lock:
             cur = self._conn.execute(
-                "SELECT zone_id,camera_id,zone_name,zone_type,restricted,ts,occupancy,density,"
+                "SELECT zone_id,camera_id,site_id,zone_name,zone_type,restricted,ts,"
+                "occupancy,density,"
                 "capacity_pct,peak_occupancy,avg_occupancy,trend,extra,"
                 "inflow AS inflow_per_min,outflow AS outflow_per_min,status "
                 # GROUP BY zone_id AND camera_id. Zone ids are unique only

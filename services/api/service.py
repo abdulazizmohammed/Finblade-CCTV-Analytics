@@ -34,6 +34,10 @@ class IngestService:
         ok, errors = validate_zone_state(payload)
         if not ok:
             return 422, {"accepted": False, "errors": errors}
+        if not payload.get("site_id"):
+            site = self.site_for_camera(payload.get("camera_id"))
+            if site:
+                payload = dict(payload, site_id=site)
         self.store.save_zone_state(payload)
         # 5s zone-state posts are the camera's primary heartbeat.
         self.store.mark_camera_seen(payload.get("camera_id"), payload.get("ts"))
@@ -145,11 +149,59 @@ class IngestService:
         return self.store.list_zones(camera_id)
 
     # -- alerts --
+    def site_for_camera(self, camera_id) -> str:
+        """The site a camera belongs to, or None.
+
+        Alerts and zone states arrive from workers that know their camera but do
+        not always carry a site. Deriving it here means one CCTV deployment can
+        feed a multi-site platform without every worker being reconfigured, and
+        without the platform having to join camera data to attribute a record.
+        """
+        if not camera_id:
+            return None
+        for c in self.store.list_cameras():
+            if c.get("camera_id") == camera_id:
+                return c.get("site_id")
+        return None
+
     def raise_alert(self, alert: dict) -> str:
+        if not alert.get("site_id"):
+            site = self.site_for_camera(alert.get("camera_id"))
+            if site:
+                alert = dict(alert, site_id=site)
         return self.store.save_alert(alert)
 
-    def list_alerts(self, unacked_only: bool = False) -> List[dict]:
-        return self.store.list_alerts(unacked_only=unacked_only)
+    def get_alert(self, alert_id: str):
+        """One alert by id, open or closed. None if unknown."""
+        target = str(alert_id)
+        for a in self.store.list_alerts(unacked_only=False):
+            if str(a.get("alert_id")) == target:
+                return a
+        for a in self.store.list_alerts_history(0, time.time() + 86400, limit=100000):
+            if str(a.get("alert_id")) == target:
+                return a
+        return None
+
+    # Filter names accepted by list_alerts, matched case-insensitively against
+    # the alert field of the same name.
+    _ALERT_FILTERS = ("severity", "status", "zone_id", "camera_id", "rule_id",
+                      "site_id")
+
+    def list_alerts(self, unacked_only: bool = False, **filters) -> List[dict]:
+        """Active alerts, optionally narrowed.
+
+        Filtering happens here rather than in each store so every backend
+        behaves identically; the active set is small by construction (resolved
+        and dismissed alerts drop out), so this is not the query to optimise.
+        """
+        rows = self.store.list_alerts(unacked_only=unacked_only)
+        for field in self._ALERT_FILTERS:
+            wanted = filters.get(field)
+            if wanted in (None, ""):
+                continue
+            wanted = str(wanted).upper()
+            rows = [a for a in rows if str(a.get(field) or "").upper() == wanted]
+        return rows
 
     def acknowledge(self, alert_id: str, who: str, ts: float) -> Tuple[int, dict]:
         if not who:

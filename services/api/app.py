@@ -314,22 +314,52 @@ app.mount("/media", StaticFiles(directory=_MEDIA_DIR), name="media")
 
 
 # --- history / logs (date-filterable) --------------------------------------
+def _paginate(rows, offset: int, limit: int):
+    """Slice a result window and say whether more exist.
+
+    Callers fetch one row past the window, so `has_more` is a fact rather than a
+    guess. Without this a client could not tell a full page from the end of the
+    data, and a silent truncation at `limit` reads as "that is everything" —
+    which is how a report ends up quietly missing a day.
+    """
+    window = rows[offset:offset + limit]
+    return window, {"limit": limit, "offset": offset, "returned": len(window),
+                    "has_more": len(rows) > offset + limit}
+
+
 @app.get("/api/v1/history/events")
 async def history_events(frm: float = Query(0, alias="from"),
                          to: float = Query(9_000_000_000_000.0, alias="to"),
                          camera_id: str = Query(None), zone_id: str = Query(None),
                          event_type: str = Query(None), person_ref: str = Query(None),
-                         limit: int = Query(500)):
-    return {"events": svc.events_history(frm, to, camera_id=camera_id, zone_id=zone_id,
-                                         event_type=event_type, person_ref=person_ref,
-                                         limit=limit)}
+                         site_id: str = Query(None),
+                         limit: int = Query(500), offset: int = Query(0)):
+    rows = svc.events_history(frm, to, camera_id=camera_id, zone_id=zone_id,
+                              event_type=event_type, person_ref=person_ref,
+                              limit=offset + limit + 1)
+    if site_id:
+        rows = [e for e in rows if e.get("site_id") == site_id]
+    window, page = _paginate(rows, offset, limit)
+    return {"events": window, "page": page}
 
 
 @app.get("/api/v1/movement")
-async def movement(minutes: float = Query(15.0), camera_id: str = Query(None)):
-    """Zone->zone transition counts over the last N minutes (Req 12)."""
+async def movement(minutes: float = Query(15.0), camera_id: str = Query(None),
+                   frm: float = Query(None, alias="from"),
+                   to: float = Query(None, alias="to")):
+    """Zone->zone transition counts.
+
+    `minutes` counts back from now and stays the default so existing callers are
+    unaffected. `from`/`to` (epoch seconds) address a fixed window instead —
+    without them a question like "last Tuesday's flows" cannot be asked.
+    """
     now = time.time()
-    return {"minutes": minutes,
+    if frm is not None or to is not None:
+        t0 = frm if frm is not None else 0.0
+        t1 = to if to is not None else now
+        return {"from": t0, "to": t1,
+                "flows": svc.movement(t0, t1, camera_id=camera_id)}
+    return {"minutes": minutes, "from": now - minutes * 60.0, "to": now,
             "flows": svc.movement(now - minutes * 60.0, now, camera_id=camera_id)}
 
 
@@ -337,9 +367,18 @@ async def movement(minutes: float = Query(15.0), camera_id: str = Query(None)):
 async def history_alerts(frm: float = Query(0, alias="from"),
                          to: float = Query(9_000_000_000_000.0, alias="to"),
                          camera_id: str = Query(None), rule_id: str = Query(None),
-                         limit: int = Query(500)):
-    return {"alerts": svc.alerts_history(frm, to, camera_id=camera_id, rule_id=rule_id,
-                                         limit=limit)}
+                         severity: str = Query(None), status: str = Query(None),
+                         zone_id: str = Query(None), site_id: str = Query(None),
+                         limit: int = Query(500), offset: int = Query(0)):
+    rows = svc.alerts_history(frm, to, camera_id=camera_id, rule_id=rule_id,
+                              limit=offset + limit + 1)
+    for field, wanted in (("severity", severity), ("status", status),
+                          ("zone_id", zone_id), ("site_id", site_id)):
+        if wanted:
+            rows = [a for a in rows
+                    if str(a.get(field) or "").upper() == str(wanted).upper()]
+    window, page = _paginate(rows, offset, limit)
+    return {"alerts": window, "page": page}
 
 
 @app.get("/api/v1/reports/occupancy.json")
@@ -822,13 +861,58 @@ async def zone_state(request: Request):
 
 
 @app.get("/api/v1/zones/state")
-async def zone_states():
-    return {"zones": svc.zone_states()}
+async def zone_states(camera_id: str = Query(None), zone_id: str = Query(None),
+                      site_id: str = Query(None)):
+    """Live zone state, optionally narrowed.
+
+    All filters are optional and default to off, so an existing caller sees
+    exactly what it saw before. zone_id is unique only within a camera, so
+    filtering by zone_id alone can legitimately return rows from several
+    cameras — pass camera_id too to address one zone.
+    """
+    rows = svc.zone_states()
+    if camera_id:
+        rows = [z for z in rows if z.get("camera_id") == camera_id]
+    if zone_id:
+        rows = [z for z in rows if z.get("zone_id") == zone_id]
+    if site_id:
+        rows = [z for z in rows if z.get("site_id") == site_id]
+    return {"zones": rows}
 
 
 @app.get("/api/v1/alerts")
-async def alerts(unacked_only: bool = False):
-    return {"alerts": svc.list_alerts(unacked_only=unacked_only)}
+async def alerts(unacked_only: bool = False, severity: str = Query(None),
+                 status: str = Query(None), zone_id: str = Query(None),
+                 camera_id: str = Query(None), rule_id: str = Query(None),
+                 site_id: str = Query(None)):
+    """The active alert feed (OPEN + ACK), optionally narrowed.
+
+    Filters are case-insensitive and default to off. severity is
+    INFO|AMBER|RED|CRITICAL and status is OPEN|ACK — a resolved or dismissed
+    alert has left this feed by definition; use /history/alerts for those.
+    """
+    return {"alerts": svc.list_alerts(
+        unacked_only=unacked_only, severity=severity, status=status,
+        zone_id=zone_id, camera_id=camera_id, rule_id=rule_id, site_id=site_id)}
+
+
+@app.get("/api/v1/alerts/{alert_id}")
+async def alert_detail(alert_id: str):
+    """One alert by id, open or closed.
+
+    Exists so a consumer can follow up on an alert it was pushed without
+    scanning the active feed and discovering the alert has since been resolved
+    out of it.
+    """
+    alert = svc.get_alert(alert_id)
+    if alert is None:
+        return JSONResponse(status_code=404,
+                            content={"error": "unknown alert", "alert_id": alert_id})
+    out = dict(alert)
+    if out.get("frame"):
+        # Point at the authenticated route rather than the filesystem path.
+        out["frame_url"] = f"/api/v1/incidents/{quote(str(alert_id), safe='')}/frame"
+    return out
 
 
 @app.post("/api/v1/alerts/{alert_id}/ack")
@@ -851,6 +935,22 @@ async def resolve(alert_id: str, request: Request):
 @app.get("/api/v1/reports/occupancy", response_class=HTMLResponse)
 async def occupancy_report():
     return render_report_html(svc.zone_states(), generated_at=time.time())
+
+
+def _site_id(cameras=None):
+    """This deployment's site.
+
+    FINBLADE_SITE_ID wins; otherwise the site the cameras report, which is what
+    the workers already send. Returns None rather than guessing when cameras
+    disagree — a wrong site label is worse than an absent one for a platform
+    routing records by it.
+    """
+    configured = os.environ.get("FINBLADE_SITE_ID")
+    if configured:
+        return configured
+    sites = {c.get("site_id") for c in (cameras if cameras is not None
+                                        else svc.cameras()) if c.get("site_id")}
+    return sites.pop() if len(sites) == 1 else None
 
 
 def _remote_camera_view(cam: dict) -> dict:
@@ -894,12 +994,49 @@ async def summary():
     than 5s returns the same zone numbers repeatedly; 5s is the honest rate, or
     use /ws and stop polling.
     """
+    cameras = [_remote_camera_view(c) for c in _camera_list()]
+    zones = svc.zone_states()
+    alerts = svc.list_alerts(unacked_only=False)
+    counts = id_svc.counts()
+
+    # Pre-tallied so a tile does not have to reduce three arrays to render one
+    # number, and so every consumer counts the same way. The arrays are still
+    # here; these are a summary of them, not a replacement.
+    cam_states = {"online": 0, "degraded": 0, "reconnecting": 0,
+                  "offline": 0, "disabled": 0}
+    for c in cameras:
+        cam_states[str(c.get("effective_state", "")).lower()] = \
+            cam_states.get(str(c.get("effective_state", "")).lower(), 0) + 1
+    zone_states = {"normal": 0, "warning": 0, "critical": 0}
+    for z in zones:
+        key = str(z.get("status", "")).lower()
+        if key in zone_states:
+            zone_states[key] += 1
+    sev = {"amber": 0, "red": 0, "critical": 0, "info": 0}
+    for a in alerts:
+        key = str(a.get("severity", "")).lower()
+        if key in sev:
+            sev[key] += 1
+
     return {
-        "cameras": [_remote_camera_view(c) for c in _camera_list()],
-        "zones": svc.zone_states(),
+        "site_id": _site_id(cameras),
+        "cameras": cameras,
+        "zones": zones,
         # Active feed = OPEN + ACK. Resolved and dismissed drop out.
-        "alerts": svc.list_alerts(unacked_only=False),
-        "counts": id_svc.counts(),
+        "alerts": alerts,
+        "counts": counts,
+        "summary": {
+            # People on the monitored floor. None — not 0 — when no polygons are
+            # drawn: occupancy cannot be computed, which is not the same as an
+            # empty site, and rendering 0 there is the error this whole
+            # integration keeps tripping over.
+            "people_in_zones": (sum(int(z.get("occupancy") or 0) for z in zones)
+                                if zones else None),
+            "people_live": counts.get("live"),
+            "cameras": cam_states,
+            "zones": zone_states,
+            "alerts": dict(sev, open_total=len(alerts)),
+        },
         "ts": time.time(),
     }
 

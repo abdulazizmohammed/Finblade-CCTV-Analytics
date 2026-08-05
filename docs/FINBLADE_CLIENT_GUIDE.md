@@ -51,6 +51,25 @@ not for convenience.
 The dashboard pages themselves (`/web`, `/tools`) load without a key; they then
 prompt for it. Do not treat that as a way in — every data route is gated.
 
+### Ask for the integration key, not the operator key
+
+There are two keys. Yours should be the scoped one:
+
+| | operator key | integration key |
+|---|---|---|
+| every `GET`, and `/ws` | ✅ | ✅ |
+| `POST /alerts/{id}/ack` · `/resolve` | ✅ | ✅ |
+| `DELETE /alerts`, `DELETE /cameras/{id}`, `DELETE /frames/orphaned` | ✅ | ❌ 403 |
+| `POST /zones` (overwrites polygons) | ✅ | ❌ 403 |
+| camera provisioning, start/stop, identity tuning | ✅ | ❌ 403 |
+
+It covers everything in §10's "read these" and "act on these" lists, and nothing
+in "do NOT call these" — so that list stops depending on your restraint.
+
+**`401` and `403` mean different things.** `401` is a missing or wrong key.
+`403` is a valid key on a route outside its scope. If you see `403`, the
+credential is fine and the call is not — do not go hunting for a key bug.
+
 ---
 
 ## 2b. Calling this API from another app or host
@@ -102,6 +121,41 @@ fail differently and it is worth telling them apart before asking us.
 ---
 
 ## 3. Live state — the endpoints a dashboard needs
+
+### One call for a whole dashboard — start here
+
+```
+GET /api/v1/summary
+```
+```json
+{
+  "cameras": [ ... same shape as GET /api/v1/cameras ... ],
+  "zones":   [ ... same shape as GET /api/v1/zones/state ... ],
+  "alerts":  [ ... same shape as GET /api/v1/alerts ... ],
+  "counts":  { ... same shape as GET /api/v1/identity/counts ... },
+  "ts": 1785394227.13
+}
+```
+
+The `/ws` frame in REST form. Every section is built by the same code as the
+individual route it mirrors, so a poller and the socket cannot disagree.
+
+**Prefer it to calling the four separately.** Four calls per refresh is four
+round trips and four different instants stitched into one render — the camera
+count and the zone occupancy on screen come from moments up to a second apart.
+
+Two differences from `GET /api/v1/cameras`, both deliberate:
+
+* **`stream_url` is absent.** It points at an internal per-camera MJPEG server
+  on 8090+, whose port is reassigned when a camera restarts and which is not
+  exposed wherever only 8000 is open. A remote consumer that reads it gets a URL
+  that works in testing and fails intermittently in production.
+* **`snapshot_path` and `stream_path` are present** — relative and stable, and
+  the correct things to proxy. Relative because your proxy, not this host,
+  decides the public origin.
+
+Poll it at 1s if you want camera counts fresh; `zones` inside it is still a
+5-second aggregate and cannot be fresher (§8). Or use the WebSocket (§3b).
 
 ### Cameras and people counts
 
@@ -471,13 +525,14 @@ client from it rather than hand-writing one.
 
 ## 10. Complete route index
 
-Every route the service exposes, so nothing here is a surprise. **35 routes**;
+Every route the service exposes, so nothing here is a surprise. **36 routes**;
 you need about ten of them.
 
 ### Read these
 
 | route | §
 |---|---|
+| `GET /api/v1/summary` — cameras + zones + alerts + counts in one call | 3 |
 | `GET /api/v1/cameras` | 3 |
 | `GET /api/v1/zones` · `GET /api/v1/zones/state` | 3 |
 | `GET /api/v1/alerts` | 3 |
@@ -504,9 +559,12 @@ cameras are down.
 ### Do NOT call these
 
 They exist for the camera workers, the operator UI and demo tooling. Several are
-destructive and none are rate-limited; the API key that grants you read access
-grants these too, so this list is the only thing standing between an integration
-bug and a wiped deployment.
+destructive and none are rate-limited.
+
+**On the integration key (§2) these return `403` and this list is enforced, not
+advisory.** On the operator key it is advisory only — that key grants all of
+them, and the list is then the only thing between an integration bug and a wiped
+deployment. Use the integration key.
 
 | route | why not |
 |---|---|

@@ -77,6 +77,11 @@ def _valid_source(src: str) -> bool:
 OFFLINE_S = 30.0
 _cam_offline: dict = {}
 
+# Background loops swallow their exceptions so one bad tick cannot kill them.
+# These counters are what makes that survivable rather than silent: they surface
+# in /api/v1/health, so a loop that has been failing for an hour is visible.
+_loop_errors = {"offline": 0, "report": 0}
+
 
 async def _offline_monitor():
     """Fire R-07 when a camera stops posting for >30s; clear + auto-ack on return."""
@@ -115,7 +120,11 @@ async def _offline_monitor():
         except asyncio.CancelledError:
             break
         except Exception:
-            pass  # never let the monitor kill the app
+            # Must not kill the monitor — but must not vanish either. R-07 is
+            # the only rule the API owns; if this loop is failing, camera
+            # offline alerts silently stop and nothing anywhere says so.
+            _loop_errors["offline"] += 1
+            log.exception("camera-offline monitor tick failed")
 
 
 # R-08: generate an occupancy report on a fixed cadence (hourly by default; set
@@ -132,7 +141,10 @@ async def _report_scheduler():
         except asyncio.CancelledError:
             break
         except Exception:
-            pass  # a failed report must never kill the scheduler
+            # A failed report must never kill the scheduler, but a scheduler
+            # that has stopped producing reports must be visible in /health.
+            _loop_errors["report"] += 1
+            log.exception("scheduled report generation failed")
 
 
 # --- FinBlade forwarder ----------------------------------------------------
@@ -175,6 +187,7 @@ forwarder = FinBladeForwarder(
     # the size of the JSON — see the note in forwarder.py.
     snapshot_interval=float(os.environ.get("FINBLADE_SNAPSHOT_INTERVAL", "30")),
     fetch_snapshot=_fetch_camera_snapshot,
+    site_id=os.environ.get("FINBLADE_SITE_ID"),
 )
 FORWARD_INTERVAL = float(os.environ.get("FINBLADE_FORWARD_INTERVAL", "5"))
 
@@ -975,6 +988,76 @@ def _remote_camera_view(cam: dict) -> dict:
         cam["snapshot_path"] = f"/api/v1/cameras/{safe}/snapshot"
         cam["stream_path"] = f"/api/v1/cameras/{safe}/stream"
     return cam
+
+
+@app.get("/healthz")
+async def healthz():
+    """Liveness. This process is running and serving. Nothing more.
+
+    Open by design: a load balancer cannot present a key, and the answer
+    reveals nothing a port scan would not.
+    """
+    return {"status": "ok", "ts": time.time()}
+
+
+def _dependency_checks() -> dict:
+    """Per-dependency status, so a consumer can tell WHICH thing is broken.
+
+    A single up/down flag makes "CCTV is unavailable", "one camera dropped" and
+    "the push to FinBlade is failing" indistinguishable, and they need three
+    different responses from whoever is on call.
+    """
+    checks = {}
+    try:
+        svc.cameras()
+        checks["store"] = {"ok": True}
+    except Exception as exc:                        # noqa: BLE001
+        log.exception("store health check failed")
+        checks["store"] = {"ok": False, "error": exc.__class__.__name__}
+
+    now = time.time()
+    try:
+        cams = _camera_list()
+        live = [c for c in cams if c.get("effective_state") == "ONLINE"]
+        checks["cameras"] = {"ok": True, "total": len(cams), "online": len(live),
+                             "offline": len([c for c in cams if c.get(
+                                 "effective_state") == "OFFLINE"])}
+    except Exception as exc:                        # noqa: BLE001
+        checks["cameras"] = {"ok": False, "error": exc.__class__.__name__}
+
+    fw = forwarder.status()
+    checks["forwarder"] = {
+        # Disabled is not unhealthy — most deployments do not push.
+        "ok": (not fw["enabled"]) or fw["last_error"] is None,
+        "enabled": fw["enabled"], "last_error": fw["last_error"],
+        "seconds_since_success": fw["seconds_since_success"]}
+    checks["report_scheduler"] = {"ok": _loop_errors["report"] == 0,
+                                  "errors": _loop_errors["report"]}
+    checks["offline_monitor"] = {"ok": _loop_errors["offline"] == 0,
+                                 "errors": _loop_errors["offline"]}
+    checks["ts"] = now
+    return checks
+
+
+@app.get("/readyz")
+async def readyz():
+    """Readiness: can this instance serve requests? Terse and open."""
+    checks = _dependency_checks()
+    ready = bool(checks["store"]["ok"])
+    return JSONResponse(status_code=200 if ready else 503,
+                        content={"ready": ready,
+                                 "store": checks["store"]["ok"], "ts": time.time()})
+
+
+@app.get("/api/v1/health")
+async def health_detail():
+    """Full dependency breakdown. Authenticated — it names failure modes."""
+    checks = _dependency_checks()
+    healthy = all(v.get("ok", True) for v in checks.values()
+                  if isinstance(v, dict))
+    return JSONResponse(status_code=200 if healthy else 503,
+                        content={"healthy": healthy, "site_id": _site_id(),
+                                 "checks": checks})
 
 
 @app.get("/api/v1/summary")

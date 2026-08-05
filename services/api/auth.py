@@ -55,8 +55,14 @@ from typing import Optional, Tuple
 # port could enumerate them (`bm_<camera>_<seq>.jpg` is a guessable name) with
 # no credential at all, while every JSON route was gated. They now require the
 # key like anything else, via ?key= because they load as <img src>.
+#
+# /healthz and /readyz are open because a load balancer or orchestrator cannot
+# present a key, and they answer only "is this process serving" — no counts, no
+# camera names, no failure detail. The detailed breakdown is at
+# /api/v1/health, which is gated.
 _OPEN_PREFIXES = ("/web", "/tools", "/logo",
-                  "/docs", "/openapi.json", "/redoc", "/favicon")
+                  "/docs", "/openapi.json", "/redoc", "/favicon",
+                  "/healthz", "/readyz")
 
 # The only routes where ?key= is honoured. See the module docstring. All three
 # are consumed by a browser primitive that cannot send a header: <img src> for

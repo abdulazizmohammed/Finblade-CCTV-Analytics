@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS reports(
   from_ts REAL, to_ts REAL, peak_occupancy INTEGER, total_alerts INTEGER, payload TEXT);
 CREATE INDEX IF NOT EXISTS ix_reports_gen ON reports(generated_at);
 
+-- Where the FinBlade forwarder had got to. Without this the cursor lives only
+-- in the process: restart during a FinBlade outage and the backlog is skipped
+-- rather than replayed, which is the exact case the design exists to survive.
+CREATE TABLE IF NOT EXISTS forwarder_cursors(
+  name TEXT PRIMARY KEY, ts REAL NOT NULL);
+
 CREATE TABLE IF NOT EXISTS zones(
   camera_id TEXT, zone_id TEXT, zone_name TEXT, zone_type TEXT, restricted INTEGER,
   capacity_max INTEGER, area_sqm REAL, warning_density REAL, critical_density REAL,
@@ -400,6 +406,20 @@ class SQLiteStore(Store):
         q += " ORDER BY ts DESC LIMIT ?"; p.append(limit)
         with self._lock:
             return [self._alert_out(r) for r in _row(self._conn.execute(q, p))]
+
+    def load_cursors(self) -> dict:
+        with self._lock:
+            return {r["name"]: float(r["ts"]) for r in _row(
+                self._conn.execute("SELECT name, ts FROM forwarder_cursors"))}
+
+    def save_cursors(self, cursors: dict) -> None:
+        with self._lock:
+            for name, ts in (cursors or {}).items():
+                self._conn.execute(
+                    "INSERT INTO forwarder_cursors(name,ts) VALUES (?,?) "
+                    "ON CONFLICT(name) DO UPDATE SET ts=excluded.ts",
+                    (name, float(ts)))
+            self._conn.commit()
 
     def list_cameras(self) -> List[dict]:
         with self._lock:

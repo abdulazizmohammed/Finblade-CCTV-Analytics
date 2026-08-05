@@ -36,6 +36,10 @@ log = logging.getLogger("finblade.forwarder")
 # to deduplicate and it is specified to do so.
 CURSOR_OVERLAP_S = 2.0
 
+# Stamped on every outbound envelope. Bump on a breaking change to the payload
+# shape so a receiver can branch on it instead of sniffing for fields.
+SCHEMA_VERSION = "1.0"
+
 
 class FinBladeForwarder:
     """Batched push of live analytics to FinBlade. Disabled unless a URL is set."""
@@ -51,8 +55,10 @@ class FinBladeForwarder:
         apply_ack: Optional[Callable] = None,
         snapshot_interval: float = 0.0,
         fetch_snapshot: Optional[Callable] = None,
+        site_id: Optional[str] = None,
     ):
         self.store = store
+        self.site_id = site_id
         self.identity = identity_service
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key
@@ -75,11 +81,24 @@ class FinBladeForwarder:
         self._fetch_snapshot = fetch_snapshot
         self._last_snapshot = 0.0
 
-        # Start from "now": on first run we forward what happens next, not the
-        # entire history. Backfilling a site's whole database into FinBlade on
-        # first connect is rarely what anyone wants.
+        # Start from "now" on a FIRST run: backfilling a site's whole database
+        # into FinBlade on first connect is rarely what anyone wants.
+        #
+        # But resume from the stored position if there is one. Without that the
+        # cursor lived only in this process, so "the store is the queue" held
+        # only while the process did: an API restart during a FinBlade outage
+        # skipped the backlog instead of replaying it — the precise scenario the
+        # tailing design exists to survive, failing silently.
         now = time.time()
         self.cursors = {"events": now, "alerts": now}
+        try:
+            stored = store.load_cursors() or {}
+        except Exception:                          # noqa: BLE001
+            log.exception("could not load forwarder cursors; starting from now")
+            stored = {}
+        for kind in ("events", "alerts"):
+            if kind in stored:
+                self.cursors[kind] = float(stored[kind])
         self.stats = {"events": 0, "alerts": 0, "zone_state": 0, "health": 0,
                       "counts": 0, "snapshots": 0, "snapshot_bytes": 0,
                       "acks_applied": 0, "failures": 0, "ticks": 0}
@@ -113,6 +132,13 @@ class FinBladeForwarder:
             return {}
 
     def _send(self, path: str, payload: dict, count_key: str, n: int) -> bool:
+        # Stamped on every envelope so the receiver can branch on the contract
+        # version rather than sniffing for fields, and can attribute a batch to
+        # a site without joining camera data. Both are additive: a receiver that
+        # ignores them is unaffected.
+        payload = dict(payload, schema_version=SCHEMA_VERSION, source="cctv")
+        if self.site_id and "site_id" not in payload:
+            payload["site_id"] = self.site_id
         try:
             resp = self._post(path, payload)
         except Exception as exc:                       # noqa: BLE001
@@ -143,6 +169,15 @@ class FinBladeForwarder:
             except Exception:                          # noqa: BLE001
                 log.exception("failed applying FinBlade ack %s", ack.get("alert_id"))
 
+    def _persist_cursors(self) -> None:
+        """Best effort. A cursor that fails to save costs a replayed batch on
+        the next restart — the receiver is required to be idempotent on
+        event_id — whereas raising here would stop forwarding altogether."""
+        try:
+            self.store.save_cursors(dict(self.cursors))
+        except Exception:                          # noqa: BLE001
+            log.exception("could not persist forwarder cursors")
+
     # ---- the five streams -------------------------------------------------
     def _tail(self, kind: str, fetch) -> None:
         since = self.cursors[kind] - CURSOR_OVERLAP_S
@@ -155,6 +190,7 @@ class FinBladeForwarder:
             # Only now. A failed post leaves the cursor put, so the next tick
             # replays these same rows — the store is the queue.
             self.cursors[kind] = max(self.cursors[kind], newest)
+            self._persist_cursors()
 
     def tick(self) -> None:
         """One forwarding pass. Safe to call on a timer; never raises."""

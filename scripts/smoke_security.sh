@@ -98,5 +98,24 @@ echo "  content-type: $(curl -s -o /dev/null -m 10 -w '%{content_type}' -H "$S" 
 rm -f evidence/bookmarks/inc_probe.jpg
 
 echo
-echo "== 6. server tracebacks =="
+echo "== 6. Health endpoints =="
+echo "  /healthz            no key -> $(code localhost:$PORT/healthz) (want 200, open for a load balancer)"
+echo "  /readyz             no key -> $(code localhost:$PORT/readyz) (want 200)"
+echo "  /api/v1/health      no key -> $(code localhost:$PORT/api/v1/health) (want 401)"
+echo "  /api/v1/health      scoped -> $(code -H "$S" localhost:$PORT/api/v1/health) (want 200)"
+curl -s -m 10 -H "$S" "localhost:$PORT/api/v1/health" | .venv/bin/python -c '
+import json,sys
+d=json.load(sys.stdin)
+print("  healthy:", d["healthy"], "| components:", sorted(k for k in d["checks"] if k!="ts"))'
+
+echo
+echo "== 7. Site summary block =="
+curl -s -m 10 -H "$S" "localhost:$PORT/api/v1/summary" | .venv/bin/python -c '
+import json,sys
+d=json.load(sys.stdin)
+print("  site_id:", d["site_id"])
+print("  summary:", json.dumps(d["summary"], sort_keys=True))'
+
+echo
+echo "== 8. server tracebacks =="
 grep -c -i traceback "$LOG" | sed 's/^/  traceback lines: /'

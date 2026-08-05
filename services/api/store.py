@@ -70,6 +70,12 @@ class Store:
     def list_reports(self, limit: int = 100) -> List[dict]: return []
     def get_report(self, report_id: str) -> dict: return None
 
+    # Forwarder cursors. Default no-ops so a backend that does not implement
+    # them simply behaves as it did before: start from now, forward what
+    # happens next. Only durability is lost, never correctness.
+    def load_cursors(self) -> Dict[str, float]: return {}
+    def save_cursors(self, cursors: Dict[str, float]) -> None: pass
+
 
 class InMemoryStore(Store):
     def __init__(self):

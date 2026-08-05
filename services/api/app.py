@@ -13,6 +13,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 log = logging.getLogger("finblade.api")
 
@@ -231,10 +232,23 @@ async def _require_api_key(request: Request, call_next):
     it on. CORS preflight is exempt: the browser sends OPTIONS without
     Authorization by design, and rejecting it breaks every cross-origin call
     before the real request is ever made.
+
+    A valid but scoped key on a route it may not use returns 403, not 401.
+    Collapsing both into 401 sends an integrator hunting for a credentials bug
+    that does not exist.
     """
-    if request.method == "OPTIONS" or _auth.request_is_authorised(
-            request.url.path, request.headers, request.query_params):
+    if request.method == "OPTIONS":
         return await call_next(request)
+    allowed, reason = _auth.authorise(request.url.path, request.headers,
+                                      request.query_params, request.method)
+    if allowed:
+        return await call_next(request)
+    if reason == "forbidden":
+        return JSONResponse(status_code=403, content={
+            "error": "forbidden",
+            "detail": "this key has integration scope: it may read any route and "
+                      "POST only /api/v1/alerts/{id}/ack and "
+                      "/api/v1/alerts/{id}/resolve"})
     return JSONResponse(status_code=401, content={
         "error": "unauthorized",
         "detail": "supply the API key as 'Authorization: Bearer <key>' or "
@@ -741,6 +755,57 @@ async def resolve(alert_id: str, request: Request):
 @app.get("/api/v1/reports/occupancy", response_class=HTMLResponse)
 async def occupancy_report():
     return render_report_html(svc.zone_states(), generated_at=time.time())
+
+
+def _remote_camera_view(cam: dict) -> dict:
+    """A camera row safe to hand a remote consumer.
+
+    Two differences from GET /cameras, both deliberate:
+
+    * `stream_url` is DROPPED. It points at an internal per-camera MJPEG server
+      on 8090+, whose port is reassigned when a camera restarts and which is not
+      exposed on any deployment where only 8000 is open. A remote consumer that
+      reads that field gets a URL it cannot reach, intermittently — the worst
+      failure shape there is.
+    * `snapshot_path` / `stream_path` are ADDED: relative, stable, and the
+      correct things to proxy. Relative because the consumer's proxy, not this
+      host, decides the public origin.
+    """
+    cam = dict(cam)
+    cam.pop("stream_url", None)
+    camera_id = cam.get("camera_id")
+    if camera_id:
+        safe = quote(str(camera_id), safe="")
+        cam["snapshot_path"] = f"/api/v1/cameras/{safe}/snapshot"
+        cam["stream_path"] = f"/api/v1/cameras/{safe}/stream"
+    return cam
+
+
+@app.get("/api/v1/summary")
+async def summary():
+    """Everything a remote dashboard needs, in ONE call at ONE instant.
+
+    The /ws frame in REST form, plus people counts. Built from the same helpers
+    as GET /cameras, /zones/state and /alerts, so a poller and the socket can
+    never disagree.
+
+    Why it exists: a platform rendering its own tiles from this data otherwise
+    makes four round trips per refresh and stitches together four different
+    instants. Over a WAN that is both slower and subtly wrong — the camera count
+    and the zone occupancy in one render come from moments up to a second apart.
+
+    Cadence note: `zones` is a 5-second aggregate upstream. Polling this faster
+    than 5s returns the same zone numbers repeatedly; 5s is the honest rate, or
+    use /ws and stop polling.
+    """
+    return {
+        "cameras": [_remote_camera_view(c) for c in _camera_list()],
+        "zones": svc.zone_states(),
+        # Active feed = OPEN + ACK. Resolved and dismissed drop out.
+        "alerts": svc.list_alerts(unacked_only=False),
+        "counts": id_svc.counts(),
+        "ts": time.time(),
+    }
 
 
 @app.websocket("/ws")

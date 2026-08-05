@@ -17,6 +17,7 @@ def hdr(**kw):
 class TestDisabledByDefault(unittest.TestCase):
     def setUp(self):
         os.environ.pop("FINBLADE_API_KEY", None)
+        os.environ.pop("FINBLADE_INTEGRATION_KEY", None)
 
     def test_no_key_configured_allows_everything(self):
         # An existing deployment must keep working until auth is turned on
@@ -129,6 +130,108 @@ class TestOpenPaths(unittest.TestCase):
         for path in ("/api/v1/alerts", "/api/v1/cameras",
                      "/api/v1/finblade/status"):
             self.assertFalse(auth.request_is_authorised(path, hdr(), {}), path)
+
+
+class TestIntegrationKeyScope(unittest.TestCase):
+    """The scoped key a consuming platform gets (FINBLADE_INTEGRATION_KEY).
+
+    It exists so an integration bug on someone else's side cannot wipe this
+    deployment. Every assertion below is a route that must stay out of reach of
+    a key handed to a third party.
+    """
+
+    def setUp(self):
+        os.environ["FINBLADE_API_KEY"] = "full-key"
+        os.environ["FINBLADE_INTEGRATION_KEY"] = "scoped-key"
+        self.addCleanup(os.environ.pop, "FINBLADE_API_KEY", None)
+        self.addCleanup(os.environ.pop, "FINBLADE_INTEGRATION_KEY", None)
+
+    def scoped(self, path, method="GET", query=None):
+        return auth.authorise(path, hdr(authorization="Bearer scoped-key"),
+                              query or {}, method)
+
+    def full(self, path, method="GET"):
+        return auth.authorise(path, hdr(authorization="Bearer full-key"),
+                              {}, method)
+
+    # -- reads: everything is permitted --------------------------------------
+    def test_scoped_key_may_read_every_route(self):
+        for path in ("/api/v1/cameras", "/api/v1/zones", "/api/v1/zones/state",
+                     "/api/v1/alerts", "/api/v1/summary",
+                     "/api/v1/identity/counts", "/api/v1/history/events",
+                     "/api/v1/reports/occupancy.json", "/api/v1/finblade/status"):
+            self.assertEqual((True, None), self.scoped(path), path)
+
+    def test_scoped_key_may_open_the_websocket(self):
+        """The tile board needs push. A WebSocket handshake is a GET."""
+        self.assertEqual((True, None), self.scoped("/ws"))
+        self.assertEqual((True, None),
+                         self.scoped("/ws", query={"key": "scoped-key"}))
+
+    def test_scoped_key_works_on_snapshots_via_query_string(self):
+        """Camera tiles are <img src>, which cannot carry a header."""
+        self.assertEqual(
+            (True, None),
+            self.scoped("/api/v1/cameras/CAM-01/snapshot",
+                        query={"key": "scoped-key"}))
+
+    # -- the two permitted writes --------------------------------------------
+    def test_scoped_key_may_acknowledge_and_resolve(self):
+        for path in ("/api/v1/alerts/1042/ack", "/api/v1/alerts/1042/resolve"):
+            self.assertEqual((True, None), self.scoped(path, "POST"), path)
+
+    # -- everything else that mutates is denied ------------------------------
+    def test_scoped_key_cannot_reach_destructive_routes(self):
+        denied = [
+            ("/api/v1/alerts", "DELETE"),                     # wipes alert history
+            ("/api/v1/frames/orphaned", "DELETE"),            # wipes snapshots
+            ("/api/v1/cameras/CAM-01", "DELETE"),             # stops the pipeline
+            ("/api/v1/zones", "POST"),                        # overwrites polygons
+            ("/api/v1/cameras", "POST"),                      # provisioning
+            ("/api/v1/cameras/CAM-01/start", "POST"),
+            ("/api/v1/cameras/CAM-01/stop", "POST"),
+            ("/api/v1/cameras/CAM-01/simulate-failure", "POST"),
+            ("/api/v1/identity/tuning", "POST"),              # site-wide matching
+            ("/api/v1/identity/merge", "POST"),
+            ("/api/v1/events/ingest", "POST"),                # fabricates measurements
+            ("/api/v1/zones/state", "POST"),
+            ("/api/v1/cameras/health", "POST"),
+            ("/api/v1/alerts", "POST"),                       # raises a fake alert
+        ]
+        for path, method in denied:
+            self.assertEqual((False, "forbidden"), self.scoped(path, method),
+                             f"{method} {path} must be out of scope")
+
+    def test_ack_suffix_alone_does_not_grant_a_write(self):
+        """The allowance is anchored to /api/v1/alerts/, not to the suffix. A
+        route that merely ends in /ack must not inherit it."""
+        self.assertEqual((False, "forbidden"),
+                         self.scoped("/api/v1/cameras/CAM-01/ack", "POST"))
+
+    # -- the full key is unaffected ------------------------------------------
+    def test_full_key_still_does_everything(self):
+        for path, method in (("/api/v1/alerts", "DELETE"),
+                             ("/api/v1/zones", "POST"),
+                             ("/api/v1/cameras/CAM-01", "DELETE"),
+                             ("/api/v1/identity/tuning", "POST")):
+            self.assertEqual((True, None), self.full(path, method),
+                             f"{method} {path}")
+
+    # -- 401 and 403 are different problems ----------------------------------
+    def test_unknown_key_is_401_not_403(self):
+        """A wrong credential and an out-of-scope one fail differently, or an
+        integrator debugs the wrong thing."""
+        self.assertEqual(
+            (False, "unauthorized"),
+            auth.authorise("/api/v1/alerts", hdr(authorization="Bearer nope"),
+                           {}, "DELETE"))
+
+    def test_scoped_key_alone_still_turns_auth_on(self):
+        os.environ.pop("FINBLADE_API_KEY", None)
+        self.assertTrue(auth.enabled())
+        self.assertEqual((False, "unauthorized"),
+                         auth.authorise("/api/v1/cameras", hdr(), {}, "GET"))
+        self.assertEqual((True, None), self.scoped("/api/v1/cameras"))
 
 
 if __name__ == "__main__":

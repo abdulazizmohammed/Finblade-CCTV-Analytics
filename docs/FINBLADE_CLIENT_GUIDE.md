@@ -39,11 +39,20 @@ Missing or wrong key:
      "detail":"supply the API key as 'Authorization: Bearer <key>' or 'X-API-Key: <key>'"}
 ```
 
-**`?key=` in the query string works on exactly two routes** — the video stream
-(§6) and the WebSocket (§3b). It is rejected everywhere else. A key in a URL
-leaks into access logs, browser history and `Referer` headers, so it exists only
-where a browser primitive physically cannot send a header: an `<img>` element,
-and the `WebSocket` constructor.
+**`?key=` in the query string works on five routes only**, all read-only and all
+loaded by a browser primitive that physically cannot send a header:
+
+| route | why |
+|---|---|
+| `/api/v1/cameras/{id}/stream` (§6) | `<img src>` — MJPEG |
+| `/api/v1/cameras/{id}/snapshot` (§6) | `<img src>` — single frame |
+| `/ws` (§3b) | the `WebSocket` constructor takes a URL and nothing else |
+| `/bookmarks/*` | saved incident frames, shown as `<img>` |
+| `/media/*` | reference stills for the zone editor, shown as `<img>` |
+
+It is rejected everywhere else, including on every JSON route. A key in a URL
+leaks into access logs, browser history and `Referer` headers, so the exception
+is kept to cases where there is no alternative.
 
 From server-side code, always use the header form. `?key=` is there for browsers,
 not for convenience.
@@ -610,24 +619,30 @@ client from it rather than hand-writing one.
 
 ## 10. Complete route index
 
-Every route the service exposes, so nothing here is a surprise. **36 routes**;
-you need about ten of them.
+Every route the service exposes, so nothing here is a surprise. **41 routes**;
+you need about a dozen of them.
 
 ### Read these
 
-| route | §
-|---|---|
-| `GET /api/v1/summary` — cameras + zones + alerts + counts in one call | 3 |
-| `GET /api/v1/cameras` | 3 |
-| `GET /api/v1/zones` · `GET /api/v1/zones/state` | 3 |
-| `GET /api/v1/alerts` | 3 |
-| `GET /api/v1/identity/counts` · `list` · `stats` · `/{global_ref}` | 3, 7 |
-| `GET /api/v1/history/events` · `history/alerts` | 4 |
-| `GET /api/v1/reports/occupancy.json` · `.csv` · `/reports` · `/reports/{id}` | 4 |
-| `GET /api/v1/movement` | 4 |
-| `GET /api/v1/cameras/{id}/stream` · `/snapshot` | 6 |
-| `WS  /ws` | 3b |
-| `GET /openapi.json` | 9 |
+| route | what it is for | § |
+|---|---|---|
+| `GET /api/v1/summary` | everything a dashboard needs, one call, one instant | 3 |
+| `GET /api/v1/cameras` | per-camera health, fps, resolution, people in view | 3 |
+| `GET /api/v1/zones` | zone definitions: polygon, capacity, thresholds | 3 |
+| `GET /api/v1/zones/state` | live occupancy, density, flow, status | 3 |
+| `GET /api/v1/alerts` | the active feed (OPEN + ACK), filterable | 3 |
+| `GET /api/v1/alerts/{id}` | one alert, open or closed | 3 |
+| `GET /api/v1/identity/counts` · `list` · `stats` · `/{global_ref}` | distinct people, de-duplicated across cameras | 3, 7 |
+| `GET /api/v1/history/events` · `history/alerts` | ranged history, paginated | 4 |
+| `GET /api/v1/reports/occupancy.json` · `.csv` · `/reports` · `/reports/{id}` | occupancy reporting | 4 |
+| `GET /api/v1/movement` | zone-to-zone transition counts | 4 |
+| `GET /api/v1/cameras/{id}/snapshot` | one annotated JPEG — **prefer this over a WAN** | 6 |
+| `GET /api/v1/cameras/{id}/stream` | annotated MJPEG — LAN only, 20–40 Mbit/s per viewer | 6 |
+| `GET /api/v1/incidents/{alert_id}/frame` | the frame from **when** an incident happened | 4 |
+| `WS  /ws` | complete snapshot ~2×/second | 3b |
+| `GET /healthz` · `/readyz` | liveness / readiness, no key needed | 3 |
+| `GET /api/v1/health` | which dependency is broken | 3 |
+| `GET /openapi.json` | machine-readable schema, no key needed | 9 |
 
 `GET /api/v1/finblade/status` is also readable — it reports whether we are
 successfully pushing to you, with per-stream counters and `last_error`. Useful

@@ -23,6 +23,7 @@ from fastapi.responses import (JSONResponse, HTMLResponse, Response,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from . import charts as _charts
 from . import redact as _redact
 from .service import IngestService
 from .store import InMemoryStore
@@ -359,7 +360,8 @@ async def history_events(frm: float = Query(0, alias="from"),
 @app.get("/api/v1/movement")
 async def movement(minutes: float = Query(15.0), camera_id: str = Query(None),
                    frm: float = Query(None, alias="from"),
-                   to: float = Query(None, alias="to")):
+                   to: float = Query(None, alias="to"),
+                   charts: int = Query(1)):
     """Zone->zone transition counts.
 
     `minutes` counts back from now and stays the default so existing callers are
@@ -370,10 +372,14 @@ async def movement(minutes: float = Query(15.0), camera_id: str = Query(None),
     if frm is not None or to is not None:
         t0 = frm if frm is not None else 0.0
         t1 = to if to is not None else now
-        return {"from": t0, "to": t1,
+        body = {"from": t0, "to": t1,
                 "flows": svc.movement(t0, t1, camera_id=camera_id)}
-    return {"minutes": minutes, "from": now - minutes * 60.0, "to": now,
-            "flows": svc.movement(now - minutes * 60.0, now, camera_id=camera_id)}
+    else:
+        body = {"minutes": minutes, "from": now - minutes * 60.0, "to": now,
+                "flows": svc.movement(now - minutes * 60.0, now, camera_id=camera_id)}
+    # FinBlade chart tag (live-feed-chart-tags.md). Additive; ?charts=0 omits it.
+    return _charts.attach(body, _charts.movement_charts(body["flows"])) \
+        if charts else body
 
 
 @app.get("/api/v1/history/alerts")
@@ -397,8 +403,11 @@ async def history_alerts(frm: float = Query(0, alias="from"),
 @app.get("/api/v1/reports/occupancy.json")
 async def occupancy_report_json(frm: float = Query(0, alias="from"),
                                 to: float = Query(9_000_000_000_000.0, alias="to"),
-                                camera_id: str = Query(None), zone_id: str = Query(None)):
-    return svc.occupancy_report(frm, to, camera_id=camera_id, zone_id=zone_id)
+                                camera_id: str = Query(None), zone_id: str = Query(None),
+                                charts: int = Query(1)):
+    body = svc.occupancy_report(frm, to, camera_id=camera_id, zone_id=zone_id)
+    # FinBlade chart tag (live-feed-chart-tags.md). Additive; ?charts=0 omits it.
+    return _charts.attach(body, _charts.report_charts(body)) if charts else body
 
 
 @app.get("/api/v1/reports/occupancy.csv")
@@ -646,13 +655,15 @@ async def set_identity_tuning(request: Request):
 
 
 @app.get("/api/v1/identity/counts")
-async def identity_counts():
+async def identity_counts(charts: int = Query(1)):
     """Unique-people counts that work with NO zones defined.
 
     Zone occupancy needs a polygon; this needs only identity. `live` is distinct
     people visible now, `unique_total` is distinct people since startup.
     """
-    return id_svc.counts()
+    body = id_svc.counts()
+    # FinBlade chart tag (live-feed-chart-tags.md). Additive; ?charts=0 omits it.
+    return _charts.attach(body, _charts.counts_charts(body)) if charts else body
 
 
 @app.get("/api/v1/identity/list")
@@ -875,7 +886,7 @@ async def zone_state(request: Request):
 
 @app.get("/api/v1/zones/state")
 async def zone_states(camera_id: str = Query(None), zone_id: str = Query(None),
-                      site_id: str = Query(None)):
+                      site_id: str = Query(None), charts: int = Query(1)):
     """Live zone state, optionally narrowed.
 
     All filters are optional and default to off, so an existing caller sees
@@ -890,7 +901,9 @@ async def zone_states(camera_id: str = Query(None), zone_id: str = Query(None),
         rows = [z for z in rows if z.get("zone_id") == zone_id]
     if site_id:
         rows = [z for z in rows if z.get("site_id") == site_id]
-    return {"zones": rows}
+    body = {"zones": rows}
+    # FinBlade chart tag (live-feed-chart-tags.md). Additive; ?charts=0 omits it.
+    return _charts.attach(body, _charts.zone_charts(rows)) if charts else body
 
 
 @app.get("/api/v1/alerts")
@@ -1061,7 +1074,7 @@ async def health_detail():
 
 
 @app.get("/api/v1/summary")
-async def summary():
+async def summary(charts: int = Query(1)):
     """Everything a remote dashboard needs, in ONE call at ONE instant.
 
     The /ws frame in REST form, plus people counts. Built from the same helpers
@@ -1101,7 +1114,7 @@ async def summary():
         if key in sev:
             sev[key] += 1
 
-    return {
+    body = {
         "site_id": _site_id(cameras),
         "cameras": cameras,
         "zones": zones,
@@ -1122,6 +1135,8 @@ async def summary():
         },
         "ts": time.time(),
     }
+    # FinBlade chart tag (live-feed-chart-tags.md). Additive; ?charts=0 omits it.
+    return _charts.attach(body, _charts.summary_charts(body)) if charts else body
 
 
 @app.websocket("/ws")

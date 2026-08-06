@@ -429,6 +429,53 @@ disabled forwarder reports `ok: true`; off is not broken.
 
 ---
 
+### Chart tags — these endpoints describe how to draw themselves
+
+Implemented to `live-feed-chart-tags.md` schema 1. Six endpoints add a
+top-level `finblade` key so a tile renders without anyone mapping fields by
+hand:
+
+| endpoint | charts offered |
+|---|---|
+| `/api/v1/zones/state` | `zone_occupancy`, `zone_density`, `zone_flow`, `occupancy_share` |
+| `/api/v1/summary` | `people_on_site`, `people_live`, `open_alerts`, `alerts_by_severity`, `camera_health`, `camera_people` |
+| `/api/v1/identity/counts` | `live_now`, `footfall_total`, `cross_camera`, `live_per_camera` |
+| `/api/v1/movement` | `zone_transitions` |
+| `/api/v1/reports/occupancy.json` | `occupancy_peak_avg` |
+
+```json
+{
+  "zones": [ ... unchanged ... ],
+  "finblade": {
+    "schema": 1,
+    "charts": [
+      {"id": "zone_occupancy", "type": "bar", "title": "Occupancy by zone",
+       "unit": "people", "labels": ["Lobby", "Reception", "1F-Passage"],
+       "datasets": [{"label": "Occupancy", "data": [4, 2, 0]}]}
+    ]
+  }
+}
+```
+
+**Purely additive** — every existing key keeps its meaning, and `?charts=0`
+omits the block entirely. It costs about 750 bytes per response.
+
+Three behaviours worth knowing, because they are deliberate:
+
+* **A number that cannot be computed is omitted, not sent as 0.** With no zone
+  polygons drawn there is no `people_on_site` metric at all, rather than a
+  metric reading zero. A measured zero *is* sent.
+* **No chart is ever a sum of `people_in_view`.** `camera_people` and
+  `live_per_camera` are one bar per camera and say so in their titles; adding
+  them up double-counts anyone two cameras can see.
+* **Zone labels gain a camera prefix as soon as two cameras are present**
+  (`CAM-01 / Lobby`), because `zone_id` is unique only within a camera and two
+  bars would otherwise carry the same name.
+
+An all-zero pie is not sent either — three slices of nothing reads as a fault.
+
+---
+
 ## 4. History and reports
 
 ```

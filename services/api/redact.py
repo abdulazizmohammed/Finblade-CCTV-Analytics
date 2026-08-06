@@ -25,12 +25,25 @@ and the safest handling of a secret is not to serialise it at all.
 import re
 from typing import Optional
 
-# scheme://user[:password]@host — the password group is optional because
-# rtsp://admin@host is also valid and still identifies an account.
+# scheme://userinfo@host, where userinfo is EVERYTHING up to the LAST '@'
+# before the path.
+#
+# The obvious pattern — user, optional ':' password, then '@' — stops at the
+# FIRST '@', and passwords contain '@' constantly. A real camera source of
+#     rtsp://admin:Secret@2030@192.168.200.2:554/Streaming/Channels/102
+# came back from the live API as
+#     rtsp://***:***@2030@192.168.200.2:554/Streaming/Channels/102
+# with '2030' — the tail of the password — still in the response. Masked
+# output that still contains part of the secret is worse than none, because it
+# looks handled.
+#
+# `[^/\s]*` is greedy and cannot cross a '/', so it consumes the whole
+# authority and backtracks to the last '@' before the path. A URL with '@' in
+# the path (http://host/a@b) has no '@' before the first '/', so it does not
+# match at all.
 _CREDENTIALS = re.compile(
     r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)"
-    r"(?P<user>[^/@:\s]+)"
-    r"(?::(?P<password>[^/@\s]*))?"
+    r"(?P<userinfo>[^/\s]*)"
     r"@")
 
 MASK = "***"
@@ -52,9 +65,12 @@ def mask_credentials(value):
         return value
 
     def _sub(match):
-        if match.group("password") is None:
-            return f"{match.group('scheme')}{MASK}@"
-        return f"{match.group('scheme')}{MASK}:{MASK}@"
+        userinfo = match.group("userinfo")
+        if not userinfo:
+            return match.group(0)          # "rtsp://@host" — nothing to hide
+        # Keep the shape (user vs user:password) without keeping any of it.
+        shape = f"{MASK}:{MASK}" if ":" in userinfo else MASK
+        return f"{match.group('scheme')}{shape}@"
 
     return _CREDENTIALS.sub(_sub, value)
 
@@ -82,9 +98,8 @@ def contains_credentials(text: Optional[str]) -> bool:
     if not text:
         return False
     for match in _CREDENTIALS.finditer(text):
-        user = match.group("user")
-        password = match.group("password")
-        if user == MASK and password in (None, MASK):
-            continue                     # already redacted
+        userinfo = match.group("userinfo")
+        if userinfo in ("", MASK, f"{MASK}:{MASK}"):
+            continue                     # empty or already redacted
         return True
     return False

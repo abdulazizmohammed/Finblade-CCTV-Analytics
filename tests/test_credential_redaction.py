@@ -40,6 +40,40 @@ class TestMasking(unittest.TestCase):
         """rtsp://admin@host names an account; that is half a credential."""
         self.assertNotIn("admin", mask_credentials("rtsp://admin@host/s"))
 
+    def test_at_sign_inside_the_password_does_not_leak_the_tail(self):
+        """Found on live data. The first version stopped at the FIRST '@', so
+            rtsp://admin:Secret@2030@192.168.200.2:554/Streaming/Channels/102
+        came back as
+            rtsp://***:***@2030@192.168.200.2:554/Streaming/Channels/102
+        with '2030' — the tail of the real password — still in the response.
+        Masked output that still contains part of the secret is worse than
+        none, because it looks handled."""
+        url = "rtsp://admin:Secret@2030@192.168.200.2:554/Streaming/Channels/102"
+        out = mask_credentials(url)
+        self.assertNotIn("Secret", out)
+        self.assertNotIn("2030", out)
+        self.assertNotIn("admin", out)
+        self.assertEqual(
+            "rtsp://***:***@192.168.200.2:554/Streaming/Channels/102", out)
+        self.assertFalse(contains_credentials(out))
+
+    def test_multiple_at_signs_in_the_password(self):
+        out = mask_credentials("rtsp://u:a@b@c@10.0.0.1/s")
+        self.assertEqual("rtsp://***:***@10.0.0.1/s", out)
+        for fragment in ("a@b", "b@c", ":a", "u:"):
+            self.assertNotIn(fragment, out)
+
+    def test_an_at_sign_in_the_path_is_not_treated_as_a_credential(self):
+        """http://host/a@b has no '@' before the first '/', so there is no
+        userinfo to mask and the URL must survive intact."""
+        for url in ("http://host/a@b", "http://127.0.0.1:8090/stream@2",
+                    "file:///media/clip@2x.mp4"):
+            self.assertEqual(url, mask_credentials(url))
+
+    def test_detector_catches_an_at_sign_password(self):
+        self.assertTrue(
+            contains_credentials("rtsp://admin:Secret@2030@10.0.0.1:554/x"))
+
     def test_urls_without_credentials_are_untouched(self):
         for url in ("rtsp://127.0.0.1:8554/cam01", "http://127.0.0.1:8090/stream",
                     "media/clip.mp4", ""):

@@ -47,6 +47,20 @@ extra index URL, and set `device: cpu` in each camera config. Expect roughly
 
 ### System packages on a fresh Ubuntu server
 
+**One command does all of §2 and §3:**
+
+```bash
+bash scripts/install_ubuntu.sh          # auto-detects GPU vs CPU
+FORCE_CPU=1 bash scripts/install_ubuntu.sh
+SKIP_APT=1  bash scripts/install_ubuntu.sh   # no sudo on the box
+```
+
+It is idempotent, installs the pins from `requirements.txt` unchanged, fetches
+the weights and runs the test suite. `bash scripts/check_install_plan.sh` shows
+what it would do without installing anything.
+
+The manual equivalent, if you would rather see each step:
+
 ```bash
 sudo apt update
 sudo apt install -y \
@@ -54,6 +68,9 @@ sudo apt install -y \
     libgl1 libglib2.0-0 \
     git curl
 ```
+
+On Ubuntu 24.04 `libglib2.0-0` is named `libglib2.0-0t64`, and `python3.10` is
+only in the deadsnakes PPA. The script handles both.
 
 Why each, verified against the installed binaries rather than copied from a
 generic list:
@@ -238,8 +255,8 @@ says so loudly in the camera log. It does **not** fall back to a fake embedder.
 .venv/bin/python -m unittest discover -s tests
 ```
 
-331 tests, ~2 seconds. If httpx is missing, 11 HTTP tests skip silently rather
-than fail — check the count, not just the OK.
+541 tests, ~5 seconds. If httpx is missing the HTTP-level tests skip silently
+rather than fail — check the count, not just the OK.
 
 ---
 
@@ -392,10 +409,22 @@ install time, which is a miserable way to lose an afternoon.
 
 Be clear-eyed before pointing anything real at it:
 
-* **No authentication or TLS.** Explicitly out of scope. Anyone who can reach
-  port 8000 can view every feed, acknowledge alerts and delete data. Put it on
-  an isolated VLAN, or behind a reverse proxy that terminates TLS and
-  authenticates.
+* **Authentication is OFF until you set a key**, and there is still no TLS.
+  Unset, the API is wide open: anyone who can reach port 8000 can view every
+  feed, acknowledge alerts and delete data. Turn it on deliberately:
+
+  ```bash
+  export FINBLADE_API_KEY=$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')
+  export FINBLADE_INTEGRATION_KEY=$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')
+  ```
+
+  The first is the operator key and grants everything. The second is scoped:
+  every GET plus `/ws`, and exactly two writes (alert ack and resolve). Give a
+  third party the second one — see `docs/FINBLADE_CLIENT_GUIDE.md` §2. Out of
+  scope routes return 403, a wrong key 401.
+
+  **TLS is still yours to add**, in front, via a reverse proxy. Nothing here
+  terminates it, and an `https` page cannot call an `http` API from a browser.
 * **No process supervision.** `start_stack.sh` detaches processes; it does not
   restart them if they die. Use systemd for anything long-running.
 * **SQLite, single file, no backups.** Fine for a test box. Set `DATABASE_URL`

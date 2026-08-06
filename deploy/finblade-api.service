@@ -1,0 +1,37 @@
+[Unit]
+Description=FinBlade CCTV API
+Documentation=file://__REPO__/docs/DEPLOY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO__
+
+# Keys and settings live here, not in this unit — a unit file is world-readable
+# and ends up in git; the env file is chmod 600.
+EnvironmentFile=__REPO__/.env
+
+ExecStart=__REPO__/.venv/bin/python -m uvicorn services.api.app:app \
+          --host 0.0.0.0 --port ${FINBLADE_PORT}
+
+# Camera workers are children of this process. The default control-group kill
+# takes them with it, which is what we want: a stopped API must not leave
+# orphaned pipelines holding camera connections and MJPEG ports.
+KillMode=control-group
+TimeoutStopSec=30
+
+Restart=always
+RestartSec=5
+# Give up only if it fails 5 times in a minute — that is a real fault, not a
+# transient one, and a tight crash-loop should not be restarted forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=finblade-api
+
+[Install]
+WantedBy=multi-user.target

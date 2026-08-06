@@ -33,6 +33,8 @@ auto.key
 # Locally generated API keys — never commit a live credential
 .local_key
 .local_integration_key
+# systemd environment file: holds the live keys, chmod 600
+.env
 
 # Model weights — fetched via scripts/get_weights.py, not committed
 models/*.pt

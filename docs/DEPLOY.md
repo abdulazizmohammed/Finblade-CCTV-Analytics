@@ -425,8 +425,19 @@ Be clear-eyed before pointing anything real at it:
 
   **TLS is still yours to add**, in front, via a reverse proxy. Nothing here
   terminates it, and an `https` page cannot call an `http` API from a browser.
-* **No process supervision.** `start_stack.sh` detaches processes; it does not
-  restart them if they die. Use systemd for anything long-running.
+* **Process supervision is available but not automatic.** `start_stack.sh`
+  detaches processes; it does not restart them if they die, and
+  `start_demo.sh` deliberately stays in the foreground so closing SSH kills it.
+  For anything left running:
+
+  ```bash
+  sudo bash scripts/install_service.sh
+  ```
+
+  That installs a systemd unit which survives logout, restarts on crash, starts
+  on boot, and sets `FINBLADE_AUTOSTART_CAMERAS=1` so camera pipelines come
+  back with it. Keys move to `.env` (chmod 600) instead of the environment of
+  whichever shell happened to start it.
 * **SQLite, single file, no backups.** Fine for a test box. Set `DATABASE_URL`
   for Postgres if this becomes shared.
 * **Cross-camera accuracy is unvalidated on real cameras** — see BLOCKERS.md

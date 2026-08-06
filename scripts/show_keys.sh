@@ -18,6 +18,13 @@ for f in .local_key .local_integration_key; do
     printf '  %-24s (not created yet)\n' "$f"
   fi
 done
+# A systemd install keeps its keys in .env instead, and that is the one the
+# service is actually running with.
+if [ -f .env ]; then
+  echo "  .env (used by the systemd service):"
+  grep -E '^FINBLADE_(API_KEY|INTEGRATION_KEY|SITE_ID|PORT)=' .env \
+    | sed 's/^/    /' || echo "    (no keys in it)"
+fi
 
 echo
 echo "== key the running API was started with =="

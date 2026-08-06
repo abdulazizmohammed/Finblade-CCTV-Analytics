@@ -215,11 +215,55 @@ async def _forward_loop():
             log.exception("forwarder loop error")
 
 
+async def _autostart_cameras():
+    """Relaunch the pipelines for cameras already in the database.
+
+    Off unless FINBLADE_AUTOSTART_CAMERAS is set, because starting several
+    detection processes is not something a restart should do by surprise.
+
+    Turn it on for an unattended deployment. Without it, an API restart leaves
+    every camera row intact and every pipeline down — so the dashboard shows a
+    full list of cameras, all OFFLINE, which reads as "the cameras failed"
+    rather than "nothing started them". That distinction has cost real time.
+    """
+    if os.environ.get("FINBLADE_AUTOSTART_CAMERAS", "").strip().lower() \
+            not in ("1", "true", "yes", "on"):
+        return
+    # Let the server finish binding before spawning anything heavy; the workers
+    # post their first heartbeat back to this API.
+    await asyncio.sleep(float(os.environ.get("FINBLADE_AUTOSTART_DELAY", "3")))
+    host = os.environ.get("FINBLADE_STREAM_HOST", "localhost")
+    started, skipped = [], []
+    for cam in svc.cameras():
+        camera_id = cam.get("camera_id")
+        source = (cam.get("source") or "").strip()
+        if not camera_id or not source or cam.get("enabled") is False:
+            continue
+        if not _valid_source(source):
+            skipped.append(camera_id)
+            continue
+        if cam_mgr.is_running(camera_id):
+            continue
+        try:
+            await asyncio.to_thread(cam_mgr.launch, camera_id, source,
+                                    cam.get("site_id"), host)
+            started.append(camera_id)
+        except Exception:                          # noqa: BLE001
+            skipped.append(camera_id)
+            log.exception("autostart failed for %s", camera_id)
+    if started:
+        log.info("autostarted %d camera pipeline(s): %s",
+                 len(started), ", ".join(started))
+    if skipped:
+        log.warning("could not autostart: %s", ", ".join(skipped))
+
+
 @asynccontextmanager
 async def lifespan(app):
     tasks = [asyncio.create_task(_offline_monitor()),
              asyncio.create_task(_report_scheduler()),
-             asyncio.create_task(_forward_loop())]
+             asyncio.create_task(_forward_loop()),
+             asyncio.create_task(_autostart_cameras())]
     yield
     for t in tasks:
         t.cancel()

@@ -9,15 +9,21 @@ media/*_frame.jpg
 *.Zone.Identifier
 *:Zone.Identifier
 
-# Regenerated evidence artifacts (keep contact_sheet.jpg + metrics.json as proof)
-evidence/frames/
-evidence/bookmarks/
-evidence/*.jsonl
-evidence/*_check.jpg
-evidence/scenario_first_frame.jpg
-evidence/metrics_*.json
-evidence/contact_*.jpg
-evidence/confidence_probe/
+# Regenerated evidence artifacts.
+#
+# Ignore the directory and re-admit the few files that are PROOF rather than
+# output. The previous list named specific subdirectories, so every new run
+# created a new one that nothing covered — 64 loose files, 5.4 MB, all of it
+# one `git add -A` away from the repo.
+evidence/*
+!evidence/README.md
+!evidence/contact_sheet.jpg
+!evidence/metrics.json
+!evidence/cross_camera_eval.json
+!evidence/cross_camera_eval_dense.json
+!evidence/cc_eval_th070.json
+!evidence/cc_eval_th078.json
+!evidence/scenario_first_frame.jpg
 
 # Local SQLite history db (regenerated at runtime)
 data/

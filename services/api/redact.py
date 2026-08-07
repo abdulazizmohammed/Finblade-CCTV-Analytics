@@ -29,13 +29,19 @@ from typing import Optional
 # before the path.
 #
 # The obvious pattern — user, optional ':' password, then '@' — stops at the
-# FIRST '@', and passwords contain '@' constantly. A real camera source of
-#     rtsp://admin:Secret@2030@192.168.200.2:554/Streaming/Channels/102
+# FIRST '@', and passwords contain '@' constantly. A camera source of
+#     rtsp://operator:p@ssw0rd@10.0.0.5:554/Streaming/Channels/102
 # came back from the live API as
-#     rtsp://***:***@2030@192.168.200.2:554/Streaming/Channels/102
-# with '2030' — the tail of the password — still in the response. Masked
+#     rtsp://***:***@ssw0rd@10.0.0.5:554/Streaming/Channels/102
+# with 'ssw0rd' — the tail of the password — still in the response. Masked
 # output that still contains part of the secret is worse than none, because it
 # looks handled.
+#
+# The example above is INVENTED. It used to be the real URL this was found on,
+# which put a live camera's address, username and password tail into a public
+# repository — the exact leak this module exists to prevent, committed by the
+# fix for it. Keep fixtures synthetic even when a real value is what tripped
+# the bug.
 #
 # `[^/\s]*` is greedy and cannot cross a '/', so it consumes the whole
 # authority and backtracks to the last '@' before the path. A URL with '@' in

@@ -42,19 +42,24 @@ class TestMasking(unittest.TestCase):
 
     def test_at_sign_inside_the_password_does_not_leak_the_tail(self):
         """Found on live data. The first version stopped at the FIRST '@', so
-            rtsp://admin:Secret@2030@192.168.200.2:554/Streaming/Channels/102
+            rtsp://operator:p@ssw0rd@10.0.0.5:554/Streaming/Channels/102
         came back as
-            rtsp://***:***@2030@192.168.200.2:554/Streaming/Channels/102
-        with '2030' — the tail of the real password — still in the response.
-        Masked output that still contains part of the secret is worse than
-        none, because it looks handled."""
-        url = "rtsp://admin:Secret@2030@192.168.200.2:554/Streaming/Channels/102"
+            rtsp://***:***@ssw0rd@10.0.0.5:554/Streaming/Channels/102
+        with the tail of the password still in the response. Masked output
+        that still contains part of the secret is worse than none, because it
+        looks handled.
+
+        The URL here is INVENTED. It was the real one until a repository audit
+        noticed that this file — the test for not leaking credentials — had
+        committed a live camera's address, username and password tail to a
+        public repo. A synthetic fixture exercises the same bug.
+        """
+        url = "rtsp://operator:p@ssw0rd@10.0.0.5:554/Streaming/Channels/102"
         out = mask_credentials(url)
-        self.assertNotIn("Secret", out)
-        self.assertNotIn("2030", out)
-        self.assertNotIn("admin", out)
+        self.assertNotIn("ssw0rd", out)
+        self.assertNotIn("operator", out)
         self.assertEqual(
-            "rtsp://***:***@192.168.200.2:554/Streaming/Channels/102", out)
+            "rtsp://***:***@10.0.0.5:554/Streaming/Channels/102", out)
         self.assertFalse(contains_credentials(out))
 
     def test_multiple_at_signs_in_the_password(self):

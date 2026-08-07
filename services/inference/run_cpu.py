@@ -61,6 +61,7 @@ if _REPO_ROOT not in sys.path:
 
 from finblade.config import load_camera_config          # noqa: E402
 from finblade.debounce import BoundaryDebouncer          # noqa: E402
+from finblade.emission import DensityUpdateGate          # noqa: E402
 from finblade.events import (                            # noqa: E402
     CAMERA_HEARTBEAT, CAMERA_OFFLINE, CAMERA_ONLINE, CAMERA_RECOVERED,
     CAPACITY_WARNING, DENSITY_UPDATE, LOITERING_END, LOITERING_START,
@@ -559,6 +560,13 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     flow = FlowCounter()
     agg = ZoneStateAggregator(period_s=5.0)
     zstats = ZoneStats()
+    density_gate = DensityUpdateGate(
+        os.environ.get("FINBLADE_DENSITY_UPDATE_MODE", "threshold"))
+    if density_gate.invalid_mode:
+        log.warning("FINBLADE_DENSITY_UPDATE_MODE=%r is not one of "
+                    "threshold/always/off — using 'threshold'",
+                    density_gate.invalid_mode)
+    log.info("DENSITY_UPDATE emission: %s", density_gate.mode)
     eng = RuleEngine()
     hasher = PersonRefHasher()
     # Cross-camera identity. Local ByteTrack ids mean nothing outside this
@@ -645,6 +653,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     # reconnect (incl. a looping test clip restarting): fresh scene,
                     # so drop all rule latches + per-track state -> alerts re-fire.
                     eng.reset_scene()
+                    # Same reason the rule latches go: after a gap, the next
+                    # tick must re-establish each zone's density status rather
+                    # than suppress it as unchanged against a reading from
+                    # before the camera dropped.
+                    density_gate.reset()
                     loiter_started.clear(); restricted_since.clear(); prev_zone.clear()
                 ever_online = True
             if cev is not None:
@@ -959,9 +972,15 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 dens = density_per_sqm(occ, z.area_sqm)
                 cap_pct = capacity_pct(occ, z.capacity_max)
                 zstats.record(z.zone_id, occ, vnow)
-                pending_events.append(new_event(
-                    DENSITY_UPDATE, cfg.camera_id, cfg.site_id, vnow,
-                    zone_id=z.zone_id, occupancy=occ, density=dens))
+                zstatus = density_status(dens, z.warning_density, z.critical_density)
+                # Only on a NORMAL/WARNING/CRITICAL crossing by default — this
+                # event was 99.85% of the events table, duplicating the
+                # zone_state_ts row written on the next line at the same
+                # microsecond. See finblade/emission.py.
+                if density_gate.should_emit(z.zone_id, zstatus):
+                    pending_events.append(new_event(
+                        DENSITY_UPDATE, cfg.camera_id, cfg.site_id, vnow,
+                        zone_id=z.zone_id, occupancy=occ, density=dens))
                 roll = flow.rolling(z.zone_id, vnow)   # 1m rates + net + 5m/15m
                 pending_states.append({
                     "zone_id": z.zone_id, "camera_id": cfg.camera_id,
@@ -972,7 +991,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     "peak_occupancy": zstats.peak(z.zone_id),
                     "avg_occupancy": round(zstats.average(z.zone_id), 1),
                     "trend": zstats.trend(z.zone_id, vnow),
-                    "status": density_status(dens, z.warning_density, z.critical_density),
+                    "status": zstatus,
                     "ts": vnow, **roll,
                 })
                 for al in eng.evaluate_zone(z.zone_id, dens, cap_pct, vnow,

@@ -129,7 +129,7 @@ Discrete occurrences. Common envelope plus type-specific fields.
 | `ZONE_ENTRY` | `zone_to` str, `person_ref` str, `confidence` float 0–1 | person entered a zone |
 | `ZONE_EXIT` | `zone_from` str, `person_ref` str | person left a zone |
 | `ZONE_TRANSITION` | `zone_from` str, `zone_to` str, `person_ref` str | moved zone→zone |
-| `DENSITY_UPDATE` | `zone_id` str, `occupancy` int, `density` float | periodic density sample |
+| `DENSITY_UPDATE` | `zone_id` str, `occupancy` int, `density` float | **status crossing** — see the note below |
 | `CAPACITY_WARNING` | `zone_id` str, `occupancy` int, `capacity_pct` float | ≥90% of capacity |
 | `RESTRICTED_ZONE_ENTRY` | `zone_id` str, `person_ref` str | entered a no-go area |
 | `RESTRICTED_ZONE_EXIT` | `zone_id` str, `person_ref` str, `duration` float | left it; `duration` seconds inside |
@@ -154,6 +154,29 @@ Example:
   "duration": 12.5
 }
 ```
+
+### `DENSITY_UPDATE` is no longer a 5-second sample
+
+It used to fire once per zone every five seconds. It now fires **only when a
+zone's density status crosses** — `NORMAL` ↔ `WARNING` ↔ `CRITICAL` — plus once
+on first sighting of each zone so a consumer joining the stream has a starting
+value.
+
+Why: it was 1,674,979 rows against 2,553 for every other event type combined —
+99.85% of the events table — and each one duplicated the `zone-state` message
+sent at the same microsecond, with the same `occupancy` and `density`. You were
+receiving the same numbers twice over the wire. On a thirty-zone site that is
+21,600 messages an hour reduced to a handful a day.
+
+**Nothing is lost.** Continuous density still arrives on the **zone-state**
+stream every 5 seconds (§3), which is where it always was. And a person
+entering and leaving inside one 5-second window was never visible in
+`DENSITY_UPDATE` anyway — a sampler cannot see anything shorter than its sample
+interval. That visit is in `ZONE_ENTRY` / `ZONE_EXIT`, which fire per person,
+immediately, and now carry the resulting `occupancy` and `density` themselves.
+
+If you need every tick, say so and we set `FINBLADE_DENSITY_UPDATE_MODE=always`
+— it is one environment variable and a camera restart.
 
 **Reject** with `422` if: `event_type` is unknown, any envelope field is missing
 or the wrong type, `timestamp < 0`, `confidence` outside `[0,1]`, `occupancy` or
@@ -601,5 +624,9 @@ Tell us which scheme you want and it will be implemented on this side to match.
    **This now blocks on authentication**: those endpoints currently accept
    unauthenticated calls. Choose a scheme (§12) and it will be implemented.
 6. Retention and pre-aggregation preference for zone state (§10)?
-7. Do you want raw `DENSITY_UPDATE` events, given zone state already carries
-   density every 5 seconds? Dropping them would cut event volume noticeably.
+7. ~~Do you want raw `DENSITY_UPDATE` events, given zone state already carries
+   density every 5 seconds?~~ **Asked twice, unanswered, so we picked the
+   reversible option.** They now fire only on a `NORMAL`/`WARNING`/`CRITICAL`
+   crossing rather than every 5 seconds — see §4. Continuous density is
+   unchanged on the zone-state stream. If you were consuming every tick, tell
+   us and we restore it with one environment variable.

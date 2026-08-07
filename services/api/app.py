@@ -996,6 +996,111 @@ async def zone_states(camera_id: str = Query(None), zone_id: str = Query(None),
     return _charts.attach(body, _charts.zone_charts(rows)) if charts else body
 
 
+def _or_error(body: dict):
+    """Service results carry their own status when something is wrong.
+
+    The three history routes below all share the same failure modes — unknown
+    zone, a zone id that names several cameras' zones, a malformed condition —
+    and returning them identically means a caller (or a model) learns the shape
+    once.
+    """
+    if isinstance(body, dict) and "error" in body:
+        return JSONResponse(status_code=body.pop("status", 400), content=body)
+    return body
+
+
+@app.get("/api/v1/zones/{zone_id}/series")
+async def zone_series(zone_id: str, frm: float = Query(None, alias="from"),
+                      to: float = Query(None, alias="to"),
+                      bucket: float = Query(300.0),
+                      hours: float = Query(None),
+                      camera_id: str = Query(None), charts: int = Query(1)):
+    """One zone's history as evenly spaced buckets, holes and all.
+
+    Exists because the stored history is sparse. Since write-on-change, a zone
+    that held four people all afternoon has ONE row for that afternoon, so a
+    caller doing `SELECT ... WHERE ts BETWEEN` gets a single point and draws a
+    flat line from nowhere to nowhere. This endpoint holds each reading forward
+    to the next, which is what the row actually meant.
+
+    Three things in the response are not decoration:
+
+      * `null` in a bucket means the camera was not observing. It is not zero.
+        Draw a break in the line; do not draw an empty room.
+      * `coverage` is how much of the window was observed at all.
+      * `gaps` says where the holes are and, where it can tell, why —
+        `camera_offline` when the system logged the outage, `no_data` when a
+        worker died without saying so.
+
+    `hours` is a convenience for "the last N hours" and is ignored when
+    `from`/`to` are given.
+    """
+    now = time.time()
+    if frm is None and to is None:
+        span = (hours if hours is not None else 6.0) * 3600.0
+        frm, to = now - span, now
+    else:
+        frm = frm if frm is not None else 0.0
+        to = to if to is not None else now
+    body = svc.zone_series(zone_id, frm, to, bucket, camera_id=camera_id)
+    if "error" in body:
+        return _or_error(body)
+    # FinBlade chart tag (live-feed-chart-tags.md). Additive; ?charts=0 omits it.
+    return _charts.attach(body, _charts.series_charts(body)) if charts else body
+
+
+@app.get("/api/v1/zones/{zone_id}/at")
+async def zone_at(zone_id: str, ts: float = Query(None),
+                  camera_id: str = Query(None)):
+    """What a zone read at one instant — the last sample at or before it.
+
+    Never reaches forward for a nearer sample. Under write-on-change the next
+    row can be hours later, and using it would report a reading from a time
+    that had not happened yet.
+
+    `state.age_seconds` is how old the governing reading was at that instant,
+    and `trustworthy` is false when it had outlived what one sample may speak
+    for or the camera was logged offline. A caller should say "4 people, from a
+    reading three hours old" rather than "4 people".
+    """
+    return _or_error(svc.zone_at(zone_id, time.time() if ts is None else ts,
+                                 camera_id=camera_id))
+
+
+@app.get("/api/v1/zones/{zone_id}/duration")
+async def zone_duration(zone_id: str, frm: float = Query(None, alias="from"),
+                        to: float = Query(None, alias="to"),
+                        hours: float = Query(None),
+                        field: str = Query("occupancy"), op: str = Query("gt"),
+                        value: float = Query(0.0), status: str = Query(None),
+                        camera_id: str = Query(None)):
+    """How long a condition held in a window, and in how many episodes.
+
+    "How long was the lobby over capacity" cannot be answered by counting rows
+    once one row can stand for four hours.
+
+    Time the camera could not observe is excluded from the total and splits an
+    episode in two rather than bridging it — a camera down for four hours must
+    never be reported as a four-hour breach. It is counted separately in
+    `unobserved_seconds`, so the honest reading is "at least this long, and I
+    could not see forty minutes of it".
+
+    Either `status=WARNING` or a `field`/`op`/`value` triple. Both sets are
+    closed and a typo is a 422, because zero seconds from a misspelt field is
+    indistinguishable from a real answer of never.
+    """
+    now = time.time()
+    if frm is None and to is None:
+        span = (hours if hours is not None else 24.0) * 3600.0
+        frm, to = now - span, now
+    else:
+        frm = frm if frm is not None else 0.0
+        to = to if to is not None else now
+    return _or_error(svc.zone_duration(zone_id, frm, to, camera_id=camera_id,
+                                       field=field, op=op, value=value,
+                                       status=status))
+
+
 @app.get("/api/v1/alerts")
 async def alerts(unacked_only: bool = False, severity: str = Query(None),
                  status: str = Query(None), zone_id: str = Query(None),

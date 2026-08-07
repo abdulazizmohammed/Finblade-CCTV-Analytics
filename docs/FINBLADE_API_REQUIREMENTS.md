@@ -651,3 +651,17 @@ Tell us which scheme you want and it will be implemented on this side to match.
    crossing rather than every 5 seconds — see §4. Continuous density is
    unchanged on the zone-state stream. If you were consuming every tick, tell
    us and we restore it with one environment variable.
+8. ~~Can the chatbot have a database view to query directly?~~
+   **We are proposing tools instead — please review.** Six read tools with
+   schemas and descriptions are in `integrations/finblade_ai/tools.py`, with a
+   worked agent loop in `chat.py`. Three reasons a view does not work, in
+   `integrations/finblade_ai/README.md` §8: our store is a SQLite file with no
+   listener; its schema changed twice this month and a view would have broken
+   silently both times; and the rules that make the numbers correct are not in
+   the schema — a row means "and it stayed that way", an absent row is
+   ambiguous, and `zone_id` is not unique. Reimplementing those in your SQL
+   means rediscovering three bugs we have already fixed. **If the tools do not
+   fit your bot, send us the queries you need and we will add endpoints.**
+9. Do the three new history endpoints (`/zones/{id}/series`, `/at`,
+   `/duration` — client guide §4b) cover what the bot needs to ask? They are
+   the ones we would have to add for a view to be replaced entirely.

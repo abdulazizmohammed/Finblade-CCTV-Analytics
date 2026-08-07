@@ -123,6 +123,95 @@ class IngestService:
 
     _TW_FIELDS = ("occupancy", "density", "capacity_pct")
 
+    # Matches the sentinel the history routes already use for "no upper bound".
+    # A literal float("inf") reaches SQLite as an Inf REAL and compares in ways
+    # that differ from the in-memory store; a large finite number does not.
+    FAR_FUTURE = 9_000_000_000_000.0
+
+    # A day of 1-second buckets is 86,400 rows. Nobody reads that, and a model
+    # choosing its own arguments will ask for it. Buckets are coarsened rather
+    # than the request rejected, and the response says what it actually used —
+    # a 400 costs a round trip and the model usually retries with a guess.
+    #
+    # 1000 because that is the chart tag's point cap (charts.MAX_POINTS). Going
+    # finer here would make the JSON and the chart disagree, and the chart
+    # would be trimmed to its FIRST 1000 points — for a time series that means
+    # silently dropping the most recent data, which is the part anyone asking
+    # "show me the last six hours" actually wants.
+    MAX_BUCKETS = 1000
+
+    def max_hold(self):
+        """How long one sample may speak for, in seconds, or None.
+
+        A killed worker emits no CAMERA_OFFLINE, so the gap it leaves is
+        invisible in the event log and the sample before it would otherwise
+        hold across however many hours the process was down. The keepalive is
+        what makes that detectable: with a write guaranteed every N seconds, a
+        gap materially longer than N means the camera was not running.
+
+        Twice the interval, so a single late or dropped keepalive does not
+        register as an outage. With the keepalive disabled there is nothing to
+        measure silence against, and holding indefinitely is all that is left.
+        """
+        keepalive = getattr(self.state_gate, "keepalive_s", 0) or 0
+        return 2 * keepalive if keepalive > 0 else None
+
+    def camera_outages(self, camera_id, t0, t1):
+        """Known offline periods for one camera, from the event log.
+
+        Looks back a day before the window: a camera that went down on Sunday
+        and is still down on Monday emits nothing inside a Monday window, and
+        without the lookback the outage would be invisible exactly when it has
+        lasted longest.
+        """
+        from finblade.timeweight import offline_intervals
+        events = self.store.list_events(t0 - 86400.0, t1, camera_id=camera_id,
+                                        limit=5000)
+        return offline_intervals(events, t0, t1)
+
+    def resolve_zone(self, zone_id, camera_id=None):
+        """Which (camera_id, zone_id) a caller means.
+
+        Zone ids are unique only within a camera — the editor numbers every
+        camera's zones from ZONE-01 — so a bare "ZONE-01" can name several
+        physically unrelated areas. Returns the list of matches and lets the
+        caller refuse rather than picking one: summing the lobby and the
+        loading bay because they share an id produces a number that is wrong in
+        a way nobody can see downstream.
+        """
+        # BOTH sources, unioned — not config with history as a fallback.
+        #
+        # Configured-but-never-reported and reported-but-not-configured are
+        # both real. A zone deleted from the config still has history, so "show
+        # me last week" has to keep working; and a camera whose zones were
+        # never saved through the editor still posts state.
+        #
+        # Checking config first and only falling back when it was empty looked
+        # equivalent and was not: with ZONE-01 configured on one camera and
+        # merely reporting on another, the config lookup found exactly one
+        # match and the query was answered for that camera without a word.
+        # Silently picking the wrong physical area is the failure this whole
+        # function exists to prevent. Caught by the live check, not the unit
+        # tests, because the fixtures there configured every camera.
+        seen = []
+
+        def note(row):
+            key = (row.get("camera_id"), row.get("zone_id"))
+            if key not in seen:
+                seen.append(key)
+
+        for row in self.store.list_zones() or []:
+            if row.get("zone_id") != zone_id:
+                continue
+            if camera_id and row.get("camera_id") != camera_id:
+                continue
+            note(row)
+        for row in self.store.zone_state_prior(self.FAR_FUTURE,
+                                               camera_id=camera_id,
+                                               zone_id=zone_id):
+            note(row)
+        return seen
+
     def zone_time_weighted(self, t0, t1, camera_id=None, zone_id=None):
         """Time-weighted stats per (camera_id, zone_id), keyed by that pair.
 
@@ -160,16 +249,7 @@ class IngestService:
                                                 limit=5000)
             gaps_by_camera[cam] = offline_intervals(cam_events, t0, t1)
 
-        # A killed worker emits no CAMERA_OFFLINE, so its gap is invisible to
-        # `unknown` above and the last sample would hold across it. The
-        # keepalive is what makes that detectable: with a write guaranteed
-        # every N seconds, a gap materially longer than N means the camera was
-        # not running, so a sample is trusted for twice the interval and the
-        # rest of any longer gap becomes unknown. With the keepalive disabled
-        # there is nothing to measure silence against and the old
-        # hold-indefinitely behaviour is all that is available.
-        keepalive = getattr(self.state_gate, "keepalive_s", 0) or 0
-        max_hold = 2 * keepalive if keepalive > 0 else None
+        max_hold = self.max_hold()
 
         out = {}
         for key, samples in by_zone.items():
@@ -177,6 +257,167 @@ class IngestService:
                                      unknown=gaps_by_camera.get(key[0], ()),
                                      prior=priors.get(key), max_hold=max_hold)
         return out
+
+    # ---- Part B: the three questions a chatbot asks of a sparse history -----
+    #
+    # All three share the same preparation — resolve which zone is meant, pull
+    # the rows in the window plus the one before it, and work out which stretches
+    # the camera could not see. _zone_window does that once.
+
+    def _zone_window(self, zone_id, t0, t1, camera_id=None):
+        """(camera_id, rows, prior, outages) or an error dict.
+
+        The error is returned rather than raised so the HTTP layer stays a thin
+        translation and every caller gets the same wording.
+        """
+        matches = self.resolve_zone(zone_id, camera_id=camera_id)
+        if not matches:
+            return {"error": "not_found", "status": 404,
+                    "message": f"no zone {zone_id!r}"
+                               + (f" on camera {camera_id!r}" if camera_id else "")}
+        if len(matches) > 1:
+            # Deliberately not a guess. Zone ids repeat across cameras, so
+            # ZONE-01 can be the lobby on one and the loading bay on another;
+            # answering for whichever sorted first would be wrong in a way that
+            # never surfaces downstream.
+            return {"error": "ambiguous", "status": 409,
+                    "message": f"zone {zone_id!r} exists on several cameras; "
+                               f"pass camera_id",
+                    "candidates": [{"camera_id": c, "zone_id": z} for c, z in matches]}
+
+        cam, zid = matches[0]
+        rows = self.store.zone_state_rows(t0, t1, camera_id=cam, zone_id=zid)
+        priors = self.store.zone_state_prior(t0, camera_id=cam, zone_id=zid)
+        return {"camera_id": cam, "zone_id": zid, "rows": rows,
+                "prior": priors[0] if priors else None,
+                "outages": self.camera_outages(cam, t0, t1)}
+
+    def zone_series(self, zone_id, t0, t1, bucket_s, camera_id=None,
+                    fields=None):
+        """Bucketed history for one zone, gap-filled by holding each reading.
+
+        The endpoint a chatbot needs most: "show me the last six hours" against
+        a table that may contain four rows for that period.
+        """
+        from finblade.series import bucket_series, find_gaps
+
+        ctx = self._zone_window(zone_id, t0, t1, camera_id=camera_id)
+        if "error" in ctx:
+            return ctx
+
+        window = max(t1 - t0, 0.0)
+        requested = float(bucket_s or 0)
+        bucket = requested
+        adjusted = False
+        if bucket <= 0:
+            bucket = max(window / 60.0, 1.0)
+            adjusted = True
+        if window / bucket > self.MAX_BUCKETS - 1:
+            # MAX_BUCKETS - 1, not MAX_BUCKETS: buckets are aligned to the
+            # epoch, so the first one almost always starts before the window
+            # and one extra is needed to reach the end. Dividing by the cap
+            # exactly produces MAX_BUCKETS + 1 points and overshoots the chart
+            # tag's limit, which then trims from the FRONT.
+            bucket = window / (self.MAX_BUCKETS - 1)
+            adjusted = True
+
+        max_hold = self.max_hold()
+        fields = tuple(fields or self._TW_FIELDS)
+        points = bucket_series(ctx["rows"], t0, t1, bucket, fields,
+                               prior=ctx["prior"], offline=ctx["outages"],
+                               max_hold=max_hold)
+        gaps = find_gaps(ctx["rows"], t0, t1, offline=ctx["outages"],
+                         max_hold=max_hold, prior=ctx["prior"])
+        observed = window - sum(g["seconds"] for g in gaps)
+        return {
+            "zone_id": ctx["zone_id"], "camera_id": ctx["camera_id"],
+            "from": t0, "to": t1,
+            "bucket_seconds": bucket,
+            # Echoed so a caller that asked for something impossible can see
+            # what it got instead, rather than silently plotting the wrong
+            # granularity against its own axis labels.
+            "requested_bucket_seconds": requested or None,
+            "bucket_adjusted": adjusted,
+            "rows_in_window": len(ctx["rows"]),
+            "coverage": round(max(observed, 0.0) / window, 4) if window else None,
+            "gaps": gaps,
+            "points": points,
+        }
+
+    def zone_at(self, zone_id, ts, camera_id=None):
+        """The reading in force at one instant."""
+        from finblade.series import state_at
+
+        # A one-hour lookback is enough to find the governing row in almost
+        # every case; zone_state_prior covers the rest without scanning.
+        ctx = self._zone_window(zone_id, ts - 3600.0, ts, camera_id=camera_id)
+        if "error" in ctx:
+            return ctx
+
+        row = state_at(ctx["rows"], ts, prior=ctx["prior"],
+                       max_hold=self.max_hold())
+        if row is None:
+            return {"zone_id": ctx["zone_id"], "camera_id": ctx["camera_id"],
+                    "at": ts, "state": None,
+                    "reason": "no reading at or before this time"}
+        # Inclusive at both ends on purpose. An outage still open at `ts` is
+        # clipped to end exactly at `ts` by offline_intervals, so a half-open
+        # test reports "camera fine" for the one case that matters most: the
+        # camera is down right now. A recovery landing on the same instant is
+        # then also called offline, which is the safe direction to be wrong in.
+        offline = any(a <= ts <= b for a, b in ctx["outages"])
+        return {"zone_id": ctx["zone_id"], "camera_id": ctx["camera_id"],
+                "at": ts, "state": row,
+                "camera_offline": offline,
+                # Both flags say "do not present this as current fact". They are
+                # separate because they have different causes: `stale` means the
+                # reading outlived what a sample may speak for, `camera_offline`
+                # means the event log says the camera was down at that moment.
+                "trustworthy": not (row.get("stale") or offline)}
+
+    def zone_duration(self, zone_id, t0, t1, camera_id=None, field=None,
+                      op=None, value=None, status=None):
+        """How long a condition held, and in how many separate episodes."""
+        from finblade.series import (duration_where, field_predicate,
+                                     status_predicate)
+
+        if status:
+            predicate = status_predicate(status)
+            described = {"status": str(status).upper()}
+        else:
+            try:
+                predicate = field_predicate(field, op, value)
+            except ValueError as exc:
+                return {"error": "bad_condition", "status": 422, "message": str(exc)}
+            described = {"field": field, "op": op, "value": value}
+
+        ctx = self._zone_window(zone_id, t0, t1, camera_id=camera_id)
+        if "error" in ctx:
+            return ctx
+
+        out = duration_where(ctx["rows"], t0, t1, predicate, prior=ctx["prior"],
+                             offline=ctx["outages"], max_hold=self.max_hold())
+        out.update(zone_id=ctx["zone_id"], camera_id=ctx["camera_id"],
+                   condition=described)
+        return out
+
+    def _zone_gaps(self, camera_id, zone_id, t0, t1):
+        """Where a zone's coverage was missing, for the report.
+
+        `coverage: 0.4` tells a reader the number is partial. It does not tell
+        them whether the camera was down for one long stretch overnight or
+        flapping all day, and those support different conclusions from the same
+        average.
+        """
+        from finblade.series import find_gaps
+        rows = self.store.zone_state_rows(t0, t1, camera_id=camera_id,
+                                          zone_id=zone_id)
+        priors = self.store.zone_state_prior(t0, camera_id=camera_id,
+                                             zone_id=zone_id)
+        return find_gaps(rows, t0, t1,
+                         offline=self.camera_outages(camera_id, t0, t1),
+                         max_hold=self.max_hold(),
+                         prior=priors[0] if priors else None)
 
     def occupancy_report(self, t0, t1, camera_id=None, zone_id=None, generated_at=None):
         """Windowed occupancy report: per-zone stats enriched with alert counts,
@@ -228,12 +469,19 @@ class IngestService:
             # figure the camera only half observed, instead of presenting an
             # average of four hours as if it covered twenty-four.
             z["coverage"] = tw["coverage"]
+            z["gaps"] = self._zone_gaps(z.get("camera_id"), z.get("zone_id"), t0, t1)
         return {
             "from": t0, "to": t1,
             "generated_at": time.time() if generated_at is None else generated_at,
             "zones": zones,
             "totals": {
                 "zones": len(zones),
+                # The window's worst coverage, not its average. A report whose
+                # zones range from 1.00 to 0.05 is not "52% observed" — one
+                # camera was down and any conclusion drawn from it is unsafe,
+                # which the mean would hide.
+                "min_coverage": min((z["coverage"] for z in zones
+                                     if z.get("coverage") is not None), default=None),
                 "peak_total_occupancy": sum(int(z.get("peak_occupancy") or 0) for z in zones),
                 "peak_density": max((float(z.get("peak_density") or 0) for z in zones),
                                     default=0.0),

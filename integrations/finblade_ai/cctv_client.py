@@ -241,10 +241,19 @@ class CCTVClient:
 
         Separate from read() on purpose: read() is allowlisted by NAME so a
         typo cannot reach a destructive route, and that guarantee would be lost
-        if it accepted arbitrary paths. This one is constrained to the two
-        id-addressed read routes above and is not a general escape hatch.
+        if it accepted arbitrary paths. This one is constrained to the
+        id-addressed read routes below and is not a general escape hatch.
+
+        The prefix list stays a list of PREFIXES rather than becoming a
+        pattern. Every route reachable through it must be a GET whose whole
+        surface under that prefix is read-only, which is true of these:
+        /api/v1/zones/{id}/series|at|duration are the chatbot's history
+        queries, and the two zone-mutating routes are POST /api/v1/zones and
+        POST /api/v1/zones/state — neither has an id in the path, so neither
+        is reachable from here.
         """
-        if not path.startswith(("/api/v1/alerts/", "/api/v1/incidents/")):
+        if not path.startswith(("/api/v1/alerts/", "/api/v1/incidents/",
+                                "/api/v1/zones/")):
             raise CCTVError(f"{path!r} is not an id-addressed read route")
         key = ("path", path, tuple(sorted(params.items())))
         hit = self._cache.get(key)

@@ -557,7 +557,17 @@ class SQLiteStore(Store):
 
     def zone_state_stats(self, t0: float, t1: float, camera_id=None,
                          zone_id=None) -> List[dict]:
-        q = ("SELECT zone_id, MAX(zone_name) AS zone_name, MAX(camera_id) AS camera_id, "
+        # Grouped on (camera_id, zone_id), not zone_id alone.
+        #
+        # Zone ids are unique only within a camera — the editor numbers every
+        # camera's zones from ZONE-01 — so grouping on the id merged the lobby
+        # on one camera with the loading bay on another into a single report
+        # row. The averages were computed across both physical areas, the peak
+        # was the higher of the two, and `MAX(camera_id)` labelled the result
+        # with whichever id sorted last. Nothing in the output showed it had
+        # happened. Same defect the live-state query was fixed for; this is the
+        # report path.
+        q = ("SELECT zone_id, camera_id, MAX(zone_name) AS zone_name, "
              "COUNT(*) AS samples, AVG(occupancy) AS avg_occupancy, "
              "MAX(occupancy) AS peak_occupancy, AVG(density) AS avg_density, "
              "MAX(density) AS peak_density, AVG(capacity_pct) AS avg_capacity_pct "
@@ -567,7 +577,7 @@ class SQLiteStore(Store):
             q += " AND camera_id=?"; p.append(camera_id)
         if zone_id:
             q += " AND zone_id=?"; p.append(zone_id)
-        q += " GROUP BY zone_id ORDER BY zone_id"
+        q += " GROUP BY camera_id, zone_id ORDER BY zone_id, camera_id"
         with self._lock:
             return _row(self._conn.execute(q, p))
 

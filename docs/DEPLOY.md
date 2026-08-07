@@ -255,7 +255,7 @@ says so loudly in the camera log. It does **not** fall back to a fake embedder.
 .venv/bin/python -m unittest discover -s tests
 ```
 
-713 tests, ~16 seconds. If httpx is missing the HTTP-level tests skip silently
+816 tests, ~10 seconds. If httpx is missing the HTTP-level tests skip silently
 rather than fail — check the count, not just the OK.
 
 ---

@@ -394,16 +394,20 @@ class InMemoryStore(Store):
                 continue
             if zone_id and s.get("zone_id") != zone_id:
                 continue
-            groups.setdefault(s["zone_id"], []).append(s)
+            # (camera_id, zone_id), not zone_id alone — see the SQLite store
+            # for the full note. Grouping on the id merges two cameras'
+            # unrelated zones into one row and averages across both.
+            groups.setdefault((s["zone_id"], s.get("camera_id")), []).append(s)
         out = []
-        for zid, rows in sorted(groups.items()):
+        for (zid, cam), rows in sorted(groups.items(),
+                                       key=lambda kv: (kv[0][0], kv[0][1] or "")):
             occ = [r.get("occupancy", 0) for r in rows]
             den = [r.get("density", 0.0) for r in rows]
             cap = [r.get("capacity_pct", 0.0) for r in rows]
             out.append({
                 "zone_id": zid,
                 "zone_name": rows[-1].get("zone_name"),
-                "camera_id": rows[-1].get("camera_id"),
+                "camera_id": cam,
                 "samples": len(rows),
                 "avg_occupancy": sum(occ) / len(occ),
                 "peak_occupancy": max(occ),

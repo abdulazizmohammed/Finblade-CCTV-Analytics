@@ -291,6 +291,9 @@ yourself.
 rows over-weights busy periods — a quiet hour writes 12 rows and a busy minute
 writes one. The reports already do this correctly; see `coverage` below.
 
+Both of these are why `/zones/{zone_id}/series` exists (§4b) — it does the hold
+and the weighting for you, and reports where the holes are.
+
 A sub-5-second visit is carried by `ZONE_ENTRY`/`ZONE_EXIT`, not by this table,
 and always was — a 5-second sampler cannot see anything shorter than 5 seconds.
 Those events are per person, fire on the frame they happen, and are untouched.
@@ -554,6 +557,104 @@ loses a day.
 `/movement` accepts `from`/`to` as well as `minutes` — `minutes` counts back
 from now and cannot express "last Tuesday".
 
+## 4b. Zone history — three questions, three endpoints
+
+These read the sparse history correctly so you do not have to. Each one holds
+each stored reading forward to the next, excludes time the camera could not
+observe, and tells you where the holes are.
+
+```
+GET /api/v1/zones/{zone_id}/series?from=&to=&hours=&bucket=300&camera_id=
+GET /api/v1/zones/{zone_id}/at?ts=&camera_id=
+GET /api/v1/zones/{zone_id}/duration?from=&to=&hours=&camera_id=
+        &field=occupancy&op=gt&value=0        # or &status=WARNING
+```
+
+**`zone_id` alone may be ambiguous.** Every camera numbers its zones from
+ZONE-01, so a bare id can name several unrelated areas. These routes return
+**409** listing the candidates rather than picking one — pass `camera_id`.
+A zone that has never existed is 404.
+
+### `/series` — how it changed over time
+
+```json
+{"zone_id": "ZONE-01", "camera_id": "CAM-01",
+ "from": 1786069197.2, "to": 1786083597.2,
+ "bucket_seconds": 600, "requested_bucket_seconds": 600,
+ "bucket_adjusted": false, "rows_in_window": 44, "coverage": 0.9167,
+ "gaps": [{"from": 1786079997.2, "to": 1786081197.2, "seconds": 1200.0,
+           "reason": "camera_offline"}],
+ "points": [
+   {"from": 1786069200.0, "to": 1786069800.0, "occupancy": 0.0,
+    "density": 0.0, "capacity_pct": 0.0, "peak_occupancy": 0,
+    "coverage": 1.0, "samples": 2},
+   {"from": 1786080000.0, "to": 1786080600.0, "occupancy": null,
+    "density": null, "capacity_pct": null, "peak_occupancy": null,
+    "coverage": 0.0, "samples": 0}
+ ]}
+```
+
+* **`null` means the camera was not observing. It is not zero.** Break the
+  line; do not draw an empty room. A bucket's own `coverage` says how much of
+  it was seen — a partially observed bucket carries a real value for the part
+  the camera did see.
+* `gaps[].reason` is `camera_offline` when the outage was logged, or `no_data`
+  when a camera stopped reporting without saying so (a killed worker announces
+  nothing). They need different responses from whoever is on call.
+* `peak_occupancy` per bucket, because a ten-minute mean of 0.1 still means
+  someone walked through — use it when the question is "was anyone there".
+* **Buckets align to the epoch**, not to your `from`. Two requests a minute
+  apart return the same bucket boundaries, so a refresh cannot contradict what
+  the user just saw. The first bucket therefore usually starts slightly before
+  `from`.
+* **Read `bucket_seconds` rather than assuming yours was used.** A window that
+  would exceed 1000 buckets is coarsened, and `bucket_adjusted` says so.
+  1000 is also the chart-tag point cap, so the JSON and the chart never
+  disagree.
+* Carries a chart tag (`zone_occupancy_series`) whose data preserves the nulls.
+
+### `/at` — what it read at one moment
+
+```json
+{"zone_id": "ZONE-01", "camera_id": "CAM-01", "at": 1786078197.2,
+ "state": {"occupancy": 6, "density": 0.5, "status": "NORMAL",
+           "ts": 1786077897.2, "age_seconds": 300.0, "stale": false},
+ "camera_offline": false, "trustworthy": true}
+```
+
+Returns the last reading **at or before** the instant, never the next one —
+under write-on-change the next row can be hours later, and using it would
+report a state from a time that had not happened yet.
+
+`age_seconds` is how old that reading was at the instant you asked about.
+`trustworthy: false` means it had outlived what one reading may stand for, or
+the camera was logged offline: phrase it as "the last reading, from N minutes
+earlier", not as fact. `"state": null` means nothing was recorded at or before
+that time — say that, do not render zero.
+
+### `/duration` — how long a condition held
+
+```json
+{"zone_id": "ZONE-01", "camera_id": "CAM-01",
+ "condition": {"field": "occupancy", "op": "gt", "value": 0},
+ "total_seconds": 3600.0, "episode_count": 1, "longest_seconds": 3600.0,
+ "episodes": [{"from": 1786076397.2, "to": 1786079997.2, "seconds": 3600.0}],
+ "unobserved_seconds": 1200.0, "coverage": 0.9167}
+```
+
+Answers in **seconds of real time**, not row counts. Time the camera could not
+see is excluded from the total and splits an episode in two rather than
+bridging it — a camera down for four hours must never be reported as a
+four-hour breach. When `unobserved_seconds` is non-zero the honest phrasing is
+"at least N minutes, and M minutes were not observed".
+
+`field` is `occupancy` | `density` | `capacity_pct`; `op` is `gt` | `gte` |
+`lt` | `lte` | `eq`. Or give `status=NORMAL|WARNING|CRITICAL` instead. Both
+sets are closed and a name outside them is a **422** — zero seconds from a
+typo is indistinguishable from a real answer of "never".
+
+---
+
 ### Report averages are time-weighted, and carry `coverage`
 
 Each zone in `occupancy.json` now looks like this:
@@ -591,8 +692,22 @@ whole reason for the change; it widens as the history gets sparser.
 
 `peak_occupancy` is a maximum, not an average, and is unchanged.
 
+Each zone also carries `gaps` in the same shape as `/series` — `coverage: 0.4`
+does not say whether a camera was down once overnight or flapping all day, and
+those support different conclusions from the same average.
+
+`totals.min_coverage` is the **worst** zone's coverage, not the mean. A report
+whose zones range from 1.00 to 0.05 is not "52% observed" — one camera was
+down, and anything drawn from it is unsafe in a way an average would hide.
+
 `occupancy.csv` gains a `Coverage` column, positioned next to the averages for
 the same reason.
+
+**One zone per camera per row.** Previously the report grouped on `zone_id`
+alone, which merged two cameras' unrelated ZONE-01s into a single row whose
+averages spanned both physical areas. Rows are now keyed on
+`(camera_id, zone_id)`, so a site with the same zone ids on several cameras
+will see more rows than before — that is the fix, not a regression.
 
 ### Incident images
 
@@ -754,8 +869,12 @@ client from it rather than hand-writing one.
 
 ## 10. Complete route index
 
-Every route the service exposes, so nothing here is a surprise. **41 routes**;
-you need about a dozen of them.
+Every route the service exposes, so nothing here is a surprise. **49 routes
+under `/api/v1`**, plus `/ws`, `/healthz`, `/readyz`, `/openapi.json` and the
+static UI. You need about a dozen of them.
+
+(Counted with `scripts/count_routes.py` rather than by hand — the figure here
+had drifted to 41 while the service grew past it.)
 
 ### Read these
 
@@ -769,6 +888,9 @@ you need about a dozen of them.
 | `GET /api/v1/alerts/{id}` | one alert, open or closed | 3 |
 | `GET /api/v1/identity/counts` · `list` · `stats` · `/{global_ref}` | distinct people, de-duplicated across cameras | 3, 7 |
 | `GET /api/v1/history/events` · `history/alerts` | ranged history, paginated | 4 |
+| `GET /api/v1/zones/{id}/series` | bucketed history, gap-filled, with `coverage` and `gaps` | 4b |
+| `GET /api/v1/zones/{id}/at` | what a zone read at one instant | 4b |
+| `GET /api/v1/zones/{id}/duration` | how long a condition held, in seconds | 4b |
 | `GET /api/v1/reports/occupancy.json` · `.csv` · `/reports` · `/reports/{id}` | occupancy reporting | 4 |
 | `GET /api/v1/movement` | zone-to-zone transition counts | 4 |
 | `GET /api/v1/cameras/{id}/snapshot` | one annotated JPEG — **prefer this over a WAN** | 6 |

@@ -35,6 +35,8 @@ It handles the three things a bare HTTP call does not:
 It is sync (`requests`) so it drops into a Django view or a Celery task
 unchanged. For an async stack, swap the two transport methods for `httpx`.
 
+`tools.py` and `chat.py` — the chatbot half, described in §7.
+
 ---
 
 ## 2. Setup
@@ -176,7 +178,85 @@ dashboard and reported 5–7 people while three were in the building.
 
 ---
 
-## 8. Later: stop polling
+## 8. The chatbot — tools instead of a database view
+
+You asked for a view on our database that the bot could query directly. We are
+offering `tools.py` instead, and this section is the reason.
+
+**The database is a SQLite file with no listener.** There is nothing to connect
+to. Exposing it means either shipping the file or putting a network database in
+front of it — a project, not a permission.
+
+**The schema is not a contract and is still moving.** `zone_state_ts` changed
+shape twice this month: it grew a `site_id` column, and it stopped receiving a
+row every five seconds. A view pinned to it would have broken silently both
+times, and the second break would not have thrown an error — it would have
+quietly started returning a fifth of the data.
+
+**The correctness is not in the schema.** These are the rules a `SELECT` does
+not carry, all of which we have already got wrong once and fixed:
+
+* A row means "and it stayed that way until the next row". `AVG(occupancy)`
+  over rows is wrong whenever rows do not cover equal time, which is now always.
+  On our own data the two answers differ by up to 8×.
+* An absence of rows is ambiguous — nothing changed, or nobody was watching.
+  Separating them needs the event log and the keepalive interval, neither of
+  which is in the table.
+* `zone_id` is unique only within a camera. Our own report query grouped on it
+  alone and merged two unrelated zones into one row; nothing in the output
+  showed it.
+
+Whoever writes that SQL has to rediscover all of it. We would rather ship it
+once, here, and be the ones who break if it is wrong.
+
+### What you get
+
+Six tools in `tools.py`, each mapping to one read endpoint, plus a
+`SYSTEM_PROMPT`:
+
+| Tool | Answers |
+|---|---|
+| `cctv_live_state` | "how busy is it now", and what zones exist |
+| `cctv_zone_history` | "how busy was the lobby this morning" |
+| `cctv_zone_at_time` | "how many people were there at 3pm" |
+| `cctv_zone_duration` | "how long was it over capacity" |
+| `cctv_alerts` | "were there any alerts last night" |
+| `cctv_occupancy_report` | "summarise yesterday" |
+
+`chat.py` executes them through `CCTVClient`, so the allowlist, the key and the
+cache apply to the bot exactly as to the tiles. `run_turn()` is a complete
+worked example against the Anthropic SDK — an explicit tool loop rather than a
+helper, because the loop is the part you replace with your own.
+
+### Four things the tool descriptions exist to prevent
+
+The descriptions are longer than usual on purpose. Each one is a mistake a
+model makes by default with this data:
+
+1. **Reporting a gap as zero.** A `null` bucket means the camera was not
+   observing. "The camera was down between 2am and 6am" is a complete answer;
+   "nobody was there" is a wrong one.
+2. **Quoting an average without its coverage.** Below 0.95 the model is told to
+   say how much of the period was actually watched, first.
+3. **Choosing a camera when a zone id is ambiguous.** The API returns 409 with
+   the candidates; the model is told to ask rather than pick.
+4. **Answering "who".** Person references are salted hashes that do not survive
+   a restart. The system prompt says the bot cannot answer identity questions —
+   for a surveillance system, implying otherwise is a serious misstatement.
+
+Every schema is `strict` with a closed set of field and operator names, so a
+hallucinated argument is a validation error rather than an empty result the
+model reports as "never".
+
+### If you still want direct access
+
+Give us the queries you actually need and we will add endpoints for them. That
+keeps one implementation of these rules and leaves you free to change your side
+without us breaking.
+
+---
+
+## 9. Later: stop polling
 
 Once the polling version is live, have the FinBlade **backend** hold one
 WebSocket to `/ws` and fan snapshots out to browsers over your existing channel.

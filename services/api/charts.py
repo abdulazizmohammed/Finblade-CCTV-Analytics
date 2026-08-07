@@ -243,6 +243,51 @@ def movement_charts(flows: List[dict]) -> List[dict]:
                            "data": [_num(f.get("count"), 0) for f in top]}]}]
 
 
+def series_charts(series: dict) -> List[dict]:
+    """A zone's occupancy over time, from GET /zones/{id}/series.
+
+    The only chart in this module whose data legitimately contains nulls, and
+    the one place rule 1 has teeth: a bucket the camera could not observe is
+    `null`, so the line breaks there. Substituting 0 would draw an outage as an
+    empty room — the exact reading an operator must never be given.
+    """
+    points = [p for p in ((series or {}).get("points") or []) if isinstance(p, dict)]
+    if not points:
+        return []
+    # Only the mean can be genuinely absent; peak is a max over observed
+    # samples and is 0 or a real count.
+    occupancy = [_num(p.get("occupancy")) for p in points]
+    if all(v is None for v in occupancy):
+        return []
+
+    label = series.get("zone_name") or series.get("zone_id") or "zone"
+    if series.get("camera_id"):
+        label = f"{series['camera_id']} / {label}"
+    stamps = [_num(p.get("from")) for p in points]
+
+    charts = [{
+        "id": "zone_occupancy_series", "type": "line",
+        "title": f"Occupancy over time — {label}",
+        "unit": "people", "precision": 2,
+        "labels": stamps,
+        "datasets": [{"label": "Mean occupancy",
+                      "data": [None if v is None else round(v, 2)
+                               for v in occupancy]}],
+    }]
+    peaks = [_num(p.get("peak_occupancy")) for p in points]
+    if any(v for v in peaks):
+        charts[0]["datasets"].append({"label": "Peak", "data": peaks})
+
+    coverage = _num(series.get("coverage"))
+    # Shown only when it is not full. A "coverage: 100%" tile on every chart is
+    # noise; a "coverage: 31%" tile next to an average is the whole story.
+    if coverage is not None and coverage < 0.999:
+        charts.append({"id": "series_coverage", "type": "metric",
+                       "title": "Window observed", "unit": "%",
+                       "value": round(coverage * 100, 1)})
+    return charts
+
+
 def report_charts(report: dict) -> List[dict]:
     """Peak vs average occupancy per zone, from an occupancy report."""
     zones = [z for z in ((report or {}).get("zones") or []) if isinstance(z, dict)]

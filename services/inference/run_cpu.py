@@ -259,6 +259,44 @@ BGR_WARNING    = (41, 160, 240)   # #f0a029 loitering highlight (amber)
 BGR_TEXT       = (240, 236, 220)  # #dcecf0
 BGR_IGNORED    = (128, 128, 128)  # muted grey — detection mask, not a status
 
+def _stamp_zone_occupancy(events, occupancy, zones) -> None:
+    """Add the resulting occupancy/density to movement events, in place.
+
+    A consumer can then rebuild occupancy over time from the event stream alone,
+    which is what lets DENSITY_UPDATE — currently one row per zone every 5s,
+    duplicating zone_state_ts exactly — stop being emitted.
+
+    ZONE_TRANSITION changes two zones at once, so it carries both: the plain
+    fields describe zone_to, and the _from pair describes the origin.
+    """
+    if not zones:
+        return
+    areas = {z.zone_id: z.area_sqm for z in zones}
+
+    def _pair(zone_id):
+        if zone_id is None or zone_id not in areas:
+            return None
+        occ = int(occupancy[zone_id])
+        return occ, density_per_sqm(occ, areas[zone_id])
+
+    for evt in events:
+        et = evt.get("event_type")
+        if et == ZONE_TRANSITION:
+            here, there = _pair(evt.get("zone_to")), _pair(evt.get("zone_from"))
+            if there:
+                evt["occupancy_from"], evt["density_from"] = there
+        elif et == ZONE_ENTRY:
+            here = _pair(evt.get("zone_to"))
+        elif et == ZONE_EXIT:
+            # "NONE" is the sentinel used when a track leaves without ever
+            # having been confirmed in a zone; there is no count to report.
+            here = _pair(evt.get("zone_from"))
+        else:
+            continue
+        if here:
+            evt["occupancy"], evt["density"] = here
+
+
 EVIDENCE = os.path.join(_REPO_ROOT, "evidence")
 FRAMES_DIR = os.path.join(EVIDENCE, "frames")
 BOOKMARKS_DIR = os.path.join(EVIDENCE, "bookmarks")   # saved frame per event/alert
@@ -860,6 +898,18 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         for tid in stale:
             pr = hasher.ref(tid)
             gone_zone = prev_zone.get(tid)
+            # A track reaped while still inside a zone used to emit a restricted
+            # exit and a loitering end, but never a plain ZONE_EXIT. The zone's
+            # occupancy dropped anyway, because the count is rebuilt from live
+            # tracks each frame — so zone_state_ts stayed right and nothing
+            # looked wrong. The EVENT STREAM was missing the decrement, which
+            # only matters once the stream is the source of truth: reconstructed
+            # occupancy would climb and never come down.
+            if gone_zone:
+                pending_events.append(new_event(
+                    ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
+                    zone_from=gone_zone, person_ref=pr))
+                flow.record_exit(gone_zone, vnow)
             # emit exit events for a track that vanished while inside a zone
             if gone_zone in restricted_zone_ids:
                 pending_events.append(new_event(
@@ -884,6 +934,15 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         if stale:
             log.debug("evicted %d stale track(s); active=%d", len(stale),
                       reaper.active_count())
+
+        # Stamp movement events with the occupancy they resulted in.
+        #
+        # Deliberately here and not at the point each event is built: the
+        # occupancy Counter is filled DURING the track loop, so a ZONE_ENTRY
+        # created halfway through would read a count that is still missing every
+        # track after it. By this line the loop and the reaper have both
+        # finished and the count is final for this frame.
+        _stamp_zone_occupancy(pending_events, occupancy, cfg.zones)
 
         # 5s cadence: heartbeat (local record), density events, zone-state, rules
         heartbeat_event = None

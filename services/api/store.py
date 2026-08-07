@@ -76,6 +76,17 @@ class Store:
     def load_cursors(self) -> Dict[str, float]: return {}
     def save_cursors(self, cursors: Dict[str, float]) -> None: pass
 
+    def delete_before(self, cutoff_ts: float) -> Dict[str, int]:
+        """Drop telemetry older than cutoff_ts. Returns rows deleted per table.
+
+        TELEMETRY ONLY — zone_state_ts and events. Alerts are deliberately
+        excluded: they are the operator audit trail, they are tiny next to the
+        series (332 rows against 1.67M on a nine-day database), and each one may
+        own a snapshot JPEG on disk. Deleting an alert row here would orphan its
+        image; DELETE /api/v1/alerts exists for that and removes both.
+        """
+        return {}
+
 
 class InMemoryStore(Store):
     def __init__(self):
@@ -172,6 +183,15 @@ class InMemoryStore(Store):
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]:
         return [s for s in self._zone_ts
                 if s["zone_id"] == zone_id and t0 <= s["ts"] <= t1]
+
+    def delete_before(self, cutoff_ts: float) -> Dict[str, int]:
+        before_states, before_events = len(self._zone_ts), len(self._events)
+        self._zone_ts = [s for s in self._zone_ts
+                         if float(s.get("ts") or 0) >= cutoff_ts]
+        self._events = [e for e in self._events
+                        if float(e.get("ts") or e.get("timestamp") or 0) >= cutoff_ts]
+        return {"zone_state_ts": before_states - len(self._zone_ts),
+                "events": before_events - len(self._events)}
 
     def event_count(self) -> int:
         return len(self._events)

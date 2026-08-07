@@ -148,6 +148,51 @@ async def _report_scheduler():
             log.exception("scheduled report generation failed")
 
 
+# --- retention -------------------------------------------------------------
+# Zone state is written every 5s per zone and events on every transition, and
+# nothing pruned them: a nine-day database reached 1.1 GB, 3.35M rows, growing
+# ~130 MB/day. Beyond the disk, "we keep everything forever" is not a defensible
+# retention position for a system that records people.
+#
+# OPT-IN. Deleting a deployment's history because a default said so is not a
+# decision this code gets to make silently — set FINBLADE_RETENTION_DAYS to turn
+# it on. Startup logs loudly when it is unset, so the choice is visible rather
+# than forgotten.
+RETENTION_DAYS = float(os.environ.get("FINBLADE_RETENTION_DAYS", "0") or 0)
+RETENTION_INTERVAL = float(os.environ.get("FINBLADE_RETENTION_INTERVAL", "3600"))
+_retention = {"runs": 0, "errors": 0, "last_run": None, "last_deleted": None}
+
+
+async def _retention_loop():
+    if RETENTION_DAYS <= 0:
+        log.warning("retention DISABLED (set FINBLADE_RETENTION_DAYS to enable) "
+                    "— zone_state_ts and events grow without bound")
+        return
+    log.info("retention: dropping telemetry older than %.1f days, every %.0fs",
+             RETENTION_DAYS, RETENTION_INTERVAL)
+    while True:
+        try:
+            # Sleep first: a restart loop must not delete on every boot, and the
+            # store may still be opening.
+            await asyncio.sleep(RETENTION_INTERVAL)
+            cutoff = time.time() - RETENTION_DAYS * 86400.0
+            deleted = await asyncio.to_thread(store.delete_before, cutoff)
+            _retention["runs"] += 1
+            _retention["last_run"] = time.time()
+            _retention["last_deleted"] = deleted
+            if any(deleted.values()):
+                log.info("retention: deleted %s (older than %s)", deleted,
+                         time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(cutoff)))
+        except asyncio.CancelledError:
+            break
+        except Exception:                          # noqa: BLE001
+            # Never let pruning take the API down, but never let it fail
+            # silently either — a retention job that stopped a month ago and
+            # said nothing is how the disk fills up.
+            _retention["errors"] += 1
+            log.exception("retention pass failed")
+
+
 # --- FinBlade forwarder ----------------------------------------------------
 from .forwarder import FinBladeForwarder                        # noqa: E402
 
@@ -263,6 +308,7 @@ async def lifespan(app):
     tasks = [asyncio.create_task(_offline_monitor()),
              asyncio.create_task(_report_scheduler()),
              asyncio.create_task(_forward_loop()),
+             asyncio.create_task(_retention_loop()),
              asyncio.create_task(_autostart_cameras())]
     yield
     for t in tasks:
@@ -1090,6 +1136,16 @@ def _dependency_checks() -> dict:
         "seconds_since_success": fw["seconds_since_success"]}
     checks["report_scheduler"] = {"ok": _loop_errors["report"] == 0,
                                   "errors": _loop_errors["report"]}
+    # Disabled is reported, not hidden: unbounded growth is a real operational
+    # state and it should be visible on the health endpoint, not only in a log
+    # line from whenever the process last started.
+    checks["retention"] = {
+        "ok": _retention["errors"] == 0,
+        "enabled": RETENTION_DAYS > 0,
+        "days": RETENTION_DAYS or None,
+        "runs": _retention["runs"], "errors": _retention["errors"],
+        "last_run": _retention["last_run"],
+        "last_deleted": _retention["last_deleted"]}
     checks["offline_monitor"] = {"ok": _loop_errors["offline"] == 0,
                                  "errors": _loop_errors["offline"]}
     checks["ts"] = now

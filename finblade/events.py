@@ -50,6 +50,36 @@ _SCHEMA = {
     CAMERA_RECOVERED: {},
 }
 
+# Fields that are type-checked WHEN PRESENT but never required.
+#
+# The movement events carry the zone occupancy that resulted from them, so a
+# consumer can reconstruct occupancy over time from the event stream alone —
+# "after this entry, ZONE-01 held 4 people". Today that number exists only in
+# DENSITY_UPDATE, which is emitted on a 5-second cadence and duplicates
+# zone_state_ts row for row; the plan is to stop emitting it, and without these
+# fields that would leave the series unreconstructable.
+#
+# Optional rather than required on purpose: an older camera worker that does not
+# send them must keep validating, or upgrading the API ahead of the workers
+# rejects every event they post.
+_OPTIONAL_SCHEMA = {
+    # occupancy/density of the zone the person is now IN.
+    ZONE_ENTRY: {"occupancy": int, "density": _NUM},
+    # ...of the zone they just LEFT.
+    ZONE_EXIT: {"occupancy": int, "density": _NUM},
+    # ...of zone_to, plus the origin zone under _from. A transition changes two
+    # zones at once, so one pair of numbers cannot describe it.
+    ZONE_TRANSITION: {"occupancy": int, "density": _NUM,
+                      "occupancy_from": int, "density_from": _NUM},
+    # Occupancy per zone at the moment the camera came up. Without this, a
+    # restart leaves every zone's count unknown until someone next moves —
+    # which could be hours.
+    CAMERA_ONLINE: {"zone_occupancy": dict},
+    CAMERA_RECOVERED: {"zone_occupancy": dict},
+}
+
+_NON_NEGATIVE = ("occupancy", "density", "occupancy_from", "density_from")
+
 
 def new_event(event_type: str, camera_id: str, site_id: str, ts: float, **payload) -> dict:
     """Build an event envelope. Does not validate — call validate_event for that."""
@@ -98,14 +128,28 @@ def validate_event(evt: dict) -> Tuple[bool, List[str]]:
         if isinstance(val, bool) or not isinstance(val, expected):
             errors.append(f"{et}.{field_name} must be {expected}")
 
-    # Value-level checks
-    if et == DENSITY_UPDATE:
-        occ = evt.get("occupancy")
-        if isinstance(occ, int) and not isinstance(occ, bool) and occ < 0:
-            errors.append("occupancy must be >= 0")
-        dens = evt.get("density")
-        if isinstance(dens, _NUM) and not isinstance(dens, bool) and dens < 0:
-            errors.append("density must be >= 0")
+    # Optional payload: checked only when present.
+    for field_name, expected in _OPTIONAL_SCHEMA.get(et, {}).items():
+        if field_name not in evt:
+            continue
+        val = evt[field_name]
+        if isinstance(val, bool) or not isinstance(val, expected):
+            errors.append(f"{et}.{field_name} must be {expected}")
+
+    # Value-level checks. Applied to every count/density field on any event, so
+    # a new optional field cannot be added without inheriting the >= 0 rule.
+    for field_name in _NON_NEGATIVE:
+        val = evt.get(field_name)
+        if isinstance(val, _NUM) and not isinstance(val, bool) and val < 0:
+            errors.append(f"{field_name} must be >= 0")
+    if et in (CAMERA_ONLINE, CAMERA_RECOVERED):
+        zo = evt.get("zone_occupancy")
+        if isinstance(zo, dict):
+            for zone_id, occ in zo.items():
+                if not isinstance(zone_id, str) or not zone_id:
+                    errors.append("zone_occupancy keys must be non-empty strings")
+                if isinstance(occ, bool) or not isinstance(occ, int) or occ < 0:
+                    errors.append(f"zone_occupancy[{zone_id!r}] must be an int >= 0")
     if et == ZONE_ENTRY:
         conf = evt.get("confidence")
         if isinstance(conf, _NUM) and not isinstance(conf, bool) and not (0.0 <= conf <= 1.0):

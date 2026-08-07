@@ -407,6 +407,27 @@ class SQLiteStore(Store):
         with self._lock:
             return [self._alert_out(r) for r in _row(self._conn.execute(q, p))]
 
+    def delete_before(self, cutoff_ts: float) -> dict:
+        """Drop telemetry older than cutoff_ts. See Store.delete_before.
+
+        Deliberately does NOT run VACUUM. SQLite does not return freed pages to
+        the filesystem without it, so the file will not shrink — but VACUUM
+        takes an exclusive lock and rewrites the whole database, which on a
+        1.1 GB file stalls every request and the event loop with it. Reclaiming
+        the disk is a maintenance-window job, run by hand; keeping the row count
+        bounded is what this is for.
+        """
+        deleted = {}
+        with self._lock:
+            for table in ("zone_state_ts", "events"):
+                cur = self._conn.execute(
+                    f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))
+                deleted[table] = cur.rowcount
+            self._conn.commit()
+        # The live-zone cache can hold rows that no longer exist.
+        self._zone_cache = None
+        return deleted
+
     def load_cursors(self) -> dict:
         with self._lock:
             return {r["name"]: float(r["ts"]) for r in _row(

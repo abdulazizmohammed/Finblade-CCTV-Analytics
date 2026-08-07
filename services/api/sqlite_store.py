@@ -222,6 +222,13 @@ class SQLiteStore(Store):
                  json.dumps(extra), float(s.get("inflow_per_min", 0)),
                  float(s.get("outflow_per_min", 0)), s.get("status")))
             self._conn.commit()
+        # A write makes the cached snapshot wrong, so drop it. Relying on the
+        # TTL alone meant a post followed immediately by a read returned the
+        # state from BEFORE the post — invisible while InMemoryStore, which has
+        # no cache, backed every test. See the note in postgres_store.py: reads
+        # outnumber writes by the number of dashboards watching, so the cache
+        # still does its job and now never serves a stale reading.
+        self._zone_cache = None
 
     def save_alert(self, a: dict) -> str:
         with self._lock:

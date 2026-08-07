@@ -255,8 +255,20 @@ says so loudly in the camera log. It does **not** fall back to a fake embedder.
 .venv/bin/python -m unittest discover -s tests
 ```
 
-816 tests, ~10 seconds. If httpx is missing the HTTP-level tests skip silently
+948 tests, ~22 seconds. If httpx is missing the HTTP-level tests skip silently
 rather than fail — check the count, not just the OK.
+
+To run the same suite with the application on Postgres:
+
+```bash
+.venv/bin/python scripts/test_on_postgres.py
+```
+
+It creates a scratch database, runs all 948 there, and drops it. The store
+conformance tests (`tests/test_store_conformance.py`) run one suite against
+InMemoryStore, SQLiteStore and PostgresStore in a single pass and skip the
+Postgres cases cleanly when no server is configured — check for skips if you
+expect them to run.
 
 ---
 
@@ -401,6 +413,40 @@ changed — a day of two cameras reached 380 MB / 569k events, and nine days
 reached 1.15 GB. Since write-on-change (below), replaying that same nine days
 through the gate yields 7,243 rows instead of 1,674,955: about 5 MB. Still turn
 retention on before a long soak; the events table is unbounded either way.
+
+### Moving to Postgres
+
+SQLite remains the default and needs no setup. Postgres is selected entirely by
+`DATABASE_URL` — nothing else in the application knows which store it is on.
+
+```bash
+# 1. schema. Generated from the live SQLite schema, not hand-written:
+#    the old hand-maintained ddl.sql had drifted to five tables against nine
+#    and was missing zone_live, which every live read goes through.
+.venv/bin/python scripts/gen_pg_ddl.py data/finblade.db services/api/ddl_pg.sql
+psql "$DATABASE_URL" -f services/api/ddl_pg.sql
+
+# 2. data. Streams with COPY; re-runnable, and it refuses to run if the target
+#    already holds more rows than the source.
+.venv/bin/python scripts/pg_migrate.py data/finblade.db "$DATABASE_URL"
+
+# 3. the analytics views FinBlade queries
+.venv/bin/python scripts/pg_apply.py "$DATABASE_URL"
+
+# 4. cut over
+export DATABASE_URL=postgresql://user:pass@host/finblade
+sudo systemctl restart finblade-api
+```
+
+Measured on the nine-day database: 3,352,902 rows in 43 seconds, every table's
+count matching. The same queries run 3-30x faster than on SQLite.
+
+**Migrate with the API stopped**, or rows written between the copy and the
+cutover are left behind in SQLite. The migration is re-runnable, so the safe
+order is: stop, migrate, verify counts, start with `DATABASE_URL` set.
+
+**Keep the SQLite file** until you are satisfied. Nothing deletes it, and
+unsetting `DATABASE_URL` puts you straight back on it.
 
 **Write-on-change is the default and has two knobs.**
 

@@ -32,8 +32,12 @@ from .report import render_report_html, render_report_csv
 
 # Backend selection: durable SQLite by default (survives restarts, date-queryable).
 # DATABASE_URL -> Postgres; FINBLADE_INMEMORY=1 -> in-memory (tests/ephemeral).
+#
+# All three are held to one behaviour by tests/test_store_conformance.py, which
+# runs the same suite against each. Setting DATABASE_URL is the whole cutover:
+# nothing below this block knows which store it is talking to.
 if os.environ.get("DATABASE_URL"):
-    from .store import PostgresStore
+    from .postgres_store import PostgresStore
     store = PostgresStore(os.environ["DATABASE_URL"])
 elif os.environ.get("FINBLADE_INMEMORY"):
     store = InMemoryStore()

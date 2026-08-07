@@ -1,12 +1,20 @@
 """Persistence layer.
 
-Two backends behind one interface:
-  * InMemoryStore   — dependency-free, used by unit tests and as a dev fallback.
-  * PostgresStore   — psycopg2 against the DDL in ddl.sql (NOT run in the
-                      authoring env; no server/driver here — see BLOCKERS.md B-3).
+Three backends behind one interface:
+  * InMemoryStore  — dependency-free, used by unit tests and as a dev fallback.
+  * SQLiteStore    — sqlite_store.py. The default; a file, zero setup.
+  * PostgresStore  — postgres_store.py. Selected by DATABASE_URL.
 
 The API talks only to the Store interface, so the ingest/ack logic is fully
-tested against InMemoryStore without a database.
+tested without a database.
+
+Because the backend is chosen by an environment variable, a behaviour that
+differs between them is a bug visible in one deployment only.
+tests/test_store_conformance.py runs one suite against all three for exactly
+that reason, and it has already caught four divergences in this file: events
+not deduplicating on event_id, forwarder cursors silently discarded, a
+resolution tuple never flattened to "1920x1080", and the people counts not
+being owned exclusively by the health snapshot.
 """
 
 import time
@@ -104,7 +112,11 @@ class Store:
     # them simply behaves as it did before: start from now, forward what
     # happens next. Only durability is lost, never correctness.
     def load_cursors(self) -> Dict[str, float]: return {}
-    def save_cursors(self, cursors: Dict[str, float]) -> None: pass
+
+    def save_cursors(self, cursors: Dict[str, float]) -> None:
+        """Merge, never replace. The forwarder saves one kind at a time, and a
+        wholesale replace would drop the other kind's position."""
+        pass
 
     def delete_before(self, cutoff_ts: float) -> Dict[str, int]:
         """Drop telemetry older than cutoff_ts. Returns rows deleted per table.
@@ -131,9 +143,25 @@ class InMemoryStore(Store):
         self._zones: Dict[str, List[dict]] = {}
         self._reports: List[dict] = []
         self._report_seq = 0
+        self._cursors: Dict[str, float] = {}
 
     def save_event(self, evt: dict) -> None:
-        self._events.append(dict(evt))
+        """Replace on event_id, matching both durable stores.
+
+        They use INSERT OR REPLACE / ON CONFLICT DO UPDATE because the FinBlade
+        forwarder deliberately re-sends a small overlap rather than using a
+        strict `ts >` boundary — two events can share a timestamp and a strict
+        boundary drops the second forever. Appending blindly here made the same
+        replay produce duplicates in tests while production deduplicated them.
+        """
+        row = dict(evt)
+        eid = row.get("event_id")
+        if eid is not None:
+            for i, existing in enumerate(self._events):
+                if existing.get("event_id") == eid:
+                    self._events[i] = row
+                    return
+        self._events.append(row)
 
     def save_zone_state(self, state: dict, history: bool = True) -> None:
         row = dict(state)
@@ -300,6 +328,16 @@ class InMemoryStore(Store):
         for k in self._HEALTH_FIELDS:
             if k in health:
                 c[k] = health[k]
+        # The worker reports resolution as (width, height); both durable stores
+        # flatten it to "1920x1080" on the way in. Keeping the tuple here meant
+        # a test could assert against a shape the API never actually serves.
+        res = c.get("resolution")
+        if isinstance(res, (list, tuple)):
+            c["resolution"] = "x".join(str(int(v)) for v in res)
+        # People counts belong to the health snapshot, and only to it — see
+        # mark_camera_seen, which must never touch them.
+        for k in ("people_in_view", "people_in_zones"):
+            c[k] = int(health.get(k) or 0)
 
     def upsert_camera(self, camera_id: str, **fields) -> None:
         if not camera_id:
@@ -315,6 +353,16 @@ class InMemoryStore(Store):
     def set_camera_sim(self, camera_id: str, on: bool) -> None:
         c = self._cameras.setdefault(camera_id, {"camera_id": camera_id})
         c["sim_failure"] = bool(on)
+
+    def load_cursors(self) -> Dict[str, float]:
+        return dict(self._cursors)
+
+    def save_cursors(self, cursors: Dict[str, float]) -> None:
+        # Merged, matching both durable stores: their upsert touches only the
+        # names present in the call, so saving {"events": ...} must not forget
+        # where "alerts" had got to.
+        for name, ts in (cursors or {}).items():
+            self._cursors[name] = float(ts)
 
     def list_events(self, t0, t1, camera_id=None, zone_id=None, event_type=None,
                     person_ref=None, limit=500):
@@ -417,86 +465,3 @@ class InMemoryStore(Store):
             })
         return out
 
-
-class PostgresStore(Store):  # pragma: no cover - requires a live DB (BLOCKERS.md B-3)
-    """psycopg2-backed store. Untested here: no Postgres server/driver in the
-    authoring env. Schema is ddl.sql; DSN via env DATABASE_URL."""
-
-    def __init__(self, dsn: str):
-        import psycopg2  # imported lazily so the module loads without the driver
-        self._conn = psycopg2.connect(dsn)
-        self._conn.autocommit = True
-
-    def save_event(self, evt: dict) -> None:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO zone_events(event_id, event_type, camera_id, site_id, "
-                "zone_from, zone_to, person_ref, ts, payload) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,to_timestamp(%s),%s)",
-                (evt["event_id"], evt["event_type"], evt["camera_id"], evt["site_id"],
-                 evt.get("zone_from"), evt.get("zone_to"), evt.get("person_ref"),
-                 evt["timestamp"], _json(evt)),
-            )
-
-    def save_zone_state(self, state: dict) -> None:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO zone_state_ts(zone_id, camera_id, ts, occupancy, density, "
-                "capacity_pct, inflow_per_min, outflow_per_min, status) "
-                "VALUES (%s,%s,to_timestamp(%s),%s,%s,%s,%s,%s,%s)",
-                (state["zone_id"], state["camera_id"], state["ts"], state["occupancy"],
-                 state["density"], state["capacity_pct"], state["inflow_per_min"],
-                 state["outflow_per_min"], state["status"]),
-            )
-
-    def save_alert(self, alert: dict) -> str:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO alerts(rule_id, severity, message, zone_id, camera_id, "
-                "person_ref, ts) VALUES (%s,%s,%s,%s,%s,%s,to_timestamp(%s)) RETURNING alert_id",
-                (alert["rule_id"], alert["severity"], alert["message"], alert.get("zone_id"),
-                 alert.get("camera_id"), alert.get("person_ref"), alert["ts"]),
-            )
-            return str(cur.fetchone()[0])
-
-    def acknowledge_alert(self, alert_id: str, who: str, ts: float) -> bool:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "UPDATE alerts SET acknowledged_by=%s, acknowledged_at=to_timestamp(%s) "
-                "WHERE alert_id=%s AND acknowledged_by IS NULL",
-                (who, ts, alert_id))
-            return cur.rowcount > 0
-
-    def list_alerts(self, unacked_only: bool = False) -> List[dict]:
-        q = "SELECT alert_id, rule_id, severity, message, zone_id, camera_id, person_ref, " \
-            "extract(epoch from ts), acknowledged_by FROM alerts"
-        if unacked_only:
-            q += " WHERE acknowledged_by IS NULL"
-        q += " ORDER BY ts DESC"
-        with self._conn.cursor() as cur:
-            cur.execute(q)
-            cols = [c[0] for c in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-    def latest_zone_states(self) -> List[dict]:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT DISTINCT ON (zone_id) zone_id, occupancy, density, capacity_pct, "
-                "inflow_per_min, outflow_per_min, status, extract(epoch from ts) as ts "
-                "FROM zone_state_ts ORDER BY zone_id, ts DESC")
-            cols = [c[0] for c in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-    def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT zone_id, occupancy, density, extract(epoch from ts) as ts "
-                "FROM zone_state_ts WHERE zone_id=%s AND ts BETWEEN to_timestamp(%s) "
-                "AND to_timestamp(%s) ORDER BY ts", (zone_id, t0, t1))
-            cols = [c[0] for c in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
-def _json(obj) -> str:
-    import json
-    return json.dumps(obj)

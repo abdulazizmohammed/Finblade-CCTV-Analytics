@@ -43,6 +43,13 @@ flask==3.0.3                 # per-camera MJPEG viewer
 requests==2.34.2             # camera workers post to the API
 PyYAML==6.0.2
 
+# --- database ---------------------------------------------------------------
+# Only needed when DATABASE_URL is set; SQLite (the default) needs nothing. The
+# [pool] extra is not optional for Postgres: a connection pool is the point of
+# moving off SQLite, and a single locked connection would keep the bottleneck
+# the migration exists to remove.
+psycopg[binary,pool]==3.3.4
+
 # --- weight fetching --------------------------------------------------------
 gdown==5.2.2                 # scripts/get_weights.py pulls OSNet via boxmot
 

@@ -77,7 +77,7 @@ class TestMasking(unittest.TestCase):
 
     def test_detector_catches_an_at_sign_password(self):
         self.assertTrue(
-            contains_credentials("rtsp://admin:Secret@2030@10.0.0.1:554/x"))
+            contains_credentials("rtsp://operator:p@ssw0rd@10.0.0.1:554/x"))
 
     def test_urls_without_credentials_are_untouched(self):
         for url in ("rtsp://127.0.0.1:8554/cam01", "http://127.0.0.1:8090/stream",

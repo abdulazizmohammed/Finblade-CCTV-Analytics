@@ -94,6 +94,7 @@ The core occupancy stream. One message per zone every 5 seconds.
 | `density` | float ≥ 0 | people per m² = `occupancy / area_sqm` |
 | `capacity_pct` | float ≥ 0 | may exceed 100 |
 | `peak_occupancy` / `avg_occupancy` | int / float | since service start, not rolling |
+| — | — | *see the note below on `avg_occupancy` under sparse storage* |
 | `trend` | enum | `rising` \| `falling` \| `flat` |
 | `status` | enum | `NORMAL` \| `WARNING` \| `CRITICAL` |
 | `zone_type` | enum | `MONITORED` \| `RESTRICTED` \| `ENTRANCE` \| `EXIT` \| `TRANSITION` \| `UNMONITORED` |
@@ -103,6 +104,21 @@ The core occupancy stream. One message per zone every 5 seconds.
 **Required for validation:** `zone_id`, `camera_id`, `ts`, `occupancy`,
 `density`, `capacity_pct`, `inflow_per_min`, `outflow_per_min`, `status`.
 The rest are supplementary — accept the message if they are absent.
+
+### This stream is unchanged by our write-on-change storage
+
+We now store a zone-state row only when occupancy or status changes, plus a
+keepalive every 5 minutes — 1,674,955 rows of our own nine-day history become
+7,243. **This push is not affected.** It sends a snapshot of every zone's
+current reading on every tick, taken from the live table rather than the
+history, so you keep receiving one message per zone every 5 seconds exactly as
+specified above.
+
+We are flagging it only because it changes one thing on your side if you store
+what we send: **do not compute long-window averages by averaging our messages
+equally.** Our own reports moved to weighting each reading by how long it held,
+and on live data the two answers differ by up to 8×. If you would rather have
+the aggregate than compute it, ask — we already produce it.
 
 ---
 
@@ -446,9 +462,14 @@ failures are diagnosable.
 **Rate limiting.** If you rate-limit, return `429` with `Retry-After`. Do not
 silently drop; we cannot detect that.
 
-**Retention.** Zone state at 5-second granularity is large. Tell us your
-retention and whether you want us to pre-aggregate (e.g. 1-minute rollups)
-instead of raw samples.
+**Retention.** Zone state at 5-second granularity is large — nine days of eight
+zones was 1.15 GB on our side before we stopped storing unchanged repeats.
+Tell us your retention, and whether you would rather we sent you the same thing
+we now store: a message only when a zone's occupancy or status changes, plus a
+keepalive every 5 minutes. That is a 99.6% reduction on real traffic and loses
+no transition. We have not changed this push unilaterally because §3 specifies
+5 seconds and you may be relying on the fixed cadence as a liveness signal —
+though `CAMERA_HEARTBEAT` and the camera-health post both already provide it.
 
 ---
 

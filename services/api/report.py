@@ -19,8 +19,16 @@ _STATUS_PILL = {
 }
 
 # Windowed occupancy-report columns (zone_state_stats + per-zone alert_count).
+#
+# "Coverage" is the fraction of the window the camera was actually observing.
+# It sits next to the averages deliberately: under write-on-change the row
+# count no longer says anything about how long a zone was watched, so a
+# spreadsheet showing an average with no way to tell it came from twenty
+# minutes rather than twenty-four hours is the failure mode this column exists
+# to prevent.
 _CSV_COLUMNS = [
     ("zone_id", "Zone ID"), ("zone_name", "Zone"), ("samples", "Samples"),
+    ("coverage", "Coverage"),
     ("avg_occupancy", "Avg occupancy"), ("peak_occupancy", "Peak occupancy"),
     ("avg_density", "Avg density /m2"), ("peak_density", "Peak density /m2"),
     ("avg_capacity_pct", "Avg capacity %"), ("alert_count", "Alerts"),

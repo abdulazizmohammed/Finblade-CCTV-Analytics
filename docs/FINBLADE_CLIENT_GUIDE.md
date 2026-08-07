@@ -255,6 +255,46 @@ Full field list, captured live: `zone_id`, `camera_id`, `zone_name`, `zone_type`
 `inflow_5m`, `outflow_5m`, `inflow_15m`, `outflow_15m`, `status`, `capacity_max`,
 `area_sqm`.
 
+**This endpoint is unaffected by write-on-change** (below). The camera still
+posts every 5 seconds and this reading still advances every 5 seconds, whether
+or not anything changed. Only the stored history is thinned.
+
+### Write-on-change: what the history contains
+
+The zone-state history (`zone_state_ts`, behind the reports and any time-range
+query) now records a row when a zone's **occupancy or status changes**, plus a
+keepalive row every 5 minutes per zone. It used to record every 5-second post.
+
+Measured on nine days of our own data: 1,674,955 rows become 7,243 — 1.15 GB
+becomes about 5 MB. 99.7% of those rows were byte-identical to the row before
+them, and 97.7% recorded an empty zone.
+
+What this does and does not change for you:
+
+| | Before | Now |
+|---|---|---|
+| `/zones/state`, `/summary`, `/ws` | every 5s | **unchanged, every 5s** |
+| `ZONE_ENTRY` / `ZONE_EXIT` / alerts | per person, immediate | **unchanged** |
+| Rows in the stored history | 720/hour/zone | ~12/hour/zone when quiet |
+| Report averages | mean of rows | **time-weighted by duration** |
+
+Two consequences worth reading before you build against it:
+
+**A gap in the history means "nothing changed", not "no data".** To reconstruct
+occupancy at an arbitrary past instant, take the most recent row **at or before**
+that instant and hold it forward. Do not interpolate, and do not treat a missing
+row as zero. If you need this, ask us for `/api/v1/zones/{zone_id}/series` —
+it is on the roadmap specifically so you do not have to implement the hold
+yourself.
+
+**Do not average the rows.** They no longer cover equal time, so a mean over
+rows over-weights busy periods — a quiet hour writes 12 rows and a busy minute
+writes one. The reports already do this correctly; see `coverage` below.
+
+A sub-5-second visit is carried by `ZONE_ENTRY`/`ZONE_EXIT`, not by this table,
+and always was — a 5-second sampler cannot see anything shorter than 5 seconds.
+Those events are per person, fire on the frame they happen, and are untouched.
+
 ### Zone definitions — the polygons themselves
 
 `/zones/state` is live measurement. For the static configuration — shape,
@@ -420,12 +460,20 @@ GET /api/v1/health    keyed, full breakdown
   "forwarder": {"ok": true, "enabled": true, "last_error": null,
                 "seconds_since_success": 3.2},
   "report_scheduler": {"ok": true, "errors": 0},
-  "offline_monitor": {"ok": true, "errors": 0}}}
+  "offline_monitor": {"ok": true, "errors": 0},
+  "state_writes": {"ok": true, "mode": "change", "keepalive_s": 300.0,
+                   "zones_tracked": 8, "written": 7243,
+                   "suppressed": 1667712, "suppressed_pct": 99.57}}}
 ```
 
 Use this to tell **CCTV analytics down** from **one camera down** from **the
 push to FinBlade failing** — three problems with three different owners. A
 disabled forwarder reports `ok: true`; off is not broken.
+
+`state_writes` reports the write-on-change gate. It is never `ok: false` —
+suppression is the intended behaviour — but a `suppressed_pct` of 100 over a
+long run means no history is being recorded at all, and that is worth an alert
+on your side.
 
 ---
 
@@ -505,6 +553,46 @@ loses a day.
 
 `/movement` accepts `from`/`to` as well as `minutes` — `minutes` counts back
 from now and cannot express "last Tuesday".
+
+### Report averages are time-weighted, and carry `coverage`
+
+Each zone in `occupancy.json` now looks like this:
+
+```json
+{"zone_id": "ZONE-01", "zone_name": "Lobby", "samples": 13,
+ "avg_occupancy": 0.082, "peak_occupancy": 5,
+ "avg_density": 0.0068, "avg_capacity_pct": 0.33,
+ "coverage": 1.0,
+ "sampled": {"avg_occupancy": 0.385, "avg_density": 0.032,
+             "avg_capacity_pct": 1.54},
+ "time_weighted": {"avg_occupancy": 0.082, "avg_density": 0.0068,
+                   "avg_capacity_pct": 0.33, "peak_occupancy": 5,
+                   "coverage": 1.0, "observed_seconds": 3660.0},
+ "alert_count": 0}
+```
+
+`avg_occupancy` and the other averages are now **weighted by how long each
+reading held**, not by how many rows carry it. In the example above the zone
+held five people for one minute of an hour: 0.082 is right, and 0.385 — the
+mean of the surviving rows — is what the old arithmetic gave. That gap is the
+whole reason for the change; it widens as the history gets sparser.
+
+* `sampled` is the old row-mean, kept so you can compare across the change.
+  Reports generated before this release contain only that number.
+* `coverage` is the fraction of the window the camera was actually observing,
+  0.0–1.0. **Render it whenever it is below about 0.95.** An average over four
+  hours of a twenty-four-hour window is a real number about a small slice of the
+  day, and presenting it unqualified is the misreading this field exists to
+  prevent. `samples` no longer tells you this — under write-on-change, a low row
+  count means a quiet zone, not a missing one.
+* `observed_seconds` is the same figure in absolute terms.
+* Downtime is excluded from the average rather than counted as empty, so a
+  camera that was down for half a window describes the half it saw.
+
+`peak_occupancy` is a maximum, not an average, and is unchanged.
+
+`occupancy.csv` gains a `Coverage` column, positioned next to the averages for
+the same reason.
 
 ### Incident images
 

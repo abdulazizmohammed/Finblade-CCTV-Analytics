@@ -173,22 +173,23 @@ class SQLiteStore(Store):
                  evt.get("frame"), json.dumps(evt)))
             self._conn.commit()
 
-    def save_zone_state(self, s: dict) -> None:
+    def save_zone_state(self, s: dict, history: bool = True) -> None:
         with self._lock:
             extra = {k: s[k] for k in ("net_flow", "inflow_5m", "outflow_5m",
                                        "inflow_15m", "outflow_15m",
                                        "capacity_max", "area_sqm") if k in s}
-            self._conn.execute(
-                "INSERT INTO zone_state_ts(zone_id,camera_id,zone_name,zone_type,restricted,ts,"
-                "occupancy,density,capacity_pct,peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status,site_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (s["zone_id"], s.get("camera_id"), s.get("zone_name"), s.get("zone_type"),
-                 1 if s.get("restricted") else 0, float(s["ts"]), int(s["occupancy"]),
-                 float(s["density"]), float(s["capacity_pct"]),
-                 int(s.get("peak_occupancy", s["occupancy"])), float(s.get("avg_occupancy", 0)),
-                 s.get("trend", "flat"), json.dumps(extra),
-                 float(s.get("inflow_per_min", 0)), float(s.get("outflow_per_min", 0)),
-                 s.get("status"), s.get("site_id")))
+            if history:
+                self._conn.execute(
+                    "INSERT INTO zone_state_ts(zone_id,camera_id,zone_name,zone_type,restricted,ts,"
+                    "occupancy,density,capacity_pct,peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status,site_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (s["zone_id"], s.get("camera_id"), s.get("zone_name"), s.get("zone_type"),
+                     1 if s.get("restricted") else 0, float(s["ts"]), int(s["occupancy"]),
+                     float(s["density"]), float(s["capacity_pct"]),
+                     int(s.get("peak_occupancy", s["occupancy"])), float(s.get("avg_occupancy", 0)),
+                     s.get("trend", "flat"), json.dumps(extra),
+                     float(s.get("inflow_per_min", 0)), float(s.get("outflow_per_min", 0)),
+                     s.get("status"), s.get("site_id")))
             # Same values, overwritten in place.
             #
             # ON CONFLICT ... WHERE rather than INSERT OR REPLACE, so a delayed

@@ -28,7 +28,16 @@ def _fresh_zones(rows: List[dict], now: Optional[float] = None) -> List[dict]:
 
 class Store:
     def save_event(self, evt: dict) -> None: raise NotImplementedError
-    def save_zone_state(self, state: dict) -> None: raise NotImplementedError
+
+    def save_zone_state(self, state: dict, history: bool = True) -> None:
+        """Record a zone-state sample.
+
+        `history=False` updates the live reading only, leaving zone_state_ts
+        untouched. That is how a repeat of an unchanged state is dropped without
+        the zone disappearing from /zones/state — the live row keeps its
+        timestamp fresh, so the 30-second freshness window still sees it.
+        """
+        raise NotImplementedError
     def save_alert(self, alert: dict) -> str: raise NotImplementedError
     def list_alerts(self, unacked_only: bool = False) -> List[dict]: raise NotImplementedError
     def acknowledge_alert(self, alert_id: str, who: str, ts: float) -> bool: raise NotImplementedError
@@ -126,9 +135,10 @@ class InMemoryStore(Store):
     def save_event(self, evt: dict) -> None:
         self._events.append(dict(evt))
 
-    def save_zone_state(self, state: dict) -> None:
+    def save_zone_state(self, state: dict, history: bool = True) -> None:
         row = dict(state)
-        self._zone_ts.append(row)
+        if history:
+            self._zone_ts.append(row)
         # Out-of-order writes must not move the live state backwards: a delayed
         # post from a slow camera arriving after a newer one would otherwise
         # overwrite the newer reading.

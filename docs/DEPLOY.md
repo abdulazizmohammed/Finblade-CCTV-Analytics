@@ -255,7 +255,7 @@ says so loudly in the camera log. It does **not** fall back to a fake embedder.
 .venv/bin/python -m unittest discover -s tests
 ```
 
-541 tests, ~5 seconds. If httpx is missing the HTTP-level tests skip silently
+713 tests, ~16 seconds. If httpx is missing the HTTP-level tests skip silently
 rather than fail — check the count, not just the OK.
 
 ---
@@ -395,9 +395,36 @@ camera's port changes across restarts. Read `stream_url` from
 now written only for critical density (R-02) and restricted intrusion (R-06) —
 loitering used to write them continuously and produced 944 MB in a day.
 
-**The database grows fast.** Zone state is written every 5 seconds per zone and
-events per transition: a day of two cameras reached 380 MB / 569k events. Plan a
-retention job before any long soak test.
+**The database used to grow fast; it no longer does, but check anyway.** Zone
+state was written every 5 seconds per zone regardless of whether anything had
+changed — a day of two cameras reached 380 MB / 569k events, and nine days
+reached 1.15 GB. Since write-on-change (below), replaying that same nine days
+through the gate yields 7,243 rows instead of 1,674,955: about 5 MB. Still turn
+retention on before a long soak; the events table is unbounded either way.
+
+**Write-on-change is the default and has two knobs.**
+
+```bash
+FINBLADE_STATE_WRITES=change      # change (default) | always
+FINBLADE_STATE_KEEPALIVE=300      # seconds; 0 disables the keepalive
+```
+
+A zone-state row is appended when occupancy or status changes, or when the
+keepalive interval has elapsed. Everything live — `/zones/state`, `/summary`,
+the WebSocket, camera heartbeats, R-07 offline detection — is driven by the
+post itself and is unaffected; only the history is thinned. `always` restores
+the previous behaviour without touching a camera.
+
+**Do not set `FINBLADE_STATE_KEEPALIVE=0` to save more space.** The keepalive
+is what makes a gap in the data interpretable: with a write guaranteed every N
+seconds, a longer gap means the camera was not running, and the reports use
+that to exclude downtime from their averages instead of counting it as an empty
+room. At 0 there is nothing to measure silence against, and a killed worker
+becomes indistinguishable from a quiet night.
+
+Check what it is doing: `GET /api/v1/health` → `checks.state_writes`, or run
+`scripts/replay_state_gate.py <db>` to see what it would do to an existing
+database (read-only).
 
 **Don't `pip install` anything without `-c constraints.txt`.** A stray install
 that upgrades numpy will break the vision stack at runtime rather than at

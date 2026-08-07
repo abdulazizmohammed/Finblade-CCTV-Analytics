@@ -1148,6 +1148,13 @@ def _dependency_checks() -> dict:
         "last_deleted": _retention["last_deleted"]}
     checks["offline_monitor"] = {"ok": _loop_errors["offline"] == 0,
                                  "errors": _loop_errors["offline"]}
+    # How much of the zone-state history is being dropped as unchanged.
+    #
+    # Never "not ok" — suppression is the intended behaviour — but it has to be
+    # visible. A gate stuck at 100% would silently stop recording history
+    # altogether, and the only symptom would be a report that looks a bit flat
+    # a week later.
+    checks["state_writes"] = dict(svc.state_gate.stats(), ok=True)
     checks["ts"] = now
     return checks
 

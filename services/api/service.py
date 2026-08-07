@@ -4,17 +4,25 @@ All the API's business logic lives here so it is unit-testable without FastAPI,
 Redis, or Postgres. app.py is a thin HTTP adapter over this class.
 """
 
+import os
 import time
 from typing import List, Optional, Tuple
+
+from finblade.emission import DEFAULT_KEEPALIVE, StateWriteGate
 
 from .schema import validate_ingest, validate_zone_state, validate_zones
 from .store import Store
 
 
 class IngestService:
-    def __init__(self, store: Store, bus=None):
+    def __init__(self, store: Store, bus=None, state_gate=None):
         self.store = store
         self.bus = bus  # optional event bus with .publish(evt); None = skip
+        # Write-on-change for zone_state_ts. See finblade/emission.py; set
+        # FINBLADE_STATE_WRITES=always to restore a row per post.
+        self.state_gate = state_gate if state_gate is not None else StateWriteGate(
+            os.environ.get("FINBLADE_STATE_WRITES", "change"),
+            float(os.environ.get("FINBLADE_STATE_KEEPALIVE", DEFAULT_KEEPALIVE) or 0))
 
     # -- POST /api/v1/events/ingest --
     def ingest_event(self, payload: dict) -> Tuple[int, dict]:
@@ -38,10 +46,21 @@ class IngestService:
             site = self.site_for_camera(payload.get("camera_id"))
             if site:
                 payload = dict(payload, site_id=site)
-        self.store.save_zone_state(payload)
-        # 5s zone-state posts are the camera's primary heartbeat.
+        # The live reading is updated on EVERY post; only the history append is
+        # gated. This is what keeps a quiet zone present in /zones/state — that
+        # endpoint reads zone_live and drops anything older than 30 seconds, so
+        # suppressing the live write too would make an unchanging zone vanish
+        # from the dashboard half a minute after it settled.
+        history = self.state_gate.should_write(
+            payload.get("camera_id"), payload["zone_id"],
+            payload.get("occupancy"), payload.get("status"), payload.get("ts"))
+        self.store.save_zone_state(payload, history=history)
+        # 5s zone-state posts are the camera's primary heartbeat. Unconditional:
+        # a suppressed history row is still proof the camera is alive, and
+        # gating this would make every quiet zone trip R-07.
         self.store.mark_camera_seen(payload.get("camera_id"), payload.get("ts"))
-        return 202, {"accepted": True, "zone_id": payload["zone_id"]}
+        return 202, {"accepted": True, "zone_id": payload["zone_id"],
+                     "recorded": history}
 
     # -- history / logs --
     def events_history(self, t0, t1, **f):
@@ -141,11 +160,22 @@ class IngestService:
                                                 limit=5000)
             gaps_by_camera[cam] = offline_intervals(cam_events, t0, t1)
 
+        # A killed worker emits no CAMERA_OFFLINE, so its gap is invisible to
+        # `unknown` above and the last sample would hold across it. The
+        # keepalive is what makes that detectable: with a write guaranteed
+        # every N seconds, a gap materially longer than N means the camera was
+        # not running, so a sample is trusted for twice the interval and the
+        # rest of any longer gap becomes unknown. With the keepalive disabled
+        # there is nothing to measure silence against and the old
+        # hold-indefinitely behaviour is all that is available.
+        keepalive = getattr(self.state_gate, "keepalive_s", 0) or 0
+        max_hold = 2 * keepalive if keepalive > 0 else None
+
         out = {}
         for key, samples in by_zone.items():
             out[key] = time_weighted(samples, t0, t1, self._TW_FIELDS,
                                      unknown=gaps_by_camera.get(key[0], ()),
-                                     prior=priors.get(key))
+                                     prior=priors.get(key), max_hold=max_hold)
         return out
 
     def occupancy_report(self, t0, t1, camera_id=None, zone_id=None, generated_at=None):
@@ -157,22 +187,47 @@ class IngestService:
         by_zone = Counter(a.get("zone_id") for a in alerts if a.get("zone_id"))
         weighted = self.zone_time_weighted(t0, t1, camera_id=camera_id,
                                            zone_id=zone_id)
+        # The averages a caller reads are now the time-weighted ones.
+        #
+        # Step 3 added these alongside the SQL AVG() so the two could be
+        # compared on real data first; they agreed to within 0.003 on six of
+        # eight live zones. Step 4 is what forces the promotion: AVG() over
+        # rows is only correct while every row covers the same five seconds,
+        # and as of this commit they do not. A quiet hour now writes 12
+        # keepalive rows and a busy minute writes one, so averaging rows
+        # equally would over-report the busy minute twelvefold.
+        #
+        # The raw SQL numbers stay, under "sampled", because they are what
+        # every report generated before this commit contains and a reader
+        # comparing across the boundary needs to see both.
         for z in zones:
             z["alert_count"] = by_zone.get(z.get("zone_id"), 0)
-            # Added ALONGSIDE the existing averages, not replacing them. On
-            # today's evenly-spaced data the two agree; keeping both lets that
-            # be verified on real data before step 4 makes writes sparse and
-            # the old one starts being wrong.
             tw = weighted.get((z.get("camera_id"), z.get("zone_id")))
-            if tw:
-                z["time_weighted"] = {
-                    "avg_occupancy": tw["fields"]["occupancy"]["mean"],
-                    "avg_density": tw["fields"]["density"]["mean"],
-                    "avg_capacity_pct": tw["fields"]["capacity_pct"]["mean"],
-                    "peak_occupancy": tw["fields"]["occupancy"]["peak"],
-                    "coverage": tw["coverage"],
-                    "observed_seconds": tw["observed_seconds"],
-                }
+            if not tw:
+                continue
+            z["sampled"] = {k: z.get(k) for k in
+                            ("avg_occupancy", "avg_density", "avg_capacity_pct")}
+            for key, field in (("avg_occupancy", "occupancy"),
+                               ("avg_density", "density"),
+                               ("avg_capacity_pct", "capacity_pct")):
+                mean = tw["fields"][field]["mean"]
+                # None means no observed time carried a value. Keep the sampled
+                # figure rather than blanking the column — a report that shows
+                # nothing where it used to show a number reads as a fault.
+                if mean is not None:
+                    z[key] = mean
+            z["time_weighted"] = {
+                "avg_occupancy": tw["fields"]["occupancy"]["mean"],
+                "avg_density": tw["fields"]["density"]["mean"],
+                "avg_capacity_pct": tw["fields"]["capacity_pct"]["mean"],
+                "peak_occupancy": tw["fields"]["occupancy"]["peak"],
+                "coverage": tw["coverage"],
+                "observed_seconds": tw["observed_seconds"],
+            }
+            # Surfaced at zone level so the CSV and the dashboard can qualify a
+            # figure the camera only half observed, instead of presenting an
+            # average of four hours as if it covered twenty-four.
+            z["coverage"] = tw["coverage"]
         return {
             "from": t0, "to": t1,
             "generated_at": time.time() if generated_at is None else generated_at,

@@ -34,11 +34,20 @@ start)
   if running; then echo "already running (pid $(cat "${PIDFILE}"))"; exit 0; fi
   [ -x "${BIN}" ] || { echo "missing ${BIN}"; exit 1; }
   [ -x .tools/ffmpeg ] || { echo "missing .tools/ffmpeg — run scripts/get_ffmpeg.sh"; exit 1; }
-  nohup "${BIN}" "${CONF}" >"${LOG}" 2>&1 &
+  # setsid, not just nohup.
+  #
+  # nohup only detaches from the terminal; the process stays in the caller's
+  # PROCESS GROUP, so anything that signals the group — a killed wrapper, a
+  # closed automation session — takes the server with it. setsid puts it in its
+  # own session and it survives the shell that launched it.
+  setsid nohup "${BIN}" "${CONF}" >"${LOG}" 2>&1 < /dev/null &
   echo $! > "${PIDFILE}"
-  sleep 2
-  if running; then
-    echo "mediamtx started (pid $(cat "${PIDFILE}"))"
+  for _ in $(seq 20); do
+    ss -ltn 2>/dev/null | grep -q ':8554' && break
+    sleep 0.5
+  done
+  if running && ss -ltn 2>/dev/null | grep -q ':8554'; then
+    echo "mediamtx started (pid $(cat "${PIDFILE}")), listening on 8554"
   else
     echo "mediamtx failed to start:"; tail -20 "${LOG}"; exit 1
   fi

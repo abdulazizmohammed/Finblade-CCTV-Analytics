@@ -45,3 +45,7 @@ models/*.pt
 # the other is a database.
 .pgtest/
 .pgdata/
+
+# Static ffmpeg fetched by scripts/get_ffmpeg.sh — 80 MB binary, not source.
+.tools/
+evidence/rtsp_demo_frame.jpg

@@ -1,0 +1,68 @@
+# mediamtx — replay a local clip as a live RTSP camera for dev testing.
+#
+# Separate from config/mediamtx.yml, which is the human's file and points at
+# /media/cam-vid-*.mp4 inside a container. This one uses host paths and the
+# static ffmpeg in .tools, so it runs on this box with no root and no compose.
+#
+# runOnDemand: ffmpeg is started when a client CONNECTS and stopped 60s after
+# the last one leaves, so nothing transcodes while nobody is watching. That
+# matters here — the source is 1920x1440 at 30fps and encoding it is not free.
+
+logLevel: info
+rtspAddress: :8554
+
+# The default UDP/RTP port is 8000 — the same number the API serves on. They do
+# not actually collide (one is UDP, the other TCP) but two different services
+# on :8000 is a trap for whoever debugs this next, and "is the API up?" should
+# never depend on knowing that distinction. Moved well clear.
+rtpAddress: :18000
+rtcpAddress: :18001
+
+# Everything except RTSP off: the camera worker speaks RTSP, and each of these
+# is another listener with its own port and attack surface. MoQ is on by
+# default and was quietly binding 8892.
+hls: no
+webrtc: no
+rtmp: no
+srt: no
+moq: no
+playback: no
+api: no
+metrics: no
+pprof: no
+
+paths:
+  # The clip the operator asked for, re-encoded to something a CPU detector can
+  # keep up with.
+  #
+  # -stream_loop -1  loop forever, so the camera never goes offline
+  # -re              read at native frame rate; without it ffmpeg pushes the
+  #                  whole file as fast as it can and the "camera" runs at
+  #                  hundreds of fps for a few seconds, then ends
+  # -vf scale=1280:-2  1920x1440 is 2.8 Mpx per frame. YOLO resizes to 640
+  #                  anyway, so full resolution costs encode and decode time
+  #                  for detail that is thrown away. -2 keeps the aspect ratio
+  #                  and an even height, which libx264 requires.
+  # -g 30            one keyframe a second, so a joining client gets a picture
+  #                  within a second instead of waiting for the next GOP
+  # -an              no audio; nothing downstream reads it
+  cam-demo:
+    runOnDemand: >
+      ./.tools/ffmpeg -re -stream_loop -1
+      -i ./media/1903279-uhd_1920_1440_30fps.mp4
+      -vf scale=1280:-2 -r 15
+      -c:v libx264 -preset veryfast -tune zerolatency -g 30 -pix_fmt yuv420p
+      -an -f rtsp rtsp://127.0.0.1:8554/cam-demo
+    runOnDemandRestart: yes
+    runOnDemandCloseAfter: 60s
+
+  # Same clip at full resolution, for checking whether detection quality is
+  # limited by the downscale above. Expect a much lower frame rate on CPU.
+  cam-demo-uhd:
+    runOnDemand: >
+      ./.tools/ffmpeg -re -stream_loop -1
+      -i ./media/1903279-uhd_1920_1440_30fps.mp4
+      -c:v libx264 -preset veryfast -tune zerolatency -g 30 -pix_fmt yuv420p
+      -an -f rtsp rtsp://127.0.0.1:8554/cam-demo-uhd
+    runOnDemandRestart: yes
+    runOnDemandCloseAfter: 60s

@@ -435,6 +435,36 @@ class SQLiteStore(Store):
                 "SELECT zone_id,ts,occupancy,density,status FROM zone_state_ts "
                 "WHERE zone_id=? AND ts BETWEEN ? AND ? ORDER BY ts", (zone_id, t0, t1)))
 
+    _STATE_ROW_COLS = ("zone_id,camera_id,zone_name,ts,occupancy,density,"
+                       "capacity_pct,status")
+
+    def zone_state_rows(self, t0: float, t1: float, camera_id=None,
+                        zone_id=None) -> List[dict]:
+        q = (f"SELECT {self._STATE_ROW_COLS} FROM zone_state_ts "
+             "WHERE ts BETWEEN ? AND ?")
+        p: list = [t0, t1]
+        if camera_id:
+            q += " AND camera_id=?"; p.append(camera_id)
+        if zone_id:
+            q += " AND zone_id=?"; p.append(zone_id)
+        q += " ORDER BY ts"
+        with self._lock:
+            return _row(self._conn.execute(q, p))
+
+    def zone_state_prior(self, t0: float, camera_id=None, zone_id=None) -> List[dict]:
+        # MAX(id) per zone among rows at or before t0. Grouping on both columns
+        # for the usual reason: zone ids repeat across cameras.
+        q = (f"SELECT {self._STATE_ROW_COLS} FROM zone_state_ts WHERE id IN "
+             "(SELECT MAX(id) FROM zone_state_ts WHERE ts <= ?")
+        p: list = [t0]
+        if camera_id:
+            q += " AND camera_id=?"; p.append(camera_id)
+        if zone_id:
+            q += " AND zone_id=?"; p.append(zone_id)
+        q += " GROUP BY zone_id, camera_id)"
+        with self._lock:
+            return _row(self._conn.execute(q, p))
+
     def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
                     event_type=None, person_ref=None, limit: int = 500) -> List[dict]:
         q = ("SELECT event_id,event_type,camera_id,site_id,zone_id,zone_from,zone_to,"

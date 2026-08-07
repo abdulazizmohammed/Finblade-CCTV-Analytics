@@ -102,6 +102,52 @@ class IngestService:
     def occupancy_stats(self, t0, t1, **f):
         return self.store.zone_state_stats(t0, t1, **f)
 
+    _TW_FIELDS = ("occupancy", "density", "capacity_pct")
+
+    def zone_time_weighted(self, t0, t1, camera_id=None, zone_id=None):
+        """Time-weighted stats per (camera_id, zone_id), keyed by that pair.
+
+        The SQL AVG() in zone_state_stats weights every row equally, which is
+        only correct while rows arrive on a fixed cadence. Once writes are
+        sparse — step 4 — one row can stand for four seconds and the next for
+        four hours, and averaging rows answers a different question.
+
+        Camera downtime is excluded from the denominator rather than counted as
+        empty, and reported as `coverage`. Under sparse writes a gap in the
+        samples means "nothing changed"; a gap in camera liveness means "we do
+        not know". They are indistinguishable in zone_state_ts, which is why
+        the outage windows come from the event log instead.
+        """
+        from finblade.timeweight import offline_intervals, time_weighted
+
+        rows = self.store.zone_state_rows(t0, t1, camera_id=camera_id,
+                                          zone_id=zone_id)
+        priors = {(r.get("camera_id"), r.get("zone_id")): r
+                  for r in self.store.zone_state_prior(t0, camera_id=camera_id,
+                                                       zone_id=zone_id)}
+        by_zone = {}
+        for row in rows:
+            by_zone.setdefault((row.get("camera_id"), row.get("zone_id")),
+                               []).append(row)
+        for key in priors:
+            by_zone.setdefault(key, [])
+
+        # Outages are per camera, so fetch once per camera rather than per zone.
+        gaps_by_camera = {}
+        for cam, _zone in by_zone:
+            if cam in gaps_by_camera:
+                continue
+            cam_events = self.store.list_events(t0 - 86400.0, t1, camera_id=cam,
+                                                limit=5000)
+            gaps_by_camera[cam] = offline_intervals(cam_events, t0, t1)
+
+        out = {}
+        for key, samples in by_zone.items():
+            out[key] = time_weighted(samples, t0, t1, self._TW_FIELDS,
+                                     unknown=gaps_by_camera.get(key[0], ()),
+                                     prior=priors.get(key))
+        return out
+
     def occupancy_report(self, t0, t1, camera_id=None, zone_id=None, generated_at=None):
         """Windowed occupancy report: per-zone stats enriched with alert counts,
         plus totals. Shared by the JSON/CSV endpoints and the R-08 scheduler."""
@@ -109,8 +155,24 @@ class IngestService:
         zones = self.store.zone_state_stats(t0, t1, camera_id=camera_id, zone_id=zone_id)
         alerts = self.store.list_alerts_history(t0, t1, camera_id=camera_id, limit=5000)
         by_zone = Counter(a.get("zone_id") for a in alerts if a.get("zone_id"))
+        weighted = self.zone_time_weighted(t0, t1, camera_id=camera_id,
+                                           zone_id=zone_id)
         for z in zones:
             z["alert_count"] = by_zone.get(z.get("zone_id"), 0)
+            # Added ALONGSIDE the existing averages, not replacing them. On
+            # today's evenly-spaced data the two agree; keeping both lets that
+            # be verified on real data before step 4 makes writes sparse and
+            # the old one starts being wrong.
+            tw = weighted.get((z.get("camera_id"), z.get("zone_id")))
+            if tw:
+                z["time_weighted"] = {
+                    "avg_occupancy": tw["fields"]["occupancy"]["mean"],
+                    "avg_density": tw["fields"]["density"]["mean"],
+                    "avg_capacity_pct": tw["fields"]["capacity_pct"]["mean"],
+                    "peak_occupancy": tw["fields"]["occupancy"]["peak"],
+                    "coverage": tw["coverage"],
+                    "observed_seconds": tw["observed_seconds"],
+                }
         return {
             "from": t0, "to": t1,
             "generated_at": time.time() if generated_at is None else generated_at,

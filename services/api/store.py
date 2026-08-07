@@ -50,6 +50,27 @@ class Store:
     def latest_zone_states(self) -> List[dict]: raise NotImplementedError
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]: raise NotImplementedError
 
+    def zone_state_rows(self, t0: float, t1: float, camera_id: str = None,
+                        zone_id: str = None) -> List[dict]:
+        """Raw samples in a window, for time-weighted aggregation.
+
+        Distinct from zone_state_range, which takes a bare zone_id — that is
+        ambiguous across cameras, since ZONE-01 exists on each of them as a
+        different area.
+        """
+        return []
+
+    def zone_state_prior(self, t0: float, camera_id: str = None,
+                         zone_id: str = None) -> List[dict]:
+        """The last sample at or before t0, per zone.
+
+        A zone whose most recent write was yesterday was not unknown at the
+        window's start — it was whatever that write said. Without this the
+        opening segment of every window is silently dropped, which on sparse
+        data is most of it.
+        """
+        return []
+
     # History + camera-liveness (default no-ops so any backend is usable).
     def mark_camera_seen(self, camera_id: str, ts: float, site_id: str = None) -> None: pass
     def list_cameras(self) -> List[dict]: return []
@@ -207,6 +228,29 @@ class InMemoryStore(Store):
     def zone_state_range(self, zone_id: str, t0: float, t1: float) -> List[dict]:
         return [s for s in self._zone_ts
                 if s["zone_id"] == zone_id and t0 <= s["ts"] <= t1]
+
+    def zone_state_rows(self, t0: float, t1: float, camera_id: str = None,
+                        zone_id: str = None) -> List[dict]:
+        rows = [dict(s) for s in self._zone_ts
+                if t0 <= float(s.get("ts") or 0) <= t1
+                and (camera_id is None or s.get("camera_id") == camera_id)
+                and (zone_id is None or s.get("zone_id") == zone_id)]
+        return sorted(rows, key=lambda r: float(r.get("ts") or 0))
+
+    def zone_state_prior(self, t0: float, camera_id: str = None,
+                         zone_id: str = None) -> List[dict]:
+        latest: Dict[Tuple[str, str], dict] = {}
+        for s in self._zone_ts:
+            if float(s.get("ts") or 0) > t0:
+                continue
+            if camera_id is not None and s.get("camera_id") != camera_id:
+                continue
+            if zone_id is not None and s.get("zone_id") != zone_id:
+                continue
+            key = (s.get("camera_id"), s.get("zone_id"))
+            if key not in latest or float(s["ts"]) >= float(latest[key]["ts"]):
+                latest[key] = dict(s)
+        return list(latest.values())
 
     def delete_before(self, cutoff_ts: float) -> Dict[str, int]:
         before_states, before_events = len(self._zone_ts), len(self._events)

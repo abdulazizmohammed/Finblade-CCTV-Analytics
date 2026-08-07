@@ -38,3 +38,10 @@ auto.key
 
 # Model weights — fetched via scripts/get_weights.py, not committed
 models/*.pt
+
+# Local Postgres test rig (scripts/pg_local_install.sh). .pgtest holds the
+# server binaries pip fetched; .pgdata is a live cluster with real migrated
+# data in it. Neither belongs in git — one is ~100 MB of vendored binaries,
+# the other is a database.
+.pgtest/
+.pgdata/

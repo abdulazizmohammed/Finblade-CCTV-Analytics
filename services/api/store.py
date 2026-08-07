@@ -92,6 +92,9 @@ class InMemoryStore(Store):
     def __init__(self):
         self._events: List[dict] = []
         self._zone_ts: List[dict] = []
+        # Current state per (camera_id, zone_id) — the in-memory twin of the
+        # SQLite zone_live table. Constant size; history lives in _zone_ts.
+        self._zone_live: Dict[Tuple[str, str], dict] = {}
         self._alerts: Dict[str, dict] = {}
         self._alert_seq = 0
         self._cameras: Dict[str, dict] = {}
@@ -103,7 +106,15 @@ class InMemoryStore(Store):
         self._events.append(dict(evt))
 
     def save_zone_state(self, state: dict) -> None:
-        self._zone_ts.append(dict(state))
+        row = dict(state)
+        self._zone_ts.append(row)
+        # Out-of-order writes must not move the live state backwards: a delayed
+        # post from a slow camera arriving after a newer one would otherwise
+        # overwrite the newer reading.
+        key = (row.get("camera_id"), row["zone_id"])
+        current = self._zone_live.get(key)
+        if current is None or float(row.get("ts") or 0) >= float(current.get("ts") or 0):
+            self._zone_live[key] = row
 
     def save_alert(self, alert: dict) -> str:
         self._alert_seq += 1
@@ -167,6 +178,19 @@ class InMemoryStore(Store):
         return False
 
     def latest_zone_states(self) -> List[dict]:
+        """Current state per zone, from the live map rather than the history.
+
+        Mirrors the SQLite store's zone_live table so both backends answer the
+        same question the same way — a divergence there would make the suite
+        green while production behaved differently. It also means pruning
+        history can no longer delete a zone's current reading.
+        """
+        return _fresh_zones([dict(s) for s in self._zone_live.values()])
+
+    def _latest_from_history(self) -> List[dict]:
+        # Retained for the migration test: this is what latest_zone_states did
+        # before zone_live existed, and the two must agree on the same data.
+        #
         # Keyed on (camera_id, zone_id), NOT zone_id alone. Zone ids are only
         # unique within a camera — the editor numbers each camera's zones from
         # ZONE-01 — so keying on the id alone makes two cameras' zones overwrite

@@ -57,6 +57,26 @@ CREATE TABLE IF NOT EXISTS reports(
   from_ts REAL, to_ts REAL, peak_occupancy INTEGER, total_alerts INTEGER, payload TEXT);
 CREATE INDEX IF NOT EXISTS ix_reports_gen ON reports(generated_at);
 
+-- Current state, one row per zone, overwritten in place. Separate from the
+-- zone_state_ts history on purpose.
+--
+-- "What is happening now" and "what happened over time" are different questions
+-- and were being answered from the same table. Reading the current state meant
+-- SELECT ... WHERE id IN (SELECT MAX(id) ... GROUP BY zone_id, camera_id) across
+-- the whole history — 1.9s against 1.6M rows until a covering index was added,
+-- and that cost landed in the event loop on a query the dashboard runs twice a
+-- second. Here it is a handful of rows and a full scan is free.
+--
+-- It also means current state survives retention: pruning zone_state_ts can no
+-- longer delete the row a zone's live reading depends on.
+CREATE TABLE IF NOT EXISTS zone_live(
+  camera_id TEXT NOT NULL, zone_id TEXT NOT NULL, site_id TEXT,
+  zone_name TEXT, zone_type TEXT, restricted INTEGER, ts REAL,
+  occupancy INTEGER, density REAL, capacity_pct REAL,
+  peak_occupancy INTEGER, avg_occupancy REAL, trend TEXT, extra TEXT,
+  inflow REAL, outflow REAL, status TEXT,
+  PRIMARY KEY (camera_id, zone_id));
+
 -- Where the FinBlade forwarder had got to. Without this the cursor lives only
 -- in the process: restart during a FinBlade outage and the backlog is skipped
 -- rather than replayed, which is the exact case the design exists to survive.
@@ -123,6 +143,23 @@ class SQLiteStore(Store):
         if "site_id" not in zst:
             self._conn.execute("ALTER TABLE zone_state_ts ADD COLUMN site_id TEXT")
 
+        # Seed zone_live from history on the upgrade that introduces it.
+        # Without this, an existing deployment shows no live zones until every
+        # camera next reports — and on a box where the workers are stopped,
+        # indefinitely. Runs once: after the first write the table is non-empty.
+        empty = self._conn.execute(
+            "SELECT COUNT(*) FROM zone_live").fetchone()[0] == 0
+        if empty:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO zone_live(camera_id,zone_id,site_id,"
+                "zone_name,zone_type,restricted,ts,occupancy,density,capacity_pct,"
+                "peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status) "
+                "SELECT COALESCE(camera_id,''),zone_id,site_id,zone_name,zone_type,"
+                "restricted,ts,occupancy,density,capacity_pct,peak_occupancy,"
+                "avg_occupancy,trend,extra,inflow,outflow,status "
+                "FROM zone_state_ts WHERE id IN "
+                "(SELECT MAX(id) FROM zone_state_ts GROUP BY zone_id, camera_id)")
+
     # -- writes -------------------------------------------------------------
     def save_event(self, evt: dict) -> None:
         with self._lock:
@@ -152,6 +189,37 @@ class SQLiteStore(Store):
                  s.get("trend", "flat"), json.dumps(extra),
                  float(s.get("inflow_per_min", 0)), float(s.get("outflow_per_min", 0)),
                  s.get("status"), s.get("site_id")))
+            # Same values, overwritten in place.
+            #
+            # ON CONFLICT ... WHERE rather than INSERT OR REPLACE, so a delayed
+            # post from a slow camera arriving after a newer one cannot move the
+            # live reading backwards. The old MAX(id) query took the last row
+            # INSERTED, which had exactly that flaw; InMemoryStore already
+            # compared timestamps, so the two backends disagreed. Both now
+            # take the newest by ts.
+            self._conn.execute(
+                "INSERT INTO zone_live(camera_id,zone_id,site_id,"
+                "zone_name,zone_type,restricted,ts,occupancy,density,capacity_pct,"
+                "peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(camera_id,zone_id) DO UPDATE SET "
+                "site_id=excluded.site_id, zone_name=excluded.zone_name, "
+                "zone_type=excluded.zone_type, restricted=excluded.restricted, "
+                "ts=excluded.ts, occupancy=excluded.occupancy, "
+                "density=excluded.density, capacity_pct=excluded.capacity_pct, "
+                "peak_occupancy=excluded.peak_occupancy, "
+                "avg_occupancy=excluded.avg_occupancy, trend=excluded.trend, "
+                "extra=excluded.extra, inflow=excluded.inflow, "
+                "outflow=excluded.outflow, status=excluded.status "
+                "WHERE excluded.ts >= zone_live.ts",
+                (s.get("camera_id") or "", s["zone_id"], s.get("site_id"),
+                 s.get("zone_name"), s.get("zone_type"),
+                 1 if s.get("restricted") else 0, float(s["ts"]),
+                 int(s["occupancy"]), float(s["density"]), float(s["capacity_pct"]),
+                 int(s.get("peak_occupancy", s["occupancy"])),
+                 float(s.get("avg_occupancy", 0)), s.get("trend", "flat"),
+                 json.dumps(extra), float(s.get("inflow_per_min", 0)),
+                 float(s.get("outflow_per_min", 0)), s.get("status")))
             self._conn.commit()
 
     def save_alert(self, a: dict) -> str:
@@ -337,16 +405,17 @@ class SQLiteStore(Store):
                 "occupancy,density,"
                 "capacity_pct,peak_occupancy,avg_occupancy,trend,extra,"
                 "inflow AS inflow_per_min,outflow AS outflow_per_min,status "
-                # GROUP BY zone_id AND camera_id. Zone ids are unique only
-                # within a camera - the editor numbers each camera's zones from
-                # ZONE-01 - so grouping on zone_id alone collapsed two cameras'
-                # zones into one row and returned whichever wrote last.
-                # Measured on a six-camera site: seven zones existed, every
-                # response returned five, and the pairs sharing an id alternated
-                # between requests. Site occupancy therefore omitted two zones
-                # at all times, and which two changed constantly.
-                "FROM zone_state_ts WHERE id IN "
-                "(SELECT MAX(id) FROM zone_state_ts GROUP BY zone_id, camera_id)")
+                # One row per zone, so no grouping and no scan of history.
+                #
+                # This used to read MAX(id) ... GROUP BY zone_id, camera_id over
+                # zone_state_ts. Keying on both columns was load-bearing and
+                # still is, in the zone_live primary key: zone ids are unique
+                # only within a camera — the editor numbers each camera's zones
+                # from ZONE-01 — so keying on zone_id alone made two cameras'
+                # zones overwrite each other. Measured on a six-camera site:
+                # seven zones existed, five came back, and which pair collided
+                # changed between requests.
+                "FROM zone_live")
             out = _row(cur)
         for r in out:
             r["restricted"] = bool(r.get("restricted"))

@@ -9,6 +9,7 @@ import time
 from typing import List, Optional, Tuple
 
 from finblade.emission import DEFAULT_KEEPALIVE, StateWriteGate
+from finblade.events import FACILITY_ENTRY, FACILITY_EXIT, new_event
 from finblade.presence import (
     ADMIT, DISCHARGE, DoorPolicy, FacilityRoster, apply_event,
 )
@@ -95,6 +96,10 @@ class IngestService:
         # apply_event expects `ts`; the wire envelope calls it `timestamp`.
         view = dict(evt)
         view["ts"] = ts
+        ref = evt.get("person_ref")
+        # Which doorway this is, captured BEFORE the crossing resolves: for a
+        # two-way door the pending crossing knows it, and resolving pops it.
+        door = self.roster.crossing_zone(ref) if ref else None
         try:
             action = apply_event(self.roster, view, self.door_policy(ts))
         except Exception:                                   # noqa: BLE001
@@ -102,11 +107,40 @@ class IngestService:
             # camera's event or stop the pipeline.
             return None
         if action in (ADMIT, DISCHARGE):
+            self._emit_facility_event(evt, action,
+                                      door or view.get("zone_to")
+                                      or view.get("zone_from"))
             self._flush_presence(force=True)
         elif action:
             self._presence_dirty = True
             self._flush_presence()
         return action
+
+    def _emit_facility_event(self, source: dict, action: str,
+                             door_zone_id) -> None:
+        """Record the building crossing itself, not just the zone move.
+
+        Without this a facility entry is only inferable by replaying every zone
+        event through the door policy — so "18:02:14 entered facility" could not
+        appear in a person's history, which is exactly what the movement history
+        is asked for. The resulting occupancy rides along so the figure can be
+        reconstructed from the event stream alone.
+        """
+        etype = FACILITY_ENTRY if action == ADMIT else FACILITY_EXIT
+        evt = new_event(etype, source.get("camera_id") or "",
+                        source.get("site_id") or "",
+                        source.get("timestamp") or time.time(),
+                        door_zone_id=str(door_zone_id or ""),
+                        person_ref=source.get("person_ref"),
+                        occupancy=self.roster.occupancy())
+        if source.get("track_id") is not None:
+            evt["track_id"] = source["track_id"]
+        try:
+            self.store.save_event(evt)
+            if self.bus is not None:
+                self.bus.publish(evt)
+        except Exception:                                   # noqa: BLE001
+            return
 
     def _flush_presence(self, force: bool = False, now: float = None) -> None:
         now = time.time() if now is None else now

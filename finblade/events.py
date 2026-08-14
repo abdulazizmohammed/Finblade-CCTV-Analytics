@@ -25,11 +25,21 @@ CAMERA_HEARTBEAT = "CAMERA_HEARTBEAT"
 CAMERA_ONLINE = "CAMERA_ONLINE"
 CAMERA_OFFLINE = "CAMERA_OFFLINE"
 CAMERA_RECOVERED = "CAMERA_RECOVERED"
+# Movement that broke a declared one-way route, and several distinct people
+# crossing one boundary at once. Both are derived from the confirmed transition
+# stream rather than from video — see finblade/flowrules.py.
+WRONG_DIRECTION = "WRONG_DIRECTION"
+GROUP_CROSSING = "GROUP_CROSSING"
+# Someone crossed the facility boundary. Distinct from ZONE_ENTRY/EXIT, which
+# describe a polygon; these describe the building.
+FACILITY_ENTRY = "FACILITY_ENTRY"
+FACILITY_EXIT = "FACILITY_EXIT"
 
 EVENT_TYPES = {
     ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE, CAPACITY_WARNING,
     RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT, LOITERING_START, LOITERING_END,
     CAMERA_HEARTBEAT, CAMERA_ONLINE, CAMERA_OFFLINE, CAMERA_RECOVERED,
+    WRONG_DIRECTION, GROUP_CROSSING, FACILITY_ENTRY, FACILITY_EXIT,
 }
 
 # Per-type required payload keys and their python types.
@@ -48,6 +58,13 @@ _SCHEMA = {
     CAMERA_ONLINE: {},
     CAMERA_OFFLINE: {"last_seen": _NUM},
     CAMERA_RECOVERED: {},
+    WRONG_DIRECTION: {"zone_from": str, "zone_to": str, "person_ref": str},
+    # count is DISTINCT people, not crossings.
+    GROUP_CROSSING: {"zone_id": str, "count": int, "window_s": _NUM},
+    # door_zone_id is which boundary they crossed; occupancy is the facility
+    # figure AFTER the crossing, so the series is reconstructable from events.
+    FACILITY_ENTRY: {"door_zone_id": str, "person_ref": str, "occupancy": int},
+    FACILITY_EXIT: {"door_zone_id": str, "person_ref": str, "occupancy": int},
 }
 
 # Fields that are type-checked WHEN PRESENT but never required.
@@ -78,7 +95,7 @@ _OPTIONAL_SCHEMA = {
     CAMERA_RECOVERED: {"zone_occupancy": dict},
 }
 
-_NON_NEGATIVE = ("occupancy", "density", "occupancy_from", "density_from")
+_NON_NEGATIVE = ("occupancy", "density", "occupancy_from", "density_from", "count")
 
 # Fields valid on ANY person-scoped event, checked when present.
 #

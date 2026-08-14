@@ -205,6 +205,52 @@ class TestPersistence(FacilityCase):
         self.assertEqual(svc2.facility_state(now=self.t)["occupancy"], 0)
 
 
+class TestFacilityEventsReachHistory(FacilityCase):
+    """REQ-31 — 'entered facility' must be a queryable event, not an inference.
+
+    Without these the only record of a building crossing is a zone transition
+    that happens to touch a door, so a person's movement history could never
+    show the line the requirement asks for.
+    """
+
+    def _facility_events(self):
+        rows = self.store.list_events(0, 9e12, limit=500)
+        return [r for r in rows
+                if r["event_type"] in ("FACILITY_ENTRY", "FACILITY_EXIT")]
+
+    def test_entry_and_exit_are_recorded(self):
+        self.walk_in("pr_1")
+        self.walk_out("pr_1")
+        evs = sorted(self._facility_events(), key=lambda e: e["ts"])
+        self.assertEqual([e["event_type"] for e in evs],
+                         ["FACILITY_ENTRY", "FACILITY_EXIT"])
+
+    def test_the_event_names_the_door_and_the_resulting_occupancy(self):
+        self.walk_in("pr_1")
+        self.walk_in("pr_2")
+        evs = sorted(self._facility_events(), key=lambda e: e["ts"])
+        self.assertEqual(evs[0]["door_zone_id"], "MAIN-DOOR")
+        # Occupancy after each crossing, so the series is reconstructable from
+        # the event stream without replaying the door policy.
+        self.assertEqual([e["occupancy"] for e in evs], [1, 2])
+
+    def test_a_persons_history_can_be_filtered_to_their_crossings(self):
+        self.walk_in("pr_1")
+        self.walk_in("pr_2")
+        ref = self._anon("pr_1")
+        mine = self.store.list_events(0, 9e12, person_ref=ref, limit=500)
+        crossings = [e for e in mine if e["event_type"].startswith("FACILITY_")]
+        self.assertEqual(len(crossings), 1)
+
+    def test_no_facility_event_when_nothing_crossed(self):
+        self.walk_in("pr_1")
+        before = len(self._facility_events())
+        self.post(ZONE_TRANSITION, "pr_1", zone_from="LOBBY", zone_to="MAIN-DOOR")
+        self.post(ZONE_TRANSITION, "pr_1", zone_from="MAIN-DOOR", zone_to="LOBBY")
+        self.assertEqual(len(self._facility_events()), before,
+                         "turning back at the door is not a crossing")
+
+
 class TestDoorPolicyFromZones(FacilityCase):
     def test_typing_a_zone_as_a_door_takes_effect_immediately(self):
         # Start with the doorway as ordinary floor: the same walk is just two

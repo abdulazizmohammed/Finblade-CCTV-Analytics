@@ -64,9 +64,12 @@ from finblade.debounce import BoundaryDebouncer          # noqa: E402
 from finblade.emission import DensityUpdateGate          # noqa: E402
 from finblade.events import (                            # noqa: E402
     CAMERA_HEARTBEAT, CAMERA_OFFLINE, CAMERA_ONLINE, CAMERA_RECOVERED,
-    CAPACITY_WARNING, DENSITY_UPDATE, LOITERING_END, LOITERING_START,
-    RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
-    ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, new_event,
+    CAPACITY_WARNING, DENSITY_UPDATE, GROUP_CROSSING, LOITERING_END,
+    LOITERING_START, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
+    WRONG_DIRECTION, ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, new_event,
+)
+from finblade.flowrules import (                          # noqa: E402
+    DirectionPolicy, GroupCrossingDetector, WrongWayDetector,
 )
 from finblade.geometry import foot_point                 # noqa: E402
 from finblade.identity import PersonRefHasher            # noqa: E402
@@ -74,7 +77,7 @@ from finblade.metrics import (                           # noqa: E402
     DwellTracker, FlowCounter, ZoneStateAggregator, ZoneStats, density_per_sqm,
     capacity_pct, density_status,
 )
-from finblade.rules import RuleEngine                    # noqa: E402
+from finblade.rules import SEV_AMBER, Alert, RuleEngine  # noqa: E402
 from finblade.tracking import TrackReaper                # noqa: E402
 from finblade.tracks import TrackRegistry                # noqa: E402
 from finblade.zones import in_ignored_region, zone_of        # noqa: E402
@@ -581,6 +584,19 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     log.info("DENSITY_UPDATE emission: %s", density_gate.mode)
     eng = RuleEngine()
     hasher = PersonRefHasher()
+    # Direction and group rules read the confirmed transition stream, so they
+    # inherit the boundary debounce for free: jitter never reaches them.
+    wrongway = WrongWayDetector(DirectionPolicy.from_zones(
+        [z.to_dict() for z in cfg.zones]))
+    group_rule = GroupCrossingDetector()
+    group_cfg = {z.zone_id: {"threshold": z.group_threshold,
+                             "window_s": z.group_window_s}
+                 for z in cfg.zones if getattr(z, "group_threshold", 0)}
+    occ_threshold = {z.zone_id: z.occupancy_threshold for z in cfg.zones
+                     if getattr(z, "occupancy_threshold", 0)}
+    if wrongway.policy.policed_pairs():
+        log.info("camera %s: one-way routes policed: %s", cfg.camera_id,
+                 ", ".join(f"{a}->{b}" for a, b in wrongway.policy.policed_pairs()))
     # Cross-camera identity. Local ByteTrack ids mean nothing outside this
     # process, so the API resolves them to a shared global_ref. If the weights
     # are missing this disables itself loudly and the rest of the pipeline is
@@ -853,6 +869,18 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                         # nearly all of them.
                         flow.record_exit(old, vnow)
                         flow.record_entry(confirmed, vnow)
+                        # Wrong way (REQ-23): only pairs an operator declared.
+                        wv = wrongway.check(pr, old, confirmed, vnow)
+                        if wv:
+                            pending_events.append(new_event(
+                                WRONG_DIRECTION, cfg.camera_id, cfg.site_id, vnow,
+                                zone_from=old, zone_to=confirmed, **who))
+                            pending_alerts.append(Alert(
+                                "R-10", SEV_AMBER,
+                                f"wrong-way movement {old} -> {confirmed} "
+                                f"(allowed {wv['allowed_direction']})",
+                                vnow, zone_id=confirmed, person_ref=pr,
+                                camera_id=cfg.camera_id).as_dict())
                     elif confirmed:
                         pending_events.append(new_event(
                             ZONE_ENTRY, cfg.camera_id, cfg.site_id, vnow,
@@ -886,6 +914,22 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                             zone_id=old, dwell_time=dwell.dwell(tid, vnow), **who))
                         loiter_started.discard((pr, old))
                         eng.reset_loiter(pr, old)
+                    # Group crossing (REQ-24): distinct people arriving in one
+                    # zone inside a window. Counted on ARRIVAL, so it covers a
+                    # transition and a first entry alike.
+                    if confirmed in group_cfg:
+                        grp = group_rule.record(confirmed, pr, vnow, group_cfg)
+                        if grp:
+                            pending_events.append(new_event(
+                                GROUP_CROSSING, cfg.camera_id, cfg.site_id, vnow,
+                                zone_id=confirmed, count=grp["count"],
+                                window_s=grp["window_s"]))
+                            pending_alerts.append(Alert(
+                                "R-11", SEV_AMBER,
+                                f"{grp['count']} people entered {confirmed} "
+                                f"within {grp['window_s']:.0f}s",
+                                vnow, zone_id=confirmed,
+                                camera_id=cfg.camera_id).as_dict())
                     prev_zone[tid] = confirmed
                 d = dwell.update(tid, confirmed, vnow)
                 # Consolidated per-track record (age/zones/dwell/confidence) for
@@ -1039,6 +1083,14 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     "status": zstatus,
                     "ts": vnow, **roll,
                 })
+                # Head-count threshold (REQ-21). Independent of area and
+                # capacity, so it works in a small space that has neither
+                # measured accurately.
+                if z.zone_id in occ_threshold:
+                    oa = eng.evaluate_occupancy(z.zone_id, occ,
+                                                occ_threshold[z.zone_id], vnow)
+                    if oa:
+                        pending_alerts.append(oa.as_dict())
                 for al in eng.evaluate_zone(z.zone_id, dens, cap_pct, vnow,
                                             warning_on=z.warning_density,
                                             critical_on=z.critical_density):

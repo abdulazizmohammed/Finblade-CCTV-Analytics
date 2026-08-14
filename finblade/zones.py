@@ -61,6 +61,18 @@ class Zone:
     adjacency_list: List[str] = field(default_factory=list)
     colour: Optional[str] = None
     enabled: bool = True
+    # Zones a person may arrive FROM. Declaring any makes the reverse of each a
+    # wrong-way violation; leaving it empty leaves the zone unpoliced, which is
+    # right for the ordinary two-way spaces that make up most of a building.
+    allowed_from: List[str] = field(default_factory=list)
+    # Alert above this many PEOPLE, independent of area or capacity. 0 disables.
+    # Density and capacity rules need a measured area or a configured maximum
+    # before they mean anything; a head count does not, which is why a small
+    # restricted space is usually best policed this way.
+    occupancy_threshold: int = 0
+    # Distinct people crossing INTO this zone within group_window_s. 0 disables.
+    group_threshold: int = 0
+    group_window_s: float = 3.0
 
     def contains(self, point: Point) -> bool:
         return point_in_polygon(point, self.polygon)
@@ -83,6 +95,10 @@ class Zone:
             "critical_density": self.critical_density,
             "loitering_threshold_sec": self.loitering_threshold_sec,
             "adjacency_list": list(self.adjacency_list),
+            "allowed_from": list(self.allowed_from),
+            "occupancy_threshold": self.occupancy_threshold,
+            "group_threshold": self.group_threshold,
+            "group_window_s": self.group_window_s,
             "colour": self.colour,
             "enabled": self.enabled,
             "polygon": [[x, y] for x, y in self.polygon],
@@ -128,6 +144,10 @@ def zone_from_dict(d: dict, frame_width: float = None, frame_height: float = Non
         critical_density=float(d.get("critical_density", 4.0)),
         loitering_threshold_sec=float(d.get("loitering_threshold_sec", 30.0)),
         adjacency_list=list(d.get("adjacency_list", []) or []),
+        allowed_from=[str(z) for z in (d.get("allowed_from") or []) if z],
+        occupancy_threshold=int(d.get("occupancy_threshold", 0) or 0),
+        group_threshold=int(d.get("group_threshold", 0) or 0),
+        group_window_s=float(d.get("group_window_s", 3.0) or 3.0),
         colour=d.get("colour"),
         enabled=bool(d.get("enabled", True)),
     )

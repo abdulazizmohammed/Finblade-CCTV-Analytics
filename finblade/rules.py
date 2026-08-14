@@ -148,6 +148,7 @@ class RuleEngine:
         self._amber: Dict[str, HysteresisLatch] = {}
         self._red: Dict[str, HysteresisLatch] = {}
         self._cap: Dict[str, HysteresisLatch] = {}
+        self._occ: Dict[str, HysteresisLatch] = {}   # R-09 head-count threshold
         self._loiter_fired: set = set()      # (person_ref, zone_id)
         self._intrusion_active: set = set()  # (person_ref, zone_id)
         self.camera = CameraOfflineMonitor(self.t.offline_seconds)
@@ -211,6 +212,35 @@ class RuleEngine:
             alerts.append(Alert("R-03", SEV_INFO, f"capacity pressure cleared in {zone_id}",
                                 now, zone_id=zone_id, kind="CLEAR"))
         return alerts
+
+    # -- head-count threshold R-09 --
+    def evaluate_occupancy(self, zone_id: str, occupancy: int, threshold: float,
+                           now: float, hysteresis: float = 0.8) -> Optional[Alert]:
+        """Alert when a zone holds more than ``threshold`` PEOPLE.
+
+        Distinct from R-01/R-02, which fire on people per square metre, and from
+        R-03, which fires on a percentage of a configured capacity. Both of
+        those need the zone's area or capacity to be measured correctly before
+        they mean anything, and for a small restricted space the operator's rule
+        is usually simpler than either: "alert me if more than two people are in
+        there". This is that rule, so it needs no survey to be trustworthy.
+
+        Same hysteresis and debounce as every other rule, so an occupancy
+        hovering on the threshold produces one alert rather than a stream.
+        """
+        if not zone_id or threshold is None or threshold <= 0:
+            return None
+        latch = self._latch(self._occ, zone_id, float(threshold),
+                            float(threshold) * hysteresis)
+        verdict = latch.update(float(occupancy), now)
+        if verdict == "FIRE":
+            return Alert("R-09", SEV_AMBER,
+                         f"{int(occupancy)} people in {zone_id} "
+                         f"(threshold {int(threshold)})", now, zone_id=zone_id)
+        if verdict == "CLEAR":
+            return Alert("R-09", SEV_INFO, f"occupancy back below threshold in {zone_id}",
+                         now, zone_id=zone_id, kind="CLEAR")
+        return None
 
     # -- loitering R-05 --
     def evaluate_loiter(self, person_ref: str, zone_id: Optional[str], dwell_s: float,

@@ -68,6 +68,9 @@ from finblade.events import (                            # noqa: E402
     LOITERING_START, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
     WRONG_DIRECTION, ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, new_event,
 )
+from finblade.crowding import (                           # noqa: E402
+    CrowdEstimator, TrackingQualityMonitor, select_mode,
+)
 from finblade.flowrules import (                          # noqa: E402
     DirectionPolicy, GroupCrossingDetector, WrongWayDetector,
 )
@@ -594,6 +597,13 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                  for z in cfg.zones if getattr(z, "group_threshold", 0)}
     occ_threshold = {z.zone_id: z.occupancy_threshold for z in cfg.zones
                      if getattr(z, "occupancy_threshold", 0)}
+    quality = TrackingQualityMonitor()
+    # No crowd-counting model ships here and none can be fetched (air-gapped,
+    # pinned dependencies). The seam exists so one can be registered; until then
+    # a saturated scene is reported as degraded rather than silently handed to a
+    # method that does not exist.
+    crowd_model = CrowdEstimator()
+    last_quality = None
     reid_zone_ids = {z.zone_id for z in cfg.zones if getattr(z, "reid", False)}
     if reid_zone_ids:
         log.info("camera %s: cross-camera ReID restricted to %s",
@@ -721,6 +731,12 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 [w[1] for w in live_window], people_in_view)
             hv["people_in_zones"] = _presence_count(
                 [w[2] for w in live_window], people_in_zones)
+            # Whether those counts can be believed. Detect-and-track degrades
+            # silently in a crowd — an occupancy of 40 in a space holding 90
+            # looks exactly like an occupancy of 40 in a space holding 40 — so
+            # the count travels with its own reliability.
+            hv.update(quality.snapshot())
+            hv["counting_mode"] = select_mode(hv["tracking_quality"], crowd_model)
             resp = _post_json("/api/v1/cameras/health",
                               {"camera_id": cfg.camera_id, "site_id": cfg.site_id,
                                "ts": now, "health": hv})
@@ -998,6 +1014,25 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
 
         # Refresh what the health post reports. people_in_view needs no zones,
         # so a camera with nothing drawn still says how many people it can see.
+        # Detection quality for this frame. Uses only what the pipeline already
+        # produced — no second model, no extra inference.
+        quality.observe(vnow, list(conf_by_tid), list(conf_by_tid.values()),
+                        max_det=cfg.max_det)
+        q_now = quality.assess()
+        if q_now != last_quality:
+            last_quality = q_now
+            if q_now != "RELIABLE":
+                log.warning(
+                    "camera %s: tracking quality %s (mean conf %.2f, churn "
+                    "%.1f/min, detector saturation %.0f%%) — occupancy is "
+                    "likely an UNDERCOUNT while this holds",
+                    cfg.camera_id, q_now, quality.mean_confidence(),
+                    quality.churn_per_person_per_min(),
+                    quality.saturation_fraction() * 100)
+            else:
+                log.info("camera %s: tracking quality back to RELIABLE",
+                         cfg.camera_id)
+
         people_in_view = len(tracks)
         people_in_zones = sum(occupancy.values()) if occupancy else 0
         # Feed the smoothing window every processed frame, then drop what has

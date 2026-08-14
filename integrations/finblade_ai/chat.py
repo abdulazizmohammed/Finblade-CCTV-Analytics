@@ -117,7 +117,48 @@ def run_tool(client: CCTVClient, name: str, args: Dict[str, Any]) -> Any:
             "camera_id": args.get("camera_id"),
             "zone_id": args.get("zone_id")})))
 
+    # -- image tools ------------------------------------------------------
+    # These return a frame rather than JSON, so the model can look at the scene
+    # instead of only reading numbers about it. The counting stays deterministic
+    # — occupancy, crossings and alerts all come from the CV pipeline — and the
+    # image is only ever used for the judgement the numbers cannot express:
+    # what a restricted-zone intrusion actually looked like.
+    if name == "cctv_camera_snapshot":
+        cam = args.get("camera_id")
+        if not isinstance(cam, str) or not cam:
+            raise CCTVError("camera_id required")
+        return _image(client.frame(cam), f"live view of {cam}")
+
+    if name == "cctv_incident_frame":
+        alert_id = args.get("alert_id")
+        if not isinstance(alert_id, str) or not alert_id:
+            raise CCTVError("alert_id required")
+        # The frame captured WHEN the alert fired — not the room now. For an
+        # alert raised an hour ago those are entirely different pictures, and
+        # showing the live view instead would quietly answer a question nobody
+        # asked.
+        return _image(client.incident_frame(alert_id),
+                      f"frame captured when alert {alert_id} fired")
+
     raise CCTVError(f"unknown tool {name!r}")
+
+
+def _image(data: bytes, caption: str) -> dict:
+    """Wrap JPEG bytes as content blocks for a tool result.
+
+    Marked with `_blocks` so the caller passes them through as content rather
+    than JSON-encoding them — a base64 image serialised into a string is just a
+    very large piece of text the model cannot see.
+    """
+    import base64
+    if not data:
+        raise CCTVError("no frame available")
+    return {"_blocks": [
+        {"type": "image", "source": {"type": "base64",
+                                     "media_type": "image/jpeg",
+                                     "data": base64.standard_b64encode(data).decode()}},
+        {"type": "text", "text": caption},
+    ]}
 
 
 def run_tool_safely(client: CCTVClient, name: str, args: Dict[str, Any]) -> Any:
@@ -198,14 +239,22 @@ def run_turn(question: str, client: Optional[CCTVClient] = None,
             return text, messages
 
         messages.append({"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": call.id,
-             "content": _as_text(run_tool_safely(client, call.name, call.input))}
+            _tool_result(call.id, run_tool_safely(client, call.name, call.input))
             for call in calls]})
 
     # Not silent. A model looping on tool calls has usually misunderstood the
     # question, and returning a partial answer as if it were complete is worse
     # than saying the turn did not finish.
     raise CCTVError(f"gave up after {MAX_TOOL_ROUNDS} rounds of tool calls")
+
+
+def _tool_result(tool_use_id: str, result: Any) -> dict:
+    """One tool result block — content blocks for images, JSON text otherwise."""
+    if isinstance(result, dict) and "_blocks" in result:
+        return {"type": "tool_result", "tool_use_id": tool_use_id,
+                "content": result["_blocks"]}
+    return {"type": "tool_result", "tool_use_id": tool_use_id,
+            "content": _as_text(result)}
 
 
 def _as_text(result: Any) -> str:

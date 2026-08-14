@@ -42,6 +42,13 @@ TOOL_ROUTES = {
     "cctv_zone_duration":  "/api/v1/zones/{zone_id}/duration",
     "cctv_alerts":         "/api/v1/history/alerts",
     "cctv_occupancy_report": "/api/v1/reports/occupancy.json",
+    # The two image tools. They return JPEG rather than JSON, so they go
+    # through CCTVClient's frame methods (which carry their own shared cache)
+    # instead of read_path — but they are declared here like everything else,
+    # because the invariant this table exists for is "no tool reaches an
+    # endpoint that is not written down", and that applies to pictures too.
+    "cctv_camera_snapshot": "/api/v1/cameras/{camera_id}/snapshot",
+    "cctv_incident_frame":  "/api/v1/incidents/{alert_id}/frame",
 }
 
 _COVERAGE_NOTE = (
@@ -260,6 +267,60 @@ TOOLS: List[Dict[str, Any]] = [
                 "zone_id": {"type": ["string", "null"]},
             },
             "required": ["hours", "from", "to", "camera_id", "zone_id"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    # --- image tools ------------------------------------------------------
+    # Everything above returns numbers the CV pipeline computed. These two
+    # return a picture. The split is deliberate and is the whole point: counting
+    # stays deterministic, and the image is used only for the interpretation the
+    # counts cannot carry.
+    {
+        "name": "cctv_camera_snapshot",
+        "description": (
+            "The current view from one camera, as an image.\n\n"
+            "Use it to DESCRIBE or INTERPRET a scene the numbers have already "
+            "flagged: what a restricted-area intrusion looks like, whether a "
+            "crowded zone is a queue or a blockage, what someone is doing.\n\n"
+            "Do NOT count people from this image. Occupancy, entries, exits and "
+            "density come from the detection pipeline and are already available "
+            "from the other tools; a headcount read off a picture will disagree "
+            "with them and is the less reliable of the two — people occlude each "
+            "other and the frame does not cover the whole zone. If asked how "
+            "many, call cctv_live_state and report that.\n\n"
+            "This is the room NOW. For what a past alert looked like, use "
+            "cctv_incident_frame instead."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "camera_id": {"type": "string",
+                              "description": "Camera to snapshot, e.g. CAM-03."},
+            },
+            "required": ["camera_id"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "name": "cctv_incident_frame",
+        "description": (
+            "The frame captured at the moment an alert fired, as an image.\n\n"
+            "Use it when asked what happened, whether an alert was genuine, or "
+            "to describe an incident. Get alert_id from cctv_alerts first.\n\n"
+            "This is a picture of the past, not the present — for an alert "
+            "raised an hour ago the room now looks nothing like it. Never "
+            "substitute a live snapshot when asked about a past incident.\n\n"
+            "The same counting rule applies: describe what you see, but take "
+            "any number from the alert record and the zone tools."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "alert_id": {"type": "string",
+                             "description": "Alert whose frame to fetch, from "
+                                            "cctv_alerts."},
+            },
+            "required": ["alert_id"],
             "additionalProperties": False,
         },
         "strict": True,

@@ -19,7 +19,17 @@ from .geometry import Point, point_in_polygon
 
 # Zone types (Req 5). RESTRICTED drives the no-go behaviour; the rest are metadata
 # used by later analytics (e.g. ENTRANCE/EXIT bias inflow/outflow).
-ZONE_TYPES = {"MONITORED", "RESTRICTED", "ENTRANCE", "EXIT", "TRANSITION", "UNMONITORED"}
+# DOOR is a doorway walked BOTH ways. ENTRANCE and EXIT each declare a
+# direction, so they are decidable the moment someone steps into them; DOOR
+# declares only that the polygon is a boundary, and the direction comes from
+# the zones either side of the crossing (see finblade/presence.py).
+#
+# OUTSIDE is floor drawn BEYOND the facility boundary — a forecourt, a car park,
+# a street. It has to be declarable because otherwise it is indistinguishable
+# from interior floor, and a person stepping out of a door onto it would be read
+# as walking in. Occupancy still counts it; the facility roster does not.
+ZONE_TYPES = {"MONITORED", "RESTRICTED", "ENTRANCE", "EXIT", "DOOR",
+              "OUTSIDE", "TRANSITION", "UNMONITORED"}
 
 # An UNMONITORED zone is a DETECTION MASK, not just a zone that reports nothing.
 # Any detection whose foot point lands inside one is discarded outright.

@@ -9,15 +9,41 @@ import time
 from typing import List, Optional, Tuple
 
 from finblade.emission import DEFAULT_KEEPALIVE, StateWriteGate
+from finblade.presence import (
+    ADMIT, DISCHARGE, DoorPolicy, FacilityRoster, apply_event,
+)
 
 from .schema import validate_ingest, validate_zone_state, validate_zones
 from .store import Store
+
+# How long a door policy built from the zones table is reused before rebuilding.
+# Zones change when an operator saves the editor, which also invalidates this
+# explicitly — the interval only bounds staleness if a zone is written by some
+# other path.
+_POLICY_TTL_S = 30.0
+
+# A sighting only moves a roster entry's last_seen, which nothing depends on
+# second-by-second, so those writes are batched. A crossing is written through
+# immediately and never batched.
+_PRESENCE_FLUSH_S = 30.0
 
 
 class IngestService:
     def __init__(self, store: Store, bus=None, state_gate=None):
         self.store = store
         self.bus = bus  # optional event bus with .publish(evt); None = skip
+        # The facility roster is the one piece of state here that cannot be
+        # recomputed from live video, so it is restored from the store at
+        # startup rather than starting empty. See finblade/presence.py.
+        try:
+            people, stats, doors = self.store.load_presence()
+        except Exception:                                   # noqa: BLE001
+            people, stats, doors = [], {}, []
+        self.roster = FacilityRoster.from_records(people, stats=stats, doors=doors)
+        self._policy: Optional[DoorPolicy] = None
+        self._policy_at = 0.0
+        self._presence_dirty = False
+        self._presence_flushed_at = 0.0
         # Write-on-change for zone_state_ts. See finblade/emission.py; set
         # FINBLADE_STATE_WRITES=always to restore a row per post.
         self.state_gate = state_gate if state_gate is not None else StateWriteGate(
@@ -33,9 +59,87 @@ class IngestService:
         # Any event from a camera counts as a heartbeat for offline detection.
         self.store.mark_camera_seen(payload.get("camera_id"), payload.get("timestamp"),
                                     payload.get("site_id"))
+        action = self._apply_presence(payload)
         if self.bus is not None:
             self.bus.publish(payload)
-        return 202, {"accepted": True, "event_id": payload.get("event_id")}
+        body = {"accepted": True, "event_id": payload.get("event_id")}
+        if action:
+            # Echoed so a camera worker (or a test) can see that its event moved
+            # the facility count, without a second round trip.
+            body["facility"] = {"action": action,
+                                "occupancy": self.roster.occupancy()}
+        return 202, body
+
+    # -- facility roster -----------------------------------------------------
+    def door_policy(self, now: float = None) -> DoorPolicy:
+        """Door policy derived from the zones table, rebuilt periodically."""
+        now = time.time() if now is None else now
+        if self._policy is None or (now - self._policy_at) > _POLICY_TTL_S:
+            try:
+                self._policy = DoorPolicy.from_zones(self.store.list_zones())
+            except Exception:                               # noqa: BLE001
+                # A store hiccup must not silently turn every door into
+                # interior floor, which would stop all counting. Keep the last
+                # good policy if there is one.
+                self._policy = self._policy or DoorPolicy({})
+            self._policy_at = now
+        return self._policy
+
+    def invalidate_door_policy(self) -> None:
+        """Called when zones change so a retyped door takes effect at once."""
+        self._policy = None
+
+    def _apply_presence(self, evt: dict) -> Optional[str]:
+        """Feed one event to the facility roster and persist what changed."""
+        ts = evt.get("timestamp")
+        # apply_event expects `ts`; the wire envelope calls it `timestamp`.
+        view = dict(evt)
+        view["ts"] = ts
+        try:
+            action = apply_event(self.roster, view, self.door_policy(ts))
+        except Exception:                                   # noqa: BLE001
+            # Presence is additive to ingest. A bug here must never reject a
+            # camera's event or stop the pipeline.
+            return None
+        if action in (ADMIT, DISCHARGE):
+            self._flush_presence(force=True)
+        elif action:
+            self._presence_dirty = True
+            self._flush_presence()
+        return action
+
+    def _flush_presence(self, force: bool = False, now: float = None) -> None:
+        now = time.time() if now is None else now
+        if not force and not self._presence_dirty:
+            return
+        if not force and (now - self._presence_flushed_at) < _PRESENCE_FLUSH_S:
+            return
+        try:
+            self.store.save_presence(self.roster.to_records(),
+                                     dict(self.roster.stats),
+                                     self.roster.doors.to_records())
+        except Exception:                                   # noqa: BLE001
+            return
+        self._presence_dirty = False
+        self._presence_flushed_at = now
+
+    def facility_state(self, now: float = None, stale_after_s: float = 3600.0) -> dict:
+        now = time.time() if now is None else now
+        body = self.roster.snapshot(now=now, stale_after_s=stale_after_s)
+        body["policy"] = {
+            "doors": sorted(z for z, t in self.door_policy(now).zone_types.items()
+                            if t in ("DOOR", "ENTRANCE", "EXIT")),
+            "outside": sorted(z for z, t in self.door_policy(now).zone_types.items()
+                              if t == "OUTSIDE"),
+        }
+        return body
+
+    def facility_members(self, now: float = None) -> List[dict]:
+        return self.roster.members(now=time.time() if now is None else now)
+
+    def facility_stale(self, older_than_s: float, now: float = None) -> List[dict]:
+        return self.roster.stale(older_than_s,
+                                 time.time() if now is None else now)
 
     # -- POST /api/v1/zones/state --
     def record_zone_state(self, payload: dict) -> Tuple[int, dict]:
@@ -507,6 +611,9 @@ class IngestService:
         if not ok:
             return 422, {"saved": False, "errors": errors}
         self.store.save_zones(payload["camera_id"], payload["zones"])
+        # Retyping a zone as a door (or away from one) must take effect on the
+        # next event, not up to the policy TTL later.
+        self.invalidate_door_policy()
         return 200, {"saved": True, "camera_id": payload["camera_id"],
                      "count": len(payload["zones"])}
 

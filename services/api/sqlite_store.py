@@ -89,6 +89,26 @@ CREATE TABLE IF NOT EXISTS zones(
   loitering_threshold_sec REAL, colour TEXT, enabled INTEGER,
   normalized_polygon TEXT, polygon TEXT, adjacency_list TEXT, updated_at REAL,
   PRIMARY KEY (camera_id, zone_id));
+
+-- Facility roster: who is inside the building right now.
+--
+-- Unlike every other table here this one is AUTHORITATIVE rather than derived.
+-- Zone occupancy is recomputed from the next frame, so losing it costs nothing;
+-- the roster only changes at the doors and cannot be rebuilt from live video at
+-- all. An in-memory-only roster would silently reset to zero on restart while
+-- the building was still full, so it is written through on every change.
+CREATE TABLE IF NOT EXISTS facility_presence(
+  ref TEXT PRIMARY KEY, admitted_at REAL, last_seen REAL,
+  entry_zone TEXT, last_zone TEXT, sightings INTEGER);
+
+-- Cumulative per-door traffic, and the roster's own counters. Rolling rates are
+-- deliberately absent: a per-minute figure rebuilt from an hours-old window
+-- would be fiction, so rates restart empty and totals carry over.
+CREATE TABLE IF NOT EXISTS facility_doors(
+  door_zone_id TEXT PRIMARY KEY, entries INTEGER, exits INTEGER);
+
+CREATE TABLE IF NOT EXISTS facility_meta(
+  key TEXT PRIMARY KEY, value REAL);
 """
 
 
@@ -663,6 +683,47 @@ class SQLiteStore(Store):
                 except Exception:
                     r[k] = []
         return rows
+
+    # ---- facility roster -------------------------------------------------
+    def load_presence(self):
+        with self._lock:
+            people = _row(self._conn.execute(
+                "SELECT ref,admitted_at,last_seen,entry_zone,last_zone,sightings "
+                "FROM facility_presence"))
+            doors = _row(self._conn.execute(
+                "SELECT door_zone_id,entries,exits FROM facility_doors"))
+            meta = _row(self._conn.execute("SELECT key,value FROM facility_meta"))
+        return people, {m["key"]: int(m["value"] or 0) for m in meta}, doors
+
+    def save_presence(self, records, stats, doors) -> None:
+        """Write the roster through as a whole.
+
+        Replace rather than merge: the roster is a SET, and a person's absence
+        from it is as meaningful as their presence. Merging would leave a
+        discharged person in the table for ever, which is the one error this
+        table must not make. It holds one row per person currently inside — tens
+        or hundreds, not millions — so rewriting it is cheap.
+        """
+        with self._lock:
+            self._conn.execute("DELETE FROM facility_presence")
+            self._conn.executemany(
+                "INSERT INTO facility_presence"
+                "(ref,admitted_at,last_seen,entry_zone,last_zone,sightings) "
+                "VALUES (?,?,?,?,?,?)",
+                [(r.get("ref"), r.get("admitted_at"), r.get("last_seen"),
+                  r.get("entry_zone"), r.get("last_zone"),
+                  int(r.get("sightings", 0))) for r in (records or [])])
+            self._conn.executemany(
+                "INSERT INTO facility_doors(door_zone_id,entries,exits) "
+                "VALUES (?,?,?) ON CONFLICT(door_zone_id) DO UPDATE SET "
+                "entries=excluded.entries, exits=excluded.exits",
+                [(d.get("door_zone_id"), int(d.get("entries", 0)),
+                  int(d.get("exits", 0))) for d in (doors or [])])
+            self._conn.executemany(
+                "INSERT INTO facility_meta(key,value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [(k, float(v)) for k, v in (stats or {}).items()])
+            self._conn.commit()
 
     @staticmethod
     def _alert_out(r: dict) -> dict:

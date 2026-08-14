@@ -520,6 +520,33 @@ async def list_reports(limit: int = Query(100)):
     return {"reports": svc.list_reports(limit)}
 
 
+# --- facility occupancy ----------------------------------------------------
+# Distinct from zone occupancy and never to be shown as the same number. Zone
+# occupancy counts foot points inside a polygon this frame; this counts people
+# admitted through a door and not yet seen to leave, so it keeps counting
+# someone in a corridor no camera watches.
+@app.get("/api/v1/facility/occupancy")
+async def facility_occupancy(stale_after: float = Query(3600.0)):
+    return svc.facility_state(stale_after_s=stale_after)
+
+
+@app.get("/api/v1/facility/members")
+async def facility_members():
+    """Everyone currently on the roster, oldest admission first."""
+    return {"members": svc.facility_members()}
+
+
+@app.get("/api/v1/facility/stale")
+async def facility_stale(older_than: float = Query(3600.0)):
+    """Roster entries nobody has seen for a while — the drift report.
+
+    Under the strict discharge policy an entry here is either a person in an
+    unmonitored space or an exit that was missed, and no data here separates
+    them. Nothing is removed; a human decides.
+    """
+    return {"older_than_s": older_than, "stale": svc.facility_stale(older_than)}
+
+
 # --- cross-camera identity -------------------------------------------------
 # Inference workers POST embeddings here and get back an opaque global_ref.
 # Nothing in this section ever returns or persists a vector.

@@ -23,14 +23,22 @@ import unittest
 from services.api.sqlite_store import SQLiteStore
 from services.api.store import InMemoryStore
 
-# Relative to now, not a fixed epoch.
+# Relative to now, and evaluated PER TEST rather than once at import.
 #
 # latest_zone_states() drops readings older than 30 seconds of WALL CLOCK — a
 # zone that stopped reporting is not a zone at zero, so it disappears rather
-# than reading empty. With a hard-coded T0 in 2023 every live-state assertion
-# failed on all three backends, which looked like three broken stores and was
-# one broken fixture.
-T0 = time.time()
+# than reading empty. Two ways to get this wrong, and this file has now hit
+# both:
+#
+#   A fixed epoch (2023) fails immediately, everywhere. Obvious.
+#   A module-level time.time() passes until the suite takes longer than 30
+#   seconds, then fails on a stale constant with nothing wrong in the code
+#   under test. That happened the moment the Postgres conformance cases joined
+#   and the run went from 22s to 50s.
+#
+# setUp assigns self.T0, so every test measures from its own start.
+def _now():
+    return time.time()
 
 
 def _pg_dsn():
@@ -57,6 +65,9 @@ def _pg_dsn():
 
 
 PG_DSN = _pg_dsn()
+
+
+T0 = _now()          # module import time; rebound per test in setUp below
 
 
 def state(ts, occupancy, zone="ZONE-01", camera="CAM-01", status="NORMAL", **kw):
@@ -92,6 +103,11 @@ class StoreContract:
         raise NotImplementedError
 
     def setUp(self):
+        # Rebind the module-level T0 to THIS test's start. The helpers above
+        # close over the global, so refreshing it here is what keeps a slow
+        # suite from ageing every live-state fixture past the 30s window.
+        global T0
+        T0 = _now()
         self.store = self.make_store()
 
     # -- zone state ---------------------------------------------------------

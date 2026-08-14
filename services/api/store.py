@@ -108,6 +108,18 @@ class Store:
     def list_reports(self, limit: int = 100) -> List[dict]: return []
     def get_report(self, report_id: str) -> dict: return None
 
+    # Facility roster. Default no-ops mean a backend without persistence keeps
+    # working — but with the STRICT discharge policy the roster cannot be
+    # rebuilt from live video, so a no-op backend resets occupancy to zero on
+    # restart. That is a real behaviour change, not a lost optimisation.
+    def load_presence(self) -> Tuple[List[dict], dict, List[dict]]:
+        """Return (roster records, roster counters, per-door totals)."""
+        return [], {}, []
+
+    def save_presence(self, records: List[dict], stats: dict,
+                      doors: List[dict]) -> None:
+        pass
+
     # Forwarder cursors. Default no-ops so a backend that does not implement
     # them simply behaves as it did before: start from now, forward what
     # happens next. Only durability is lost, never correctness.

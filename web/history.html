@@ -41,6 +41,22 @@ tr.clickable:hover td{background:var(--fb-surface-2);}
 .thumb:hover{text-decoration:underline;}
 .empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:22px;text-align:center;}
 
+/* Person-track columns. The ref is INTERACTIVE (click to isolate that track),
+   so teal is correct here as chrome — it says nothing about the track's state. */
+.ref{color:var(--fb-teal);background:none;border:0;padding:0;cursor:pointer;
+     font:inherit;font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;}
+.ref:hover{text-decoration:underline;}
+.seq{color:var(--fb-text-faint);}
+.path{font-family:var(--fb-font-data);color:var(--fb-text);}
+.path .hop{color:var(--fb-text-faint);}      /* the arrows recede, the zones do not */
+.path .now{color:var(--fb-text);font-weight:600;}
+/* A track that only ever held one zone is the churn signature. Muted, NOT
+   coloured: amber and red mean an operator must act, and a fragmented tracker
+   is a data-quality observation, not a site condition. */
+tr.single td,td.single{color:var(--fb-text-faint);}
+.note{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-faint);
+      margin:0 0 8px;max-width:78ch;line-height:1.5;}
+
 /* frame modal */
 .modal{position:fixed;inset:0;background:rgba(4,10,14,.82);display:none;align-items:center;justify-content:center;padding:24px;z-index:50;}
 .modal.on{display:flex;}
@@ -80,6 +96,7 @@ tr.clickable:hover td{background:var(--fb-surface-2);}
     </div>
 
     <div id="flows"></div>
+    <div id="tracks"></div>
     <p class="count" id="count">—</p>
     <div class="tablewrap"><table>
       <thead id="thead"></thead>
@@ -143,7 +160,7 @@ async function load(){
   let rows;
   try{
     if(mode==='alerts'){
-      $('flows').innerHTML='';
+      $('flows').innerHTML=''; $('tracks').innerHTML='';
       const q=new URLSearchParams({from,to,limit:1000});
       if(cam)q.set('camera_id',cam); if(typ)q.set('rule_id',typ);
       rows=(await fetch(`${API}/api/v1/history/alerts?${q}`).then(r=>r.json())).alerts||[];
@@ -180,6 +197,120 @@ function frameCell(fr){
   return fr ? `<a class="thumb" href="#" data-frame="${esc(fr)}">view frame ▸</a>` : '<span class="mono">—</span>';
 }
 
+// --- person tracks -------------------------------------------------------
+// A person_ref is a salted hash of the ByteTrack id (finblade/identity.py), so
+// it identifies a TRACK, not a person: it is scoped to one camera worker and
+// one session. Grouping events by it therefore answers "did this id survive the
+// walk between zones", which is exactly the question the tracker can fail at.
+// It cannot answer "is this the same human as that one over there" — that needs
+// the cross-camera global_ref, which is not written to events.
+
+const SHORT=r=>String(r||'').slice(0,11);   // pr_ + 8 hex is plenty to eyeball
+const DUR=s=>s<60?`${s.toFixed(1)}s`:`${Math.floor(s/60)}m ${Math.round(s%60)}s`;
+
+// Zones this event touches, in travel order. A TRANSITION contributes BOTH ends
+// so the origin is not lost when it is the first event in the window.
+function zonesOf(e){
+  const out=[];
+  if(e.zone_from) out.push(e.zone_from);
+  if(e.zone_to) out.push(e.zone_to);
+  if(!e.zone_from && !e.zone_to && e.zone_id) out.push(e.zone_id);
+  return out;
+}
+
+// Group the loaded events into one record per ref. Also stamps each event with
+// its position in its own track (_seq of _of) so a row can say "3/7" — the
+// cheapest way to see at a glance that a ref covers a real journey and not a
+// single frame. Rows arrive ts DESC; tracks are built ascending.
+function buildTracks(rows){
+  const asc=rows.slice().sort((a,b)=>a.ts-b.ts);
+  const byRef=new Map();
+  for(const e of asc){
+    const ref=e.person_ref;
+    if(!ref) continue;                       // camera-level events have no ref
+    let t=byRef.get(ref);
+    if(!t){ t={ref,cameras:new Set(),first:e.ts,last:e.ts,n:0,path:[]}; byRef.set(ref,t); }
+    if(e.camera_id) t.cameras.add(e.camera_id);
+    t.last=e.ts; t.n+=1;
+    e._seq=t.n; e._track=t;
+    for(const z of zonesOf(e)){
+      if(t.path[t.path.length-1]!==z) t.path.push(z);   // consecutive dedupe
+    }
+  }
+  for(const t of byRef.values()){
+    t.of=t.n; t.duration=t.last-t.first;
+    t.zones=new Set(t.path).size;
+  }
+  return byRef;
+}
+
+function pathCell(path, here){
+  if(!path.length) return '<span class="mono">—</span>';
+  const parts=path.map(z=>
+    `<span class="${z===here?'now':''}">${esc(z)}</span>`);
+  return `<span class="path">${parts.join('<span class="hop"> → </span>')}</span>`;
+}
+
+function renderTracks(byRef){
+  const box=$('tracks');
+  const tracks=[...byRef.values()].sort((a,b)=>a.first-b.first);
+  if(!tracks.length){ box.innerHTML=''; return; }
+
+  // The churn figures. Median rather than mean: a handful of long-lived tracks
+  // drags a mean upward and hides that most refs live for a moment.
+  const durs=tracks.map(t=>t.duration).sort((a,b)=>a-b);
+  const mid=durs.length%2 ? durs[(durs.length-1)/2]
+                          : (durs[durs.length/2-1]+durs[durs.length/2])/2;
+  const single=tracks.filter(t=>t.zones<=1).length;
+  const pct=Math.round(single/tracks.length*100);
+
+  const rows=tracks.map(t=>`
+    <tr class="${t.zones<=1?'single':''}">
+      <td class="mono"><button class="ref" data-ref="${esc(t.ref)}"
+          title="${esc(t.ref)} — click to show only this track">${esc(SHORT(t.ref))}</button></td>
+      <td class="mono">${esc([...t.cameras].join(', ')||'—')}</td>
+      <td class="mono">${iso(t.first)}</td>
+      <td class="mono">${DUR(t.duration)}</td>
+      <td class="mono">${t.n}</td>
+      <td class="mono">${t.zones}</td>
+      <td>${pathCell(t.path)}</td>
+    </tr>`).join('');
+
+  const isolated=$('pref').value.trim();
+  box.innerHTML=`<p class="count">Person tracks · ${tracks.length} refs ·
+      median life ${DUR(mid)} · ${pct}% touched a single zone
+      ${isolated?'· <button class="ref" id="clearRef">show all refs ✕</button>':''}</p>
+    <p class="note">A ref is a hash of the tracker id, scoped to one camera and one
+      session — so a ref ending and a new one starting does NOT mean a different
+      person. Multi-zone paths are tracks that survived the walk; single-zone refs
+      in bulk are the tracker fragmenting. Click a ref to isolate its events.</p>
+    <div class="tablewrap" style="margin-bottom:16px"><table>
+    <thead><tr><th>Ref</th><th>Camera</th><th>First seen</th><th>Life</th>
+      <th>Events</th><th>Zones</th><th>Zone path</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+  // Binding happens once, in renderEvents, after BOTH tables exist — wiring here
+  // too would attach a second handler to every panel button and fire two queries
+  // per click.
+}
+
+// Clicking a ref drops it into the existing Anon ref filter and re-queries, so
+// the server does the narrowing (?person_ref=) rather than hiding rows locally
+// — the 1000-row page limit would otherwise silently truncate a long track.
+function wireRefs(){
+  document.querySelectorAll('.ref[data-ref]').forEach(el=>{
+    el.addEventListener('click', ev=>{
+      ev.preventDefault(); ev.stopPropagation();   // do not open the frame modal
+      $('pref').value=el.getAttribute('data-ref');
+      load();
+    });
+  });
+  const clear=$('clearRef');
+  if(clear) clear.addEventListener('click', ev=>{
+    ev.preventDefault(); ev.stopPropagation();
+    $('pref').value=''; load();
+  });
+}
+
 function renderAlerts(rows){
   $('thead').innerHTML='<tr><th>Time</th><th>Rule</th><th>Severity</th><th>Zone</th><th>Camera</th><th>Message</th><th>Ack</th><th>Frame</th></tr>';
   if(!rows.length){ $('tbody').innerHTML='<tr><td colspan="8"><div class="empty">No alerts in range.</div></td></tr>'; return; }
@@ -200,20 +331,38 @@ function renderAlerts(rows){
 }
 
 function renderEvents(rows){
-  $('thead').innerHTML='<tr><th>Time</th><th>Type</th><th>Movement</th><th>Camera</th><th>Person</th><th>Frame</th></tr>';
-  if(!rows.length){ $('tbody').innerHTML='<tr><td colspan="6"><div class="empty">No events in range.</div></td></tr>'; return; }
+  const byRef=buildTracks(rows);      // stamps _seq/_track on each row
+  renderTracks(byRef);
+
+  $('thead').innerHTML='<tr><th>Time</th><th>Type</th><th>Movement</th><th>Camera</th>'
+    +'<th>Person</th><th>Track path</th><th>Frame</th></tr>';
+  if(!rows.length){ $('tbody').innerHTML='<tr><td colspan="7"><div class="empty">No events in range.</div></td></tr>'; return; }
   $('tbody').innerHTML=rows.map(e=>{
     const move = e.zone_from||e.zone_to
       ? `${esc(e.zone_from||'·')} → ${esc(e.zone_to||e.zone_id||'·')}` : esc(e.zone_id||'—');
+    const t=e._track;
+    // Where this event sits in its own track, and the whole route that track
+    // took. Reading down the column, a ref that keeps its id across zones shows
+    // the same path repeating with the highlight advancing; a ref that dies at
+    // the boundary shows a one-zone path and never appears again.
+    const person = e.person_ref
+      ? `<button class="ref" data-ref="${esc(e.person_ref)}"
+           title="${esc(e.person_ref)} — click to show only this track">${esc(SHORT(e.person_ref))}</button>`
+        + (t ? ` <span class="seq">${e._seq}/${t.of}</span>` : '')
+      : '<span class="mono">—</span>';
+    const here=zonesOf(e).slice(-1)[0];
+    const pathTd = t ? pathCell(t.path, here) : '<span class="mono">—</span>';
     return `<tr class="${e.frame?'clickable':''}" ${e.frame?`data-frame="${esc(e.frame)}" data-cap="${esc(e.event_type+' · '+iso(e.ts))}"`:''}>
       <td class="mono">${iso(e.ts)}</td>
       <td class="mono">${esc(e.event_type)}</td>
       <td class="mono">${move}</td>
       <td class="mono">${esc(e.camera_id||'—')}</td>
-      <td class="mono">${esc(e.person_ref||'—')}</td>
+      <td class="mono">${person}</td>
+      <td class="${t&&t.zones<=1?'single':''}">${pathTd}</td>
       <td>${frameCell(e.frame)}</td></tr>`;
   }).join('');
   wireRows();
+  wireRefs();
 }
 
 function wireRows(){
@@ -258,6 +407,7 @@ function defaultRange(){
 defaultRange();
 $('type').addEventListener('change', load);
 $('cam').addEventListener('change', load);
+$('pref').addEventListener('keydown', e=>{ if(e.key==='Enter') load(); });
 loadCameras();
 setMode('alerts');
 </script>

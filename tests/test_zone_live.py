@@ -20,12 +20,22 @@ import unittest
 from services.api.sqlite_store import SQLiteStore
 from services.api.store import InMemoryStore
 
-NOW = time.time()
+def NOW():
+    """Evaluated per call, NOT once at import.
+
+    latest_zone_states() drops readings older than 30 seconds of wall clock, so
+    a module-level constant is a time bomb: it is fine while the suite finishes
+    inside 30s and fails everywhere the moment it does not. It did not, once
+    the Postgres conformance tests joined and the run went from 22s to 50s —
+    eight tests in this file started failing on a stale fixture with nothing
+    wrong in the code they cover.
+    """
+    return time.time()
 
 
 def state(zone_id="ZONE-01", camera_id="CAM-01", ts=None, occupancy=3, **over):
     row = {"zone_id": zone_id, "camera_id": camera_id,
-           "ts": NOW if ts is None else ts, "occupancy": occupancy,
+           "ts": NOW() if ts is None else ts, "occupancy": occupancy,
            "density": 0.06, "capacity_pct": 7.5, "inflow_per_min": 1.0,
            "outflow_per_min": 2.0, "status": "NORMAL", "zone_name": "Lobby"}
     row.update(over)
@@ -45,7 +55,7 @@ class ZoneLiveContract:
 
     def test_one_row_per_zone_however_many_writes(self):
         for i in range(50):
-            self.store.save_zone_state(state(ts=NOW - 50 + i, occupancy=i))
+            self.store.save_zone_state(state(ts=NOW() - 50 + i, occupancy=i))
         rows = self.store.latest_zone_states()
         self.assertEqual(1, len(rows))
         self.assertEqual(49, rows[0]["occupancy"], "must be the newest write")
@@ -62,27 +72,27 @@ class ZoneLiveContract:
 
     def test_an_out_of_order_write_does_not_move_state_backwards(self):
         """A delayed post from a slow camera arriving after a newer one."""
-        self.store.save_zone_state(state(ts=NOW, occupancy=7))
-        self.store.save_zone_state(state(ts=NOW - 30, occupancy=1))   # stale
+        self.store.save_zone_state(state(ts=NOW(), occupancy=7))
+        self.store.save_zone_state(state(ts=NOW() - 30, occupancy=1))   # stale
         self.assertEqual(7, self.store.latest_zone_states()[0]["occupancy"])
 
     def test_history_is_still_written(self):
         """zone_live is in addition to the series, not instead of it."""
         for i in range(3):
-            self.store.save_zone_state(state(ts=NOW - 10 + i))
-        self.assertEqual(3, len(self.store.zone_state_range("ZONE-01", 0, NOW + 1)))
+            self.store.save_zone_state(state(ts=NOW() - 10 + i))
+        self.assertEqual(3, len(self.store.zone_state_range("ZONE-01", 0, NOW() + 1)))
 
     def test_stale_zones_are_dropped_from_live(self):
         """A zone removed or renamed in the editor stops reporting; the 30s
         freshness window is what makes it disappear."""
-        self.store.save_zone_state(state(ts=NOW - 3600))
+        self.store.save_zone_state(state(ts=NOW() - 3600))
         self.assertEqual([], self.store.latest_zone_states())
 
     def test_pruning_history_does_not_remove_current_state(self):
         """The point of splitting the tables: retention deletes the series, the
         live reading survives. Under the old query it was the same row."""
-        self.store.save_zone_state(state(ts=NOW))
-        self.store.delete_before(NOW + 86400)          # delete everything older
+        self.store.save_zone_state(state(ts=NOW()))
+        self.store.delete_before(NOW() + 86400)          # delete everything older
         self.assertEqual(1, len(self.store.latest_zone_states()))
 
     def test_extra_fields_survive_the_round_trip(self):
@@ -149,8 +159,8 @@ class TestSQLiteZoneLive(ZoneLiveContract, unittest.TestCase):
     def test_backfill_does_not_clobber_a_populated_table(self):
         path = self.path()
         store = SQLiteStore(path)
-        store.save_zone_state(state(ts=NOW - 100, occupancy=1))
-        store.save_zone_state(state(ts=NOW, occupancy=9))
+        store.save_zone_state(state(ts=NOW() - 100, occupancy=1))
+        store.save_zone_state(state(ts=NOW(), occupancy=9))
         reopened = SQLiteStore(path)
         self.assertEqual(9, reopened.latest_zone_states()[0]["occupancy"])
 

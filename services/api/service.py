@@ -77,7 +77,10 @@ class IngestService:
         now = time.time() if now is None else now
         if self._policy is None or (now - self._policy_at) > _POLICY_TTL_S:
             try:
-                self._policy = DoorPolicy.from_zones(self.store.list_zones())
+                cams = {c.get("camera_id") for c in self.store.list_cameras()
+                        if c.get("camera_id")}
+                self._policy = DoorPolicy.from_zones(self.store.list_zones(),
+                                                     cameras=cams)
             except Exception:                               # noqa: BLE001
                 # A store hiccup must not silently turn every door into
                 # interior floor, which would stop all counting. Keep the last
@@ -96,16 +99,46 @@ class IngestService:
         # apply_event expects `ts`; the wire envelope calls it `timestamp`.
         view = dict(evt)
         view["ts"] = ts
-        ref = evt.get("person_ref")
+        # apply_event keys on person_ref; substitute the resolved key so the
+        # roster is identity-keyed without presence.py needing to know which
+        # kind of ref it was handed.
+        _resolved_key = None
+        # WHICH KEY THE ROSTER COUNTS BY — the difference between an occupancy
+        # figure and a churn counter.
+        #
+        # person_ref is a hash of the tracker id: it changes every time tracking
+        # breaks, so keying on it admits the same human once per fragment. Live,
+        # that produced 616 admissions and an occupancy of 600 from a camera
+        # showing 21 people. global_ref is the cross-camera identity and survives
+        # a track break, which is the property this count actually needs.
+        #
+        # The fallback is deliberate but is NOT free: when ReID has not resolved
+        # a track there is no stable key available, so the entry is counted as
+        # provisional and reported separately rather than being quietly mixed in
+        # with the trustworthy ones.
+        gref = evt.get("global_ref")
+        ref = gref or evt.get("person_ref")
+        if not gref and evt.get("person_ref"):
+            view["_provisional"] = True
         # Which doorway this is, captured BEFORE the crossing resolves: for a
         # two-way door the pending crossing knows it, and resolving pops it.
         door = self.roster.crossing_zone(ref) if ref else None
+        if ref:
+            view["person_ref"] = ref
+            _resolved_key = ref
         try:
             action = apply_event(self.roster, view, self.door_policy(ts))
         except Exception:                                   # noqa: BLE001
             # Presence is additive to ingest. A bug here must never reject a
             # camera's event or stop the pipeline.
             return None
+        if action == ADMIT and view.get("_provisional"):
+            # Admitted without a stable identity. Counted so the share of the
+            # roster that cannot be trusted is a number an operator can read,
+            # rather than something they discover when occupancy disagrees with
+            # the room by an order of magnitude.
+            self.roster.stats["provisional_admits"] = (
+                self.roster.stats.get("provisional_admits", 0) + 1)
         if action in (ADMIT, DISCHARGE):
             self._emit_facility_event(evt, action,
                                       door or view.get("zone_to")
@@ -167,6 +200,15 @@ class IngestService:
                               if t == "OUTSIDE"),
         }
         return body
+
+    def clear_facility(self) -> Tuple[int, dict]:
+        """Operator reset for a drifted roster. Persisted immediately."""
+        removed = self.roster.clear()
+        self._flush_presence(force=True)
+        return 200, {"ok": True, "removed": removed,
+                     "occupancy": self.roster.occupancy(),
+                     "note": "Door tallies and lifetime counters are kept — they "
+                             "record observed traffic, which stays true."}
 
     def facility_members(self, now: float = None) -> List[dict]:
         return self.roster.members(now=time.time() if now is None else now)

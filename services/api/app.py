@@ -538,6 +538,19 @@ async def facility_members():
     return {"members": svc.facility_members()}
 
 
+@app.delete("/api/v1/facility/roster")
+async def facility_clear():
+    """Reset a drifted roster to empty.
+
+    The companion to strict discharge: the count only comes down when a crossing
+    is observed, so a roster that has drifted has no way back on its own. Door
+    tallies and lifetime counters survive — they record traffic that really was
+    observed, and erasing them would hide that the drift happened.
+    """
+    code, body = svc.clear_facility()
+    return JSONResponse(status_code=code, content=body)
+
+
 @app.get("/api/v1/facility/stale")
 async def facility_stale(older_than: float = Query(3600.0)):
     """Roster entries nobody has seen for a while — the drift report.

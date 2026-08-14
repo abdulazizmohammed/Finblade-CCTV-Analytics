@@ -94,17 +94,28 @@ class DoorPolicy:
         self.outside = {str(z) for z in (outside or ())}
 
     @classmethod
-    def from_zones(cls, zones) -> "DoorPolicy":
+    def from_zones(cls, zones, cameras=None) -> "DoorPolicy":
         """Build from stored zone records — the only source of truth at runtime.
 
         Disabled zones are dropped: a zone switched off in the editor must stop
         acting as a door, not keep counting people through a boundary the
         operator has retired.
+
+        ``cameras``, when given, is the set of camera ids that still exist, and
+        zones belonging to anything else are dropped too. Deleting a camera does
+        not cascade to its zones, so without this a door drawn on a camera that
+        was removed months ago stays in the policy and keeps admitting people
+        through a boundary nothing is watching. Omit it to keep every zone.
         """
+        keep = None if cameras is None else {str(c) for c in cameras}
         types = {}
         for z in zones or []:
             zid = z.get("zone_id") if isinstance(z, dict) else getattr(z, "zone_id", None)
             if not zid:
+                continue
+            cam = (z.get("camera_id") if isinstance(z, dict)
+                   else getattr(z, "camera_id", None))
+            if keep is not None and str(cam) not in keep:
                 continue
             enabled = (z.get("enabled", True) if isinstance(z, dict)
                        else getattr(z, "enabled", True))
@@ -351,6 +362,27 @@ class FacilityRoster:
             p.last_zone = zone_id
         p.sightings += 1
         return True
+
+    def clear(self) -> int:
+        """Empty the roster. Returns how many people were on it.
+
+        The companion to the strict discharge policy rather than a contradiction
+        of it. Strict discharge means the roster only ever grows unless a
+        crossing is observed, so a count that has drifted — a tracker that
+        fragmented, a door that was retyped, a camera replaced mid-day — has no
+        way back to zero on its own. Without this an operator's only recourse is
+        editing the table by hand.
+
+        Door tallies and the lifetime counters are deliberately NOT reset: they
+        record how much traffic was observed, which remains true regardless of
+        what the roster believes, and zeroing them would erase the evidence that
+        the drift happened.
+        """
+        n = len(self._people)
+        self._people.clear()
+        self._crossing.clear()
+        self.stats["cleared"] = self.stats.get("cleared", 0) + n
+        return n
 
     # ---- bidirectional crossings -----------------------------------------
     # A crossing of a two-way door is only half-observed when the person

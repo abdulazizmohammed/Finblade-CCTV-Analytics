@@ -145,6 +145,15 @@ class SQLiteStore(Store):
             # still reports how many people it can see.
             "people_in_view": "INTEGER DEFAULT 0",
             "people_in_zones": "INTEGER DEFAULT 0",
+            # Detection-quality regime reported by the worker. Nullable: a
+            # worker running older code sends none, and a missing value must
+            # read as "not reported", never as "reliable".
+            "tracking_quality": "TEXT",
+            "counts_reliable": "INTEGER",
+            "counting_mode": "TEXT",
+            "mean_confidence": "REAL",
+            "track_churn_per_min": "REAL",
+            "detector_saturation": "REAL",
         }
         for col, typ in cam_add.items():
             if col not in cam:
@@ -372,13 +381,24 @@ class SQLiteStore(Store):
             1 if health.get("enabled", True) else 0, health.get("stream_url"),
             int(health.get("people_in_view") or 0),
             int(health.get("people_in_zones") or 0),
+            # Whether those two counts can be believed. Persisted alongside them
+            # rather than beside them: a count that travels without its
+            # reliability is exactly the silent undercount this measures.
+            health.get("tracking_quality"),
+            (None if health.get("counts_reliable") is None
+             else (1 if health.get("counts_reliable") else 0)),
+            health.get("counting_mode"),
+            health.get("mean_confidence"),
+            health.get("track_churn_per_min"),
+            health.get("detector_saturation"),
         )
         with self._lock:
             self._conn.execute(
                 "INSERT INTO cameras(camera_id,site_id,last_seen,health_ts,state,input_fps,"
                 "resolution,dropped_frames,reconnects,loops,frozen,enabled,stream_url,"
-                "people_in_view,people_in_zones) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "people_in_view,people_in_zones,tracking_quality,counts_reliable,"
+                "counting_mode,mean_confidence,track_churn_per_min,detector_saturation) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(camera_id) DO UPDATE SET last_seen=excluded.last_seen, "
                 "health_ts=excluded.health_ts, state=excluded.state, "
                 "input_fps=excluded.input_fps, resolution=excluded.resolution, "
@@ -387,7 +407,13 @@ class SQLiteStore(Store):
                 "stream_url=COALESCE(excluded.stream_url, cameras.stream_url), "
                 "site_id=COALESCE(excluded.site_id, cameras.site_id), "
                 "people_in_view=excluded.people_in_view, "
-                "people_in_zones=excluded.people_in_zones",
+                "people_in_zones=excluded.people_in_zones, "
+                "tracking_quality=excluded.tracking_quality, "
+                "counts_reliable=excluded.counts_reliable, "
+                "counting_mode=excluded.counting_mode, "
+                "mean_confidence=excluded.mean_confidence, "
+                "track_churn_per_min=excluded.track_churn_per_min, "
+                "detector_saturation=excluded.detector_saturation",
                 vals)
             self._conn.commit()
 
@@ -597,12 +623,19 @@ class SQLiteStore(Store):
             rows = _row(self._conn.execute(
                 "SELECT camera_id,site_id,last_seen,name,state,input_fps,resolution,"
                 "dropped_frames,reconnects,loops,frozen,enabled,stream_url,health_ts,"
-                "sim_failure,source,people_in_view,people_in_zones "
+                "sim_failure,source,people_in_view,people_in_zones,"
+                "tracking_quality,counts_reliable,counting_mode,mean_confidence,"
+                "track_churn_per_min,detector_saturation "
                 "FROM cameras ORDER BY camera_id"))
         for r in rows:                       # store booleans as bools, not 0/1
             for k in ("frozen", "enabled", "sim_failure"):
                 if r.get(k) is not None:
                     r[k] = bool(r[k])
+            # counts_reliable is TRI-state: True, False, or "the worker did not
+            # report". A missing value must never round-trip as reliable, so it
+            # stays None rather than being coerced to a bool.
+            if r.get("counts_reliable") is not None:
+                r["counts_reliable"] = bool(r["counts_reliable"])
         return rows
 
     def zone_state_stats(self, t0: float, t1: float, camera_id=None,

@@ -96,6 +96,15 @@ class Store:
     def upsert_camera(self, camera_id: str, **fields) -> None: pass
     def delete_camera(self, camera_id: str) -> bool: return False
     def set_camera_sim(self, camera_id: str, on: bool) -> None: pass
+    def rebind_global_ref(self, drop_ref: str, keep_ref: str) -> int:
+        """Point events at the surviving ref after two identities are merged.
+
+        Without this a merge only corrects the live gallery, and history keeps
+        two people where there was one — so the correction is invisible to every
+        report. Returns rows updated.
+        """
+        return 0
+
     def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
                     event_type=None, person_ref=None, limit: int = 500) -> List[dict]: return []
     def list_alerts_history(self, t0: float, t1: float, camera_id=None, rule_id=None,

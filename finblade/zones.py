@@ -73,6 +73,13 @@ class Zone:
     # Distinct people crossing INTO this zone within group_window_s. 0 disables.
     group_threshold: int = 0
     group_window_s: float = 3.0
+    # Run cross-camera re-identification on people in this zone. If NO zone on a
+    # camera sets it, ReID runs for everyone as before; once any zone does, it
+    # runs only in those zones. Matching every person across a whole site is
+    # expensive and, in a uniformed environment, the case where appearance
+    # matching is least reliable — so it belongs where it is operationally
+    # needed: controlled entrances, restricted corridors, security areas.
+    reid: bool = False
 
     def contains(self, point: Point) -> bool:
         return point_in_polygon(point, self.polygon)
@@ -148,6 +155,7 @@ def zone_from_dict(d: dict, frame_width: float = None, frame_height: float = Non
         occupancy_threshold=int(d.get("occupancy_threshold", 0) or 0),
         group_threshold=int(d.get("group_threshold", 0) or 0),
         group_window_s=float(d.get("group_window_s", 3.0) or 3.0),
+        reid=bool(d.get("reid", False)),
         colour=d.get("colour"),
         enabled=bool(d.get("enabled", True)),
     )

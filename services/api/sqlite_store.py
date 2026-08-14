@@ -163,6 +163,24 @@ class SQLiteStore(Store):
         if "site_id" not in zst:
             self._conn.execute("ALTER TABLE zone_state_ts ADD COLUMN site_id TEXT")
 
+        # global_ref: the cross-camera identity, promoted to a column so a
+        # person's movements can be queried across cameras.
+        #
+        # person_ref cannot answer that. It is a hash of the tracker id, scoped
+        # to one camera process and one session, so the same human on two
+        # cameras carries two unrelated refs and "where did this person go" has
+        # no query. The identity service was already resolving global refs and
+        # discarding them at the process boundary.
+        #
+        # Nullable on purpose: it is only ever populated when ReID actually
+        # resolved a track, and rows written before this column existed keep
+        # working as they always did.
+        evc = {r[1] for r in self._conn.execute("PRAGMA table_info(events)")}
+        if "global_ref" not in evc:
+            self._conn.execute("ALTER TABLE events ADD COLUMN global_ref TEXT")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_events_gref ON events(global_ref)")
+
         # Seed zone_live from history on the upgrade that introduces it.
         # Without this, an existing deployment shows no live zones until every
         # camera next reports — and on a box where the workers are stopped,
@@ -185,12 +203,12 @@ class SQLiteStore(Store):
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO events(event_id,event_type,camera_id,site_id,"
-                "zone_id,zone_from,zone_to,person_ref,ts,frame,payload) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "zone_id,zone_from,zone_to,person_ref,global_ref,ts,frame,payload) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (evt.get("event_id"), evt.get("event_type"), evt.get("camera_id"),
                  evt.get("site_id"), evt.get("zone_id"), evt.get("zone_from"),
-                 evt.get("zone_to"), evt.get("person_ref"), float(evt.get("timestamp", 0)),
-                 evt.get("frame"), json.dumps(evt)))
+                 evt.get("zone_to"), evt.get("person_ref"), evt.get("global_ref"),
+                 float(evt.get("timestamp", 0)), evt.get("frame"), json.dumps(evt)))
             self._conn.commit()
 
     def save_zone_state(self, s: dict, history: bool = True) -> None:
@@ -494,10 +512,15 @@ class SQLiteStore(Store):
             return _row(self._conn.execute(q, p))
 
     def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
-                    event_type=None, person_ref=None, limit: int = 500) -> List[dict]:
+                    event_type=None, person_ref=None, global_ref=None,
+                    limit: int = 500) -> List[dict]:
         q = ("SELECT event_id,event_type,camera_id,site_id,zone_id,zone_from,zone_to,"
-             "person_ref,ts,frame,payload FROM events WHERE ts BETWEEN ? AND ?")
+             "person_ref,global_ref,ts,frame,payload FROM events "
+             "WHERE ts BETWEEN ? AND ?")
         p: list = [t0, t1]
+        if global_ref:
+            # The cross-camera query person_ref cannot serve.
+            q += " AND global_ref=?"; p.append(global_ref)
         if camera_id:
             q += " AND camera_id=?"; p.append(camera_id)
         if zone_id:
@@ -683,6 +706,17 @@ class SQLiteStore(Store):
                 except Exception:
                     r[k] = []
         return rows
+
+    def rebind_global_ref(self, drop_ref: str, keep_ref: str) -> int:
+        """Merge write-back: history follows the correction, not just the gallery."""
+        if not drop_ref or not keep_ref or drop_ref == keep_ref:
+            return 0
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE events SET global_ref=? WHERE global_ref=?",
+                (keep_ref, drop_ref))
+            self._conn.commit()
+            return cur.rowcount or 0
 
     # ---- facility roster -------------------------------------------------
     def load_presence(self):

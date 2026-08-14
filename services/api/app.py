@@ -440,10 +440,12 @@ async def history_events(frm: float = Query(0, alias="from"),
                          to: float = Query(9_000_000_000_000.0, alias="to"),
                          camera_id: str = Query(None), zone_id: str = Query(None),
                          event_type: str = Query(None), person_ref: str = Query(None),
+                         global_ref: str = Query(None),
                          site_id: str = Query(None),
                          limit: int = Query(500), offset: int = Query(0)):
     rows = svc.events_history(frm, to, camera_id=camera_id, zone_id=zone_id,
                               event_type=event_type, person_ref=person_ref,
+                              global_ref=global_ref,
                               limit=offset + limit + 1)
     if site_id:
         rows = [e for e in rows if e.get("site_id") == site_id]
@@ -795,9 +797,19 @@ async def identity_list(limit: int = Query(200),
 
 
 @app.post("/api/v1/identity/merge")
+# Correcting the gallery is only half a merge: without the write-back below,
+# history still holds two people where there was one and every report built
+# from it stays wrong.
 async def identity_merge(request: Request):
     """Operator correction: fold one identity into another."""
-    status, body = id_svc.merge(await request.json())
+    payload = await request.json()
+    status, body = id_svc.merge(payload)
+    if status == 200:
+        try:
+            body["events_rebound"] = svc.rebind_global_ref(
+                payload.get("drop_ref"), payload.get("keep_ref"))
+        except Exception:                                   # noqa: BLE001
+            body["events_rebound"] = None
     return JSONResponse(status_code=status, content=body)
 
 

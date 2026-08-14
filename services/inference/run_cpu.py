@@ -594,6 +594,10 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                  for z in cfg.zones if getattr(z, "group_threshold", 0)}
     occ_threshold = {z.zone_id: z.occupancy_threshold for z in cfg.zones
                      if getattr(z, "occupancy_threshold", 0)}
+    reid_zone_ids = {z.zone_id for z in cfg.zones if getattr(z, "reid", False)}
+    if reid_zone_ids:
+        log.info("camera %s: cross-camera ReID restricted to %s",
+                 cfg.camera_id, ", ".join(sorted(reid_zone_ids)))
     if wrongway.policy.policed_pairs():
         log.info("camera %s: one-way routes policed: %s", cfg.camera_id,
                  ", ".join(f"{a}->{b}" for a, b in wrongway.policy.policed_pairs()))
@@ -846,6 +850,13 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     # consumer nothing and looked like a measurement.
                     det_conf = round(float(conf_by_tid.get(tid, 0.0)), 4)
                     who = dict(person_ref=pr, track_id=tid, confidence=det_conf)
+                    # The cross-camera identity, when ReID has resolved one.
+                    # Omitted rather than sent as null: absent means "not
+                    # resolved", which is a different statement from "resolved
+                    # to nothing", and the schema treats it that way.
+                    gref = reid.global_ref(tid)
+                    if gref:
+                        who["global_ref"] = gref
                     if old and confirmed:
                         # A confirmed move between zones is ONE movement, and
                         # ZONE_TRANSITION is its authoritative record. The
@@ -958,8 +969,17 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # then ask the API to resolve any track with enough views. Both calls
         # are no-ops when ReID is unavailable.
         if reid.ready:
-            reid.observe(frame, tracks, conf_by_tid, vnow,
-                         cfg.frame_width, cfg.frame_height)
+            # Selective ReID: if any zone opts in, only people standing in those
+            # zones are embedded and matched. Nothing opts in -> unchanged
+            # behaviour, so an existing deployment is not silently altered.
+            if reid_zone_ids:
+                reid_tracks = [t for t in tracks
+                               if zone_by_tid.get(t[0]) in reid_zone_ids]
+            else:
+                reid_tracks = tracks
+            if reid_tracks:
+                reid.observe(frame, reid_tracks, conf_by_tid, vnow,
+                             cfg.frame_width, cfg.frame_height)
             reid.resolve_pending(vnow, zone_by_tid)
 
         # Warn (throttled) when most tracked people fall outside every zone —
@@ -1005,6 +1025,9 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             # No detection produced these — the track is gone, so there is no
             # box and no confidence to report. track_id still applies.
             gone_who = dict(person_ref=pr, track_id=tid)
+            gone_gref = reid.global_ref(tid)
+            if gone_gref:
+                gone_who["global_ref"] = gone_gref
             if gone_zone:
                 pending_events.append(new_event(
                     ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,

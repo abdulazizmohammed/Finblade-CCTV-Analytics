@@ -114,7 +114,14 @@ _NON_NEGATIVE = ("occupancy", "density", "occupancy_from", "density_from", "coun
 # the pair exists for consumers that count entries and exits per zone. Anything
 # that must not double-count a single movement — the facility roster above all —
 # keys on the transition and skips these.
-_ANY_OPTIONAL = {"track_id": int, "confidence": _NUM, "derived": bool}
+#
+# global_ref is the cross-camera identity (gp_...), present only when ReID
+# actually resolved the track. It is what makes "where did this person go"
+# answerable at all: person_ref is scoped to one camera process and one session,
+# so the same human on two cameras carries two unrelated refs. Like person_ref
+# it is an opaque salted hash and reverses to nothing.
+_ANY_OPTIONAL = {"track_id": int, "confidence": _NUM, "derived": bool,
+                 "global_ref": str}
 
 
 def new_event(event_type: str, camera_id: str, site_id: str, ts: float, **payload) -> dict:

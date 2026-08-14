@@ -204,6 +204,10 @@ class IngestService:
     def events_history(self, t0, t1, **f):
         return self.store.list_events(t0, t1, **f)
 
+    def rebind_global_ref(self, drop_ref, keep_ref) -> int:
+        """Apply an identity merge to stored history. Returns rows updated."""
+        return self.store.rebind_global_ref(drop_ref, keep_ref)
+
     def alerts_history(self, t0, t1, **f):
         return self.store.list_alerts_history(t0, t1, **f)
 

@@ -133,6 +133,18 @@ LIVE_WINDOW_SECONDS = float(os.environ.get("FINBLADE_LIVE_WINDOW", "1.5"))
 # a quarter of the frames agreeing is enough. See _presence_count.
 PRESENCE_QUANTILE = float(os.environ.get("FINBLADE_PRESENCE_QUANTILE", "0.75"))
 
+# Emit the ZONE_EXIT + ZONE_ENTRY pair alongside every ZONE_TRANSITION, so a
+# consumer tallying per-zone entries and exits sees both ends of a movement
+# without having to unpack transitions itself.
+#
+# The cost is real and worth stating: on a fully zoned floor most movements are
+# transitions, so this roughly TRIPLES movement-event volume. Both extra events
+# carry derived=True and the transition remains the authoritative record, so
+# nothing that counts movements should count them — but if event storage is the
+# binding constraint, this is the switch.
+PAIRED_ZONE_EVENTS = os.environ.get("FINBLADE_PAIRED_ZONE_EVENTS", "1") not in (
+    "0", "false", "False", "no", "off")
+
 
 def _presence_count(values, fallback=0, quantile=None):
     """Upper-quantile person count over the window.
@@ -812,19 +824,44 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 pr = hasher.ref(tid)
                 if changed:
                     old = prev_zone.get(tid)
+                    # The detector's own confidence for the box that produced
+                    # this event, so a consumer can discount a marginal
+                    # detection. This was a hard-coded 0.9, which told a
+                    # consumer nothing and looked like a measurement.
+                    det_conf = round(float(conf_by_tid.get(tid, 0.0)), 4)
+                    who = dict(person_ref=pr, track_id=tid, confidence=det_conf)
                     if old and confirmed:
+                        # A confirmed move between zones is ONE movement, and
+                        # ZONE_TRANSITION is its authoritative record. The
+                        # exit/entry pair is emitted alongside it for consumers
+                        # that tally per-zone entries and exits, marked derived
+                        # so nothing counts the movement twice.
+                        if PAIRED_ZONE_EVENTS:
+                            pending_events.append(new_event(
+                                ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
+                                zone_from=old, derived=True, **who))
+                            pending_events.append(new_event(
+                                ZONE_ENTRY, cfg.camera_id, cfg.site_id, vnow,
+                                zone_to=confirmed, derived=True, **who))
                         pending_events.append(new_event(
                             ZONE_TRANSITION, cfg.camera_id, cfg.site_id, vnow,
-                            zone_from=old, zone_to=confirmed, person_ref=pr))
+                            zone_from=old, zone_to=confirmed, **who))
+                        # A transition is outflow from one zone and inflow to
+                        # the other. Recording neither left per-zone flow rates
+                        # blind to every movement that did not start or end
+                        # outside all zones — which on a fully zoned floor is
+                        # nearly all of them.
+                        flow.record_exit(old, vnow)
+                        flow.record_entry(confirmed, vnow)
                     elif confirmed:
                         pending_events.append(new_event(
                             ZONE_ENTRY, cfg.camera_id, cfg.site_id, vnow,
-                            zone_to=confirmed, person_ref=pr, confidence=0.9))
+                            zone_to=confirmed, **who))
                         flow.record_entry(confirmed, vnow)
                     else:
                         pending_events.append(new_event(
                             ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
-                            zone_from=old or "NONE", person_ref=pr))
+                            zone_from=old or "NONE", **who))
                         if old:
                             flow.record_exit(old, vnow)
                     # restricted-zone entry / exit events
@@ -832,12 +869,13 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                         restricted_since[tid] = vnow
                         pending_events.append(new_event(
                             RESTRICTED_ZONE_ENTRY, cfg.camera_id, cfg.site_id, vnow,
-                            zone_id=confirmed, person_ref=pr))
+                            zone_id=confirmed, **who))
                     if old in restricted_zone_ids and confirmed not in restricted_zone_ids:
                         pending_events.append(new_event(
                             RESTRICTED_ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
-                            zone_id=old, person_ref=pr,
-                            duration=round(vnow - restricted_since.pop(tid, vnow), 2)))
+                            zone_id=old,
+                            duration=round(vnow - restricted_since.pop(tid, vnow), 2),
+                            **who))
                         # a "visit" ended -> re-entry (incl. across a looping clip)
                         # must re-alert R-06, so clear the one-per-visit latch here.
                         eng.clear_intrusion(pr, old)
@@ -845,7 +883,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     if old and (pr, old) in loiter_started and confirmed != old:
                         pending_events.append(new_event(
                             LOITERING_END, cfg.camera_id, cfg.site_id, vnow,
-                            zone_id=old, person_ref=pr, dwell_time=dwell.dwell(tid, vnow)))
+                            zone_id=old, dwell_time=dwell.dwell(tid, vnow), **who))
                         loiter_started.discard((pr, old))
                         eng.reset_loiter(pr, old)
                     prev_zone[tid] = confirmed
@@ -868,7 +906,9 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                             loiter_started.add((pr, confirmed))
                             pending_events.append(new_event(
                                 LOITERING_START, cfg.camera_id, cfg.site_id, vnow,
-                                zone_id=confirmed, person_ref=pr, dwell_time=d))
+                                zone_id=confirmed, person_ref=pr, track_id=tid,
+                                confidence=round(float(conf_by_tid.get(tid, 0.0)), 4),
+                                dwell_time=d))
 
         # Cross-camera identity: embed a budgeted subset of this frame's crops,
         # then ask the API to resolve any track with enough views. Both calls
@@ -918,21 +958,26 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             # looked wrong. The EVENT STREAM was missing the decrement, which
             # only matters once the stream is the source of truth: reconstructed
             # occupancy would climb and never come down.
+            # No detection produced these — the track is gone, so there is no
+            # box and no confidence to report. track_id still applies.
+            gone_who = dict(person_ref=pr, track_id=tid)
             if gone_zone:
                 pending_events.append(new_event(
                     ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
-                    zone_from=gone_zone, person_ref=pr))
+                    zone_from=gone_zone, **gone_who))
                 flow.record_exit(gone_zone, vnow)
             # emit exit events for a track that vanished while inside a zone
             if gone_zone in restricted_zone_ids:
                 pending_events.append(new_event(
                     RESTRICTED_ZONE_EXIT, cfg.camera_id, cfg.site_id, vnow,
-                    zone_id=gone_zone, person_ref=pr,
-                    duration=round(vnow - restricted_since.pop(tid, vnow), 2)))
+                    zone_id=gone_zone,
+                    duration=round(vnow - restricted_since.pop(tid, vnow), 2),
+                    **gone_who))
             if gone_zone and (pr, gone_zone) in loiter_started:
                 pending_events.append(new_event(
                     LOITERING_END, cfg.camera_id, cfg.site_id, vnow,
-                    zone_id=gone_zone, person_ref=pr, dwell_time=dwell.dwell(tid, vnow)))
+                    zone_id=gone_zone, dwell_time=dwell.dwell(tid, vnow),
+                    **gone_who))
                 loiter_started.discard((pr, gone_zone))
             deb.drop(tid)
             dwell.drop(tid)

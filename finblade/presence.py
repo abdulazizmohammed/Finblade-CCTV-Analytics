@@ -521,6 +521,14 @@ def apply_event(roster: FacilityRoster, event: dict, zone_types) -> Optional[str
     ts = event.get("ts")
     if not ref or not isinstance(ts, (int, float)) or isinstance(ts, bool):
         return None
+    if event.get("derived"):
+        # The ZONE_EXIT/ZONE_ENTRY pair emitted alongside a ZONE_TRANSITION
+        # describes the SAME movement as the transition. Acting on all three
+        # would open a second crossing at the same door and lose the origin
+        # zone, which is the half that carries the direction — so a person
+        # walking out could be recorded as walking in. The transition alone
+        # moves the roster.
+        return None
     now = float(ts)
 
     arrival = _arrival_zone(event)

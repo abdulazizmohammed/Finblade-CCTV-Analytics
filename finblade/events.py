@@ -80,6 +80,25 @@ _OPTIONAL_SCHEMA = {
 
 _NON_NEGATIVE = ("occupancy", "density", "occupancy_from", "density_from")
 
+# Fields valid on ANY person-scoped event, checked when present.
+#
+# track_id is the tracker's own integer. It is NOT an identifier for a human: it
+# is private to one camera process, restarts from scratch, and is reused after
+# the process is restarted. It is carried because a consumer correlating events
+# within a single camera session needs the tracker's own handle, and because the
+# requirement specifies it. person_ref remains the field that must never be
+# reversible, and the PII guard below still applies to it.
+#
+# confidence is the DETECTOR's confidence for the box that produced the event,
+# so a consumer can discount a marginal detection. It replaces a hard-coded 0.9.
+#
+# derived marks the ZONE_EXIT / ZONE_ENTRY pair emitted alongside a
+# ZONE_TRANSITION. The transition is the authoritative record of the movement;
+# the pair exists for consumers that count entries and exits per zone. Anything
+# that must not double-count a single movement — the facility roster above all —
+# keys on the transition and skips these.
+_ANY_OPTIONAL = {"track_id": int, "confidence": _NUM, "derived": bool}
+
 
 def new_event(event_type: str, camera_id: str, site_id: str, ts: float, **payload) -> dict:
     """Build an event envelope. Does not validate — call validate_event for that."""
@@ -136,6 +155,22 @@ def validate_event(evt: dict) -> Tuple[bool, List[str]]:
         if isinstance(val, bool) or not isinstance(val, expected):
             errors.append(f"{et}.{field_name} must be {expected}")
 
+    # Fields allowed on any event type.
+    for field_name, expected in _ANY_OPTIONAL.items():
+        if field_name not in evt:
+            continue
+        val = evt[field_name]
+        # `derived` is genuinely a bool, so it cannot use the bool-rejecting
+        # rule the numeric fields rely on.
+        if expected is bool:
+            if not isinstance(val, bool):
+                errors.append(f"{field_name} must be a boolean")
+        elif isinstance(val, bool) or not isinstance(val, expected):
+            errors.append(f"{field_name} must be {expected}")
+    tid = evt.get("track_id")
+    if isinstance(tid, int) and not isinstance(tid, bool) and tid < 0:
+        errors.append("track_id must be >= 0")
+
     # Value-level checks. Applied to every count/density field on any event, so
     # a new optional field cannot be added without inheriting the >= 0 rule.
     for field_name in _NON_NEGATIVE:
@@ -150,10 +185,11 @@ def validate_event(evt: dict) -> Tuple[bool, List[str]]:
                     errors.append("zone_occupancy keys must be non-empty strings")
                 if isinstance(occ, bool) or not isinstance(occ, int) or occ < 0:
                     errors.append(f"zone_occupancy[{zone_id!r}] must be an int >= 0")
-    if et == ZONE_ENTRY:
-        conf = evt.get("confidence")
-        if isinstance(conf, _NUM) and not isinstance(conf, bool) and not (0.0 <= conf <= 1.0):
-            errors.append("confidence must be in [0, 1]")
+    # Applies to every type now that confidence rides the detection rather than
+    # being a constant on zone entry.
+    conf = evt.get("confidence")
+    if isinstance(conf, _NUM) and not isinstance(conf, bool) and not (0.0 <= conf <= 1.0):
+        errors.append("confidence must be in [0, 1]")
 
     # PII guard: any person_ref present must be an anonymous hash, never a name.
     if "person_ref" in evt and isinstance(evt["person_ref"], str):

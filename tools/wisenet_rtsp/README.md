@@ -17,7 +17,7 @@ cd /home/usv/finblade-cctv/tools/wisenet_rtsp
 
 ./start_rtsp_server.sh     # start MediaMTX on :8554
 ./list_sets.sh             # what scenarios exist
-./start_set.sh 2           # play set 2 once, all cameras together
+./start_set.sh 2           # stream set 2, all cameras together, looping
 ./list_urls.sh 2           # the URLs to paste into the FinBlade UI
 ./stop_set.sh 2            # stop it
 ```
@@ -28,7 +28,7 @@ cd /home/usv/finblade-cctv/tools/wisenet_rtsp
 | --- | --- |
 | `start_rtsp_server.sh` | Start MediaMTX (RTSP on 8554). |
 | `stop_rtsp_server.sh` | Stop MediaMTX; stops any running streams first. |
-| `start_set.sh N [--loop]` | Stream every camera of set N. One-shot by default. |
+| `start_set.sh N [--once]` | Stream every camera of set N. Loops by default. |
 | `stop_set.sh N` | Stop set N's streams. |
 | `stop_all_sets.sh` | Stop all streams, leave the server up. |
 | `status.sh` | Server state, addresses, which set is live, per-camera state. |
@@ -53,9 +53,11 @@ resolution, fps and duration, is written to `wisenet_streams.json` by
 
 ## Behaviour worth knowing
 
-- **One-shot by default.** `./start_set.sh 2` plays the set once and finishes,
-  so entry/exit and tracking tests have a clean beginning and end. Use
-  `--loop` for continuous playback.
+- **Looping by default.** `./start_set.sh 2` streams continuously, so cameras
+  added in the FinBlade UI stay online between test runs instead of dropping
+  offline every time a clip ends. Use `--once` when a scenario needs a clear
+  beginning and end — entry/exit counting and tracking tests usually do — and
+  it will finish on its own when the longest clip ends.
 - **Cameras start together.** Every ffmpeg is spawned first and parked on a
   shared barrier file, then all are released at once. Measured spread across
   the 5 cameras of set 2: under one 20 ms polling interval. No per-camera

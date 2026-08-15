@@ -26,6 +26,6 @@ while IFS=$'\t' read -r n cams res fps dur codec; do
 done < <(q sets)
 
 say ""
-say "Start a set:   ./start_set.sh <n>          (plays once)"
-say "               ./start_set.sh <n> --loop   (continuous)"
+say "Start a set:   ./start_set.sh <n>          (loops continuously)"
+say "               ./start_set.sh <n> --once   (plays once, then finishes)"
 say "Show URLs:     ./list_urls.sh <n>"

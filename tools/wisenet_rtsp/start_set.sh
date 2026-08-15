@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 # Start every camera of one WiseNET set as a simultaneous RTSP stream.
 #
-#   ./start_set.sh 2           play the set once, then stop (default)
-#   ./start_set.sh 2 --loop    play continuously
+#   ./start_set.sh 2           play continuously, looping (default)
+#   ./start_set.sh 2 --once    play the set once, then finish
+#
+# Looping is the default so cameras added in the FinBlade UI stay online
+# between test runs instead of going offline when a clip ends. Use --once
+# when a scenario needs a clear beginning and end (entry/exit, tracking).
 #
 # Only one set runs at a time; starting a set stops whatever was running.
 set -euo pipefail
 source "$(dirname "$(readlink -f "$0")")/lib/common.sh"
 
-usage() { say "usage: $(basename "$0") <set-number> [--loop]"; exit 2; }
+usage() { say "usage: $(basename "$0") <set-number> [--once|--loop]"; exit 2; }
 
 [ $# -ge 1 ] || usage
 N="$1"; shift
-LOOP=0
+LOOP=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --loop) LOOP=1 ;;
+    --once|--no-loop) LOOP=0 ;;
     -h|--help) usage ;;
     *) die "unknown option: $1" ;;
   esac
@@ -48,8 +53,8 @@ rm -f "$PIDDIR/set_$N"/*.pid
 BARRIER="$RUNTIME/.start_barrier"
 rm -f "$BARRIER"
 
-MODE="one-shot (plays once, then finishes)"
-[ "$LOOP" -eq 1 ] && MODE="looping (continuous)"
+MODE="looping (continuous — stop with ./stop_set.sh $N)"
+[ "$LOOP" -eq 1 ] || MODE="one-shot (plays once, then finishes)"
 
 rule
 say "STARTING WiseNET SET $N  —  ${#CAMS[@]} cameras"

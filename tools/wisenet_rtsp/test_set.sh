@@ -48,7 +48,9 @@ SKEWFILE="$RUNTIME/.test_skew"
 WATCHER=$!
 sleep 0.3
 
-"$ROOT/start_set.sh" "$N" >"$RUNTIME/.test_start.log" 2>&1
+# --once regardless of the default, so section 5 can observe playback ending
+# and so a failed run never leaves a looping scenario behind.
+"$ROOT/start_set.sh" "$N" --once >"$RUNTIME/.test_start.log" 2>&1
 START_RC=$?
 wait "$WATCHER" 2>/dev/null || true
 

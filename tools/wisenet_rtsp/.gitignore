@@ -1,0 +1,8 @@
+# Downloaded binaries (mediamtx, ffprobe) — large, re-fetchable
+bin/
+
+# Runtime state: pids, logs, rendered config
+runtime/
+
+# scratch
+.*_tmp.sh

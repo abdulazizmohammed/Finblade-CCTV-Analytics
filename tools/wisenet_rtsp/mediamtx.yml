@@ -1,0 +1,48 @@
+###############################################################################
+# WiseNET RTSP test server — MediaMTX configuration
+#
+# TEST INFRASTRUCTURE ONLY.
+# This server exists to replay the WiseNET dataset as fake IP cameras.
+# It is not part of the FinBlade CCTV application and must never be used
+# for production camera connections.
+#
+# Every protocol except RTSP is disabled so this cannot collide with the
+# ports used by the FinBlade services (8080 MJPEG, 8000 API, etc.).
+#
+# __RUNTIME__ is substituted with the absolute runtime path by
+# start_rtsp_server.sh, which renders runtime/mediamtx.active.yml.
+###############################################################################
+
+logLevel: info
+logDestinations: [file]
+logFile: __RUNTIME__/mediamtx.log
+
+readTimeout: 30s
+writeTimeout: 30s
+writeQueueSize: 1024
+
+# --- Control API, used by status.sh to inspect live paths -------------------
+api: yes
+apiAddress: 127.0.0.1:9997
+
+metrics: no
+pprof: no
+playback: no
+
+# --- RTSP: the only protocol we expose --------------------------------------
+rtsp: yes
+rtspTransports: [udp, multicast, tcp]
+rtspEncryption: "no"
+rtspAddress: :8554
+rtpAddress: :8000
+rtcpAddress: :8001
+
+# --- Everything else off ----------------------------------------------------
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+
+# Paths are created on demand when ffmpeg publishes to them.
+paths:
+  all_others:

@@ -315,7 +315,11 @@ class ReportScheduler:
 
     def generate(self, zone_states: List[dict], now: float, on_demand: bool = False) -> dict:
         self._last = now
-        total = sum(z.get("occupancy", 0) for z in zone_states)
+        # Distinct people across the zones, so a person visible to two cameras
+        # covering one room is reported once. Falls back to the plain sum when
+        # zones carry no identities.
+        from finblade.areas import distinct_occupancy
+        total = distinct_occupancy(zone_states)["total"]
         peak = max((z.get("occupancy", 0) for z in zone_states), default=0)
         return {
             "report_id": f"rpt-{int(now)}",

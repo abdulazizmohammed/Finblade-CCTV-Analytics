@@ -23,6 +23,8 @@ from fastapi.responses import (JSONResponse, HTMLResponse, Response,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from finblade.areas import distinct_occupancy as _distinct_occupancy
+
 from . import charts as _charts
 from . import redact as _redact
 from .service import IngestService
@@ -1447,8 +1449,13 @@ async def summary(charts: int = Query(1)):
             # drawn: occupancy cannot be computed, which is not the same as an
             # empty site, and rendering 0 there is the error this whole
             # integration keeps tripping over.
-            "people_in_zones": (sum(int(z.get("occupancy") or 0) for z in zones)
+            # Distinct people, not summed zone counts: two cameras watching one
+            # room both report the person standing in the overlap, and summing
+            # them reported two people on the floor when there was one.
+            "people_in_zones": (_distinct_occupancy(zones)["total"]
                                 if zones else None),
+            "people_in_zones_summed": (_distinct_occupancy(zones)["summed"]
+                                       if zones else None),
             "people_live": counts.get("live"),
             "cameras": cam_states,
             "zones": zone_states,

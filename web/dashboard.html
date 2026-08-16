@@ -411,7 +411,23 @@ function renderKpis(zones,alerts,counts,cameras){
   // Showing zone occupancy alone made unzoned cameras look empty when they
   // were tracking people; showing only the frame-wide count hides where
   // people actually are. So: headline the total, qualify it underneath.
-  const inZones=zones.reduce((a,z)=>a+(+z.occupancy||0),0);
+  // DISTINCT people, not the sum of the zone counts. Two cameras covering one
+  // office both report the person standing in the overlap, so summing made the
+  // headline read 2 while the office card correctly read 1 — the same
+  // double-count the physical-area layer removes, surviving at the top of the
+  // page. Mirrors finblade.areas.distinct_occupancy: zones that report who
+  // they can see are de-duplicated against each other; zones that do not (an
+  // older worker, or ReID not running) fall back to their own count, because a
+  // count with no identities cannot be merged with anything.
+  const refs=new Set(); let noIdentity=0, summed=0;
+  zones.forEach(z=>{
+    const occ=+z.occupancy||0;
+    summed+=occ;
+    if(Array.isArray(z.occupants)) z.occupants.forEach(r=>refs.add(r));
+    else noIdentity+=occ;
+  });
+  const inZones=refs.size+noIdentity;
+  const deduped=Math.max(0, summed-inZones);
   const zoned=(cameras||[]).filter(c=>(+c.people_in_zones||0)>0||zones.some(z=>z.camera_id===c.camera_id)).length;
 
   // Occupancy is ZONE occupancy: people standing inside a drawn polygon, and
@@ -426,7 +442,11 @@ function renderKpis(zones,alerts,counts,cameras){
     // different measures — in-view double-counts anyone visible to two cameras
     // at once, which this site has — and showing both invited the question of
     // why they disagree. Occupancy means people on monitored floor.
-    $('kOccSub').textContent=`in ${zones.length} zone${zones.length===1?'':'s'}`;
+    // Say when a duplicate was removed. Without it, an operator who can see
+    // two cameras each reporting one person has no way to tell a correct
+    // de-duplication from a lost detection.
+    $('kOccSub').textContent=`in ${zones.length} zone${zones.length===1?'':'s'}`
+      + (deduped>0 ? ` · ${deduped} seen by 2+ cameras, counted once` : '');
   }else{
     // With no polygons this metric cannot be computed at all. Say that, rather
     // than render a confident 0 that reads as "the site is empty".

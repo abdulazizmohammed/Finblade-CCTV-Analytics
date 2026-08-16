@@ -55,7 +55,11 @@ def render_report_csv(zone_stats: List[dict]) -> str:
 def render_report_html(zone_states: List[dict], generated_at: float,
                        theme_href: str = "/web/finblade-theme.css") -> str:
     ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(generated_at))
-    total = sum(int(z.get("occupancy", 0)) for z in zone_states)
+    # Distinct people. Summing the zone counts reported one person twice
+    # whenever two cameras watched the same room, and a printed report is
+    # exactly where that error gets quoted to somebody.
+    from finblade.areas import distinct_occupancy
+    total = distinct_occupancy(zone_states)["total"]
 
     rows = []
     for z in sorted(zone_states, key=lambda z: z.get("zone_id", "")):

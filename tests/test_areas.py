@@ -13,6 +13,7 @@ from finblade.areas import (
     AreaRegistry,
     PhysicalArea,
     area_ref,
+    distinct_occupancy,
     is_resolved,
 )
 
@@ -319,6 +320,55 @@ def test_unresolved_people_are_reported_so_a_count_can_be_judged():
     st = ao.state(OFFICE, 1.0)
     assert st["occupancy"] == 2
     assert st["unresolved"] == 1
+
+
+# --------------------------------------------------------------------------
+# Site-wide total. The headline figure had the same double-count as the room.
+# --------------------------------------------------------------------------
+def test_site_total_counts_a_person_seen_by_two_cameras_once():
+    rows = [
+        {"camera_id": "CAM-04", "zone_id": "ZONE-04", "occupancy": 1,
+         "occupants": ["gp_101"]},
+        {"camera_id": "CAM-05", "zone_id": "ZONE-05", "occupancy": 1,
+         "occupants": ["gp_101"]},
+    ]
+    d = distinct_occupancy(rows)
+    assert d["total"] == 1          # was 2 when this summed
+    assert d["summed"] == 2
+    assert d["double_counted"] == 1
+
+
+def test_site_total_adds_up_genuinely_different_people():
+    rows = [
+        {"occupancy": 2, "occupants": ["gp_1", "gp_2"]},
+        {"occupancy": 2, "occupants": ["gp_2", "gp_3"]},
+    ]
+    assert distinct_occupancy(rows)["total"] == 3      # not 4, not 2
+
+
+def test_site_total_falls_back_to_summing_without_identities():
+    """An older worker reports no occupants; its people must still count."""
+    rows = [{"occupancy": 3}, {"occupancy": 2}]
+    d = distinct_occupancy(rows)
+    assert d["total"] == 5
+    assert d["double_counted"] == 0
+    assert d["identity_zones"] == 0
+
+
+def test_site_total_mixes_identified_and_unidentified_zones():
+    rows = [
+        {"occupancy": 1, "occupants": ["gp_101"]},
+        {"occupancy": 1, "occupants": ["gp_101"]},   # same person, deduped
+        {"occupancy": 4},                            # no identities, added on
+    ]
+    d = distinct_occupancy(rows)
+    assert d["total"] == 5
+    assert d["distinct"] == 1
+    assert d["counted_without_identity"] == 4
+
+
+def test_site_total_of_nothing_is_zero():
+    assert distinct_occupancy([])["total"] == 0
 
 
 def test_registry_reports_which_areas_span_cameras():

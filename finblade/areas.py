@@ -78,6 +78,51 @@ def is_resolved(ref: str) -> bool:
     return not str(ref).startswith("local:")
 
 
+def distinct_occupancy(zone_rows: Iterable[dict]) -> dict:
+    """People across a set of zone rows, counting each person once.
+
+    The site total was `sum(zone.occupancy)`, which double-counts anyone two
+    cameras can see — the same error the physical-area layer exists to fix, but
+    at the top of the dashboard rather than on a room card. One person standing
+    in an office watched by CAM-04 and CAM-05 made the headline read 2 while the
+    room card correctly read 1.
+
+    Zones that report `occupants` contribute identities and are de-duplicated
+    against every other such zone. Zones that do not (an older worker, or ReID
+    not running) fall back to their own count and are added on, because a count
+    without identities cannot be merged with anything — the alternative is
+    discarding real people because we cannot name them.
+
+    So the result degrades to the old sum exactly when no zone reports
+    identities, which is what makes this safe to drop into the existing
+    aggregation points.
+    """
+    refs: Set[str] = set()
+    counted_without_identity = 0
+    identity_zones = 0
+    summed = 0
+    for z in zone_rows or ():
+        occ = int(z.get("occupancy") or 0)
+        summed += occ
+        people = z.get("occupants")
+        if isinstance(people, list):
+            identity_zones += 1
+            refs.update(str(r) for r in people)
+        else:
+            counted_without_identity += occ
+    total = len(refs) + counted_without_identity
+    return {
+        "total": total,
+        "distinct": len(refs),
+        "counted_without_identity": counted_without_identity,
+        "identity_zones": identity_zones,
+        # What the old sum would have said, so the correction is visible
+        # rather than looking like the number quietly changed.
+        "summed": summed,
+        "double_counted": max(0, summed - total),
+    }
+
+
 @dataclass
 class PhysicalArea:
     """A real place. Capacity and type belong here, not on the camera zone."""

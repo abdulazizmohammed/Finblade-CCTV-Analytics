@@ -235,6 +235,9 @@ class IngestService:
             payload.get("camera_id"), payload["zone_id"],
             payload.get("occupancy"), payload.get("status"), payload.get("ts"))
         self.store.save_zone_state(payload, history=history)
+        # Feed the physical-area view. Only zones an operator mapped to an area
+        # take this path; everything else is untouched.
+        self._observe_area(payload)
         # 5s zone-state posts are the camera's primary heartbeat. Unconditional:
         # a suppressed history row is still proof the camera is alive, and
         # gating this would make every quiet zone trip R-07.
@@ -699,6 +702,76 @@ class IngestService:
 
     def list_zones(self, camera_id=None):
         return self.store.list_zones(camera_id)
+
+    # -- physical areas -----------------------------------------------------
+    #
+    # A camera zone is one viewpoint; a physical area is the room. Occupancy
+    # for a room is the number of DISTINCT people its cameras can see, so a
+    # person standing in the overlap of two cameras counts once. See
+    # finblade/areas.py for the counting rules and why summing is wrong.
+
+    _AREA_RELOAD_S = 5.0
+
+    def _area_tracker(self):
+        """The AreaOccupancy instance, with its zone->area map kept current.
+
+        The map is refreshed on a short interval rather than per post: an
+        operator remapping a zone in the editor should take effect within
+        seconds, but re-reading the zone table on every 5s post from every
+        camera is needless work.
+        """
+        from finblade.areas import AreaOccupancy, AreaRegistry, area_from_dict
+        now = time.time()
+        tracker = getattr(self, "_areas", None)
+        if tracker is None:
+            tracker = self._areas = AreaOccupancy(AreaRegistry())
+            self._areas_loaded = 0.0
+        if (now - getattr(self, "_areas_loaded", 0.0)) > self._AREA_RELOAD_S:
+            reg = AreaRegistry([area_from_dict(a) for a in self.store.list_areas()])
+            reg.load_zone_rows(self.store.list_zones())
+            tracker.registry = reg
+            self._areas_loaded = now
+        return tracker
+
+    def _observe_area(self, payload: dict) -> None:
+        occupants = payload.get("occupants")
+        if occupants is None:
+            # Worker does not report identities. Deliberately NOT synthesised
+            # from the count: inventing per-person keys here would make two
+            # cameras' anonymous "1"s look like two different people, which is
+            # exactly the double-count this feature exists to remove.
+            return
+        tracker = self._area_tracker()
+        tracker.observe(payload.get("camera_id"), payload["zone_id"],
+                        occupants, payload.get("ts") or time.time())
+
+    def area_states(self, now=None):
+        now = now if now is not None else time.time()
+        tracker = self._area_tracker()
+        tracker.tick(now)
+        return tracker.snapshot(now)
+
+    def area_state(self, area_id, now=None):
+        now = now if now is not None else time.time()
+        tracker = self._area_tracker()
+        if area_id not in tracker.registry.area_ids():
+            return None
+        return tracker.state(area_id, now)
+
+    def save_area(self, payload: dict):
+        if not isinstance(payload, dict) or not payload.get("area_id"):
+            return 422, {"saved": False, "errors": ["area_id is required"]}
+        self.store.save_area(payload)
+        self._areas_loaded = 0.0          # take effect on the next read
+        return 200, {"saved": True, "area_id": payload["area_id"]}
+
+    def list_areas(self):
+        return self.store.list_areas()
+
+    def delete_area(self, area_id):
+        gone = self.store.delete_area(area_id)
+        self._areas_loaded = 0.0
+        return gone
 
     # -- alerts --
     def site_for_camera(self, camera_id) -> str:

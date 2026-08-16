@@ -59,6 +59,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from finblade.areas import area_ref                      # noqa: E402
 from finblade.config import load_camera_config          # noqa: E402
 from finblade.debounce import BoundaryDebouncer          # noqa: E402
 from finblade.emission import DensityUpdateGate          # noqa: E402
@@ -258,7 +259,11 @@ def _zone_sig(data):
                         z.get("normalized_polygon") or z.get("polygon"),
                         z.get("capacity_max"), z.get("area_sqm"),
                         z.get("warning_density"), z.get("critical_density"),
-                        z.get("loitering_threshold_sec"), z.get("enabled")]
+                        z.get("loitering_threshold_sec"), z.get("enabled"),
+                        # Remapping a zone to a different room is an edit like
+                        # any other; without it here the worker would keep
+                        # stamping the old area id onto its posts.
+                        z.get("physical_area_id")]
                        for z in data], sort_keys=True)
 
 
@@ -812,6 +817,12 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         conf_by_tid = {}     # tid -> detection confidence (ReID crop gating)
         zone_by_tid = {}     # tid -> confirmed zone (stamped on the identity)
         occupancy = {z.zone_id: 0 for z in cfg.zones}
+        # WHO is in each zone, not just how many. A count cannot be
+        # de-duplicated across cameras after the fact — two cameras each
+        # reporting "1" could be one person seen twice or two people, and
+        # nothing downstream can tell which. Sending identities lets the API
+        # count distinct people per physical area (see finblade/areas.py).
+        zone_occupants = {z.zone_id: set() for z in cfg.zones}
         pending_events = []   # ZONE_* + DENSITY_UPDATE dicts
         pending_alerts = []   # alert dicts (intrusion / loiter / density / capacity)
         pending_states = []   # 5s zone-state dicts
@@ -857,6 +868,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 zone_by_tid[tid] = confirmed
                 if confirmed:
                     occupancy[confirmed] += 1
+                    # area_ref falls back to a CAMERA-SCOPED key until ReID
+                    # resolves a global ref, so two unresolved people are never
+                    # merged by both happening to be track 17.
+                    zone_occupants[confirmed].add(
+                        area_ref(cfg.camera_id, tid, reid.global_ref(tid)))
                 pr = hasher.ref(tid)
                 if changed:
                     old = prev_zone.get(tid)
@@ -1139,6 +1155,12 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     "avg_occupancy": round(zstats.average(z.zone_id), 1),
                     "trend": zstats.trend(z.zone_id, vnow),
                     "status": zstatus,
+                    # Identities, so the API can count distinct people across
+                    # the cameras that share a physical area. Sorted for a
+                    # stable payload; occupancy above stays the camera's own
+                    # observation and is unchanged.
+                    "occupants": sorted(zone_occupants.get(z.zone_id, ())),
+                    "physical_area_id": z.physical_area_id,
                     "ts": vnow, **roll,
                 })
                 # Head-count threshold (REQ-21). Independent of area and

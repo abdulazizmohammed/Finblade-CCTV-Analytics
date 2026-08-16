@@ -868,6 +868,59 @@ async def get_zones(camera_id: str = Query(None)):
     return {"zones": svc.list_zones(camera_id)}
 
 
+# ---- physical areas -------------------------------------------------------
+# One real room, however many cameras watch it. Occupancy here is distinct
+# people, not the sum of the cameras' counts — see finblade/areas.py.
+
+@app.get("/api/v1/areas")
+async def list_areas():
+    """Defined areas, each with the camera zones mapped to it."""
+    tracker = svc._area_tracker()
+    out = []
+    for a in tracker.registry.areas():
+        d = a.to_dict()
+        d["zones"] = [{"camera_id": c, "zone_id": z}
+                      for c, z in tracker.registry.zones_of(a.area_id)]
+        d["multi_camera"] = tracker.registry.is_multi_camera(a.area_id)
+        out.append(d)
+    return {"areas": out}
+
+
+@app.post("/api/v1/areas")
+async def save_area(request: Request):
+    payload = await request.json()
+    code, body = svc.save_area(payload)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.delete("/api/v1/areas/{area_id}")
+async def delete_area(area_id: str):
+    if not svc.delete_area(area_id):
+        return JSONResponse(status_code=404, content={"error": "unknown area",
+                                                      "area_id": area_id})
+    return {"deleted": True, "area_id": area_id}
+
+
+@app.get("/api/v1/areas/state")
+async def area_states():
+    """Live occupancy per physical area.
+
+    `occupancy` is the business figure: distinct people. `observations` keeps
+    each camera's own count alongside it, because those remain valid readings
+    and an operator needs to see why a total is what it is.
+    """
+    return {"areas": svc.area_states()}
+
+
+@app.get("/api/v1/areas/{area_id}")
+async def area_state(area_id: str):
+    st = svc.area_state(area_id)
+    if st is None:
+        return JSONResponse(status_code=404, content={"error": "unknown area",
+                                                      "area_id": area_id})
+    return st
+
+
 def _effective_state(c: dict, now: float) -> str:
     """State to display: the worker's reported state, unless its health snapshot
     has gone stale (runner died) — then the camera reads OFFLINE."""

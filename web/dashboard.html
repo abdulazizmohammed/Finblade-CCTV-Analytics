@@ -200,6 +200,12 @@ body{
       </section>
 
       <section>
+        <!-- Physical areas: real rooms, counted as distinct people across
+             every camera that watches them. Hidden entirely until an operator
+             maps a zone to an area, so a single-camera site looks exactly as
+             it always did. -->
+        <div class="section-h" id="areas-h" hidden><p class="eyebrow">Physical areas</p><span class="rule"></span></div>
+        <div class="zones" id="areas" hidden></div>
         <div class="section-h"><p class="eyebrow">Zones</p><span class="rule"></span></div>
         <div class="zones" id="zones"><span class="empty">no zone data</span></div>
         <div class="section-h" style="margin-top:18px;"><p class="eyebrow">Alert feed</p><span class="rule"></span>
@@ -485,6 +491,42 @@ function renderZones(zones){
   }).join('');
 }
 
+// Physical areas — one card per real room.
+//
+// The headline number is DISTINCT people, so a person standing where two
+// cameras overlap counts once. Each camera's own observation is shown
+// underneath: those readings are still valid and an operator needs to see why
+// the total is what it is, rather than wondering which camera got ignored.
+function renderAreas(areas){
+  const host=$('areas'), head=$('areas-h');
+  const on=!!(areas && areas.length);
+  host.hidden=!on; head.hidden=!on;
+  if(!on) return;
+  host.innerHTML=areas.map(a=>{
+    const occ=+a.occupancy||0;
+    const cap=Math.min(100,+a.capacity_pct||0);
+    const capMax=(a.capacity_max)?a.capacity_max:'—';
+    const obs=(a.observations||[]).map(o=>
+      `<div class="f"><span class="k">${esc(o.camera_id)}${o.stale?' (stale)':''}</span>`+
+      `<span class="v">${+o.observed||0}</span></div>`).join('');
+    // Only worth showing when it is non-zero: on a single-camera area it
+    // always is zero and the line would be noise.
+    const dedup=(+a.double_counted>0)
+      ? `<div class="zrow"><span>${a.camera_count} cameras · ${a.summed_observations} observations</span>`+
+        `<span title="people seen by more than one camera, counted once">−${a.double_counted} duplicate</span></div>`
+      : '';
+    return `<div class="zcard fb-bracket">
+      <div class="zh"><h3>${esc(a.name||a.area_id)}</h3><span class="pill normal">${esc(a.area_type||'ROOM')}</span></div>
+      <div class="zbig"><span class="n fb-num">${occ}</span><span class="of">/ ${capMax}</span>
+        <span class="of" style="margin-left:auto">${a.camera_count||0} cam</span></div>
+      <div class="zrow"><span class="fb-num">${(+a.density||0).toFixed(2)} /m²</span><span>${cap.toFixed(0)}% capacity</span></div>
+      <div class="meter"><span style="width:${cap}%"></span></div>
+      ${dedup}
+      <div class="flow">${obs}</div>
+      </div>`;
+  }).join('');
+}
+
 // Camera health + online KPI + feeds, all from the cameras API (not zones), so
 // UI-provisioned cameras appear even before they have zones.
 function renderCameras(cameras){
@@ -689,6 +731,17 @@ setInterval(()=>{
   const tc=`00:${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
   document.querySelectorAll('[data-tc]').forEach(el=>el.textContent=tc);
 },1000);
+
+// Areas poll on their own timer rather than riding the WebSocket payload, so
+// the socket contract is unchanged and this works identically on the REST
+// fallback. They move at walking pace, so 5s is ample.
+async function pollAreas(){
+  try{
+    const r=await fetch(`${API}/api/v1/areas/state`);
+    if(r.ok) renderAreas((await r.json()).areas||[]);
+  }catch(e){ /* leave the last good render on screen */ }
+}
+pollAreas(); setInterval(pollAreas, 5000);
 
 connect();startPoll();
 // --- destructive housekeeping: delete alerts + their saved frames ----------

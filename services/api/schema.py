@@ -79,6 +79,13 @@ def validate_zone_state(payload: dict) -> Tuple[bool, List[str]]:
             errors.append(f"{field} must be {typ}")
     if payload.get("status") not in _VALID_STATUS:
         errors.append(f"status must be one of {sorted(_VALID_STATUS)}")
+    # Optional: WHO is in the zone, for cross-camera de-duplication. Absent
+    # means "this worker does not report identities", which is not an error —
+    # an older worker keeps posting valid state without it.
+    occ = payload.get("occupants")
+    if occ is not None:
+        if not isinstance(occ, list) or not all(isinstance(r, str) for r in occ):
+            errors.append("occupants must be a list of strings")
     for k in ("occupancy", "density", "capacity_pct"):
         v = payload.get(k)
         if isinstance(v, _NUM) and not isinstance(v, bool) and v < 0:

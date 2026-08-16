@@ -54,6 +54,15 @@ class Zone:
     area_sqm: float
     polygon: List[Tuple[float, float]] = field(default_factory=list)
     camera_id: Optional[str] = None
+    # The real-world place this polygon looks at (see finblade/areas.py).
+    #
+    # A polygon is one camera's VIEW of somewhere; two cameras watching one
+    # office draw two polygons of the same room. Pointing both at the same
+    # physical_area_id is what lets occupancy be counted as distinct people
+    # rather than summed per camera, which would count the overlap twice.
+    #
+    # None is the ordinary single-camera case and changes nothing.
+    physical_area_id: Optional[str] = None
     zone_type: str = "MONITORED"
     warning_density: float = 2.0
     critical_density: float = 4.0
@@ -94,6 +103,7 @@ class Zone:
             "zone_id": self.zone_id,
             "zone_name": self.zone_name,
             "camera_id": self.camera_id,
+            "physical_area_id": self.physical_area_id,
             "zone_type": self.zone_type,
             "restricted": self.restricted,
             "capacity_max": self.capacity_max,
@@ -146,6 +156,7 @@ def zone_from_dict(d: dict, frame_width: float = None, frame_height: float = Non
         area_sqm=float(d.get("area_sqm", 0.0)),
         polygon=polygon,
         camera_id=d.get("camera_id"),
+        physical_area_id=(d.get("physical_area_id") or None),
         zone_type=zt,
         warning_density=float(d.get("warning_density", 2.0)),
         critical_density=float(d.get("critical_density", 4.0)),

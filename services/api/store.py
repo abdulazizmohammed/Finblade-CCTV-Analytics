@@ -113,6 +113,16 @@ class Store:
                          zone_id=None) -> List[dict]: return []
     def save_zones(self, camera_id: str, zones: List[dict]) -> None: pass
     def list_zones(self, camera_id: str = None) -> List[dict]: return []
+
+    # Physical areas: several camera zones that look at one real place.
+    # Defaults are no-ops so a backend that has not implemented them still
+    # works — areas simply stay undefined and every zone behaves as a
+    # single-camera zone, which is the pre-existing behaviour.
+    def save_area(self, area: dict) -> None: pass
+    def list_areas(self) -> List[dict]: return []
+    def delete_area(self, area_id: str) -> bool: return False
+    def save_area_state(self, s: dict) -> None: pass
+    def area_state_range(self, area_id: str, t0: float, t1: float) -> List[dict]: return []
     def save_report(self, report: dict) -> str: return ""
     def list_reports(self, limit: int = 100) -> List[dict]: return []
     def get_report(self, report_id: str) -> dict: return None
@@ -165,6 +175,8 @@ class InMemoryStore(Store):
         self._reports: List[dict] = []
         self._report_seq = 0
         self._cursors: Dict[str, float] = {}
+        self._areas: Dict[str, dict] = {}
+        self._area_states: List[dict] = []
 
     def save_event(self, evt: dict) -> None:
         """Replace on event_id, matching both durable stores.
@@ -452,6 +464,27 @@ class InMemoryStore(Store):
         for zs in self._zones.values():
             out.extend(dict(z) for z in zs)
         return out
+
+    def save_area(self, area):
+        self._areas[str(area["area_id"])] = dict(area)
+
+    def list_areas(self):
+        return [dict(a) for a in self._areas.values()]
+
+    def delete_area(self, area_id):
+        gone = self._areas.pop(str(area_id), None) is not None
+        for zs in self._zones.values():
+            for z in zs:
+                if z.get("physical_area_id") == str(area_id):
+                    z["physical_area_id"] = None
+        return gone
+
+    def save_area_state(self, s):
+        self._area_states.append(dict(s))
+
+    def area_state_range(self, area_id, t0, t1):
+        return [dict(s) for s in self._area_states
+                if s.get("area_id") == area_id and t0 <= s.get("ts", 0) <= t1]
 
     def zone_state_stats(self, t0, t1, camera_id=None, zone_id=None):
         groups = {}

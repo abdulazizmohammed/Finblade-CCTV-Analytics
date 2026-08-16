@@ -109,6 +109,17 @@ CREATE TABLE IF NOT EXISTS facility_doors(
 
 CREATE TABLE IF NOT EXISTS facility_meta(
   key TEXT PRIMARY KEY, value REAL);
+
+-- A real-world place, as opposed to one camera's polygon of it.
+--
+-- Two cameras watching one office own two rows in `zones`, both pointing at
+-- one row here via zones.physical_area_id. Occupancy for this row is COUNT of
+-- DISTINCT people across those zones, never the sum of their counts — see
+-- finblade/areas.py. Capacity belongs here rather than on the camera zone: a
+-- room holds twelve people regardless of how many cameras watch it.
+CREATE TABLE IF NOT EXISTS physical_areas(
+  area_id TEXT PRIMARY KEY, name TEXT, area_type TEXT, capacity_max INTEGER,
+  area_sqm REAL, site_id TEXT, updated_at REAL);
 """
 
 
@@ -190,6 +201,38 @@ class SQLiteStore(Store):
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_events_gref ON events(global_ref)")
 
+        # Which physical area a camera zone looks at, and who is in it.
+        #
+        # Both nullable and both additive: a zone with no area behaves exactly
+        # as it always has (single-camera occupancy from its own count), and a
+        # worker that does not report identities keeps posting valid state.
+        # Only zones an operator has explicitly mapped take the new path.
+        zc = {r[1] for r in self._conn.execute("PRAGMA table_info(zones)")}
+        if "physical_area_id" not in zc:
+            self._conn.execute("ALTER TABLE zones ADD COLUMN physical_area_id TEXT")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS ix_zones_area "
+                               "ON zones(physical_area_id)")
+        zl = {r[1] for r in self._conn.execute("PRAGMA table_info(zone_live)")}
+        if "occupants" not in zl:
+            # JSON list of identity refs. Lives only on the live row, never in
+            # zone_state_ts: history keeps counts, and retaining per-person
+            # refs for every 5s sample of every zone would be both a large
+            # table and a much stronger record of individuals than this system
+            # is meant to hold.
+            self._conn.execute("ALTER TABLE zone_live ADD COLUMN occupants TEXT")
+        if "physical_area_id" not in zl:
+            self._conn.execute("ALTER TABLE zone_live ADD COLUMN physical_area_id TEXT")
+
+        # Area-level occupancy history, so "how full was the office" can be
+        # answered later. Counts only — see the note above about refs.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS area_state_ts("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, area_id TEXT, ts REAL,"
+            "occupancy INTEGER, capacity_pct REAL, density REAL,"
+            "summed_observations INTEGER, camera_count INTEGER, site_id TEXT)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS ix_ast_area_ts "
+                           "ON area_state_ts(area_id, ts)")
+
         # Seed zone_live from history on the upgrade that introduces it.
         # Without this, an existing deployment shows no live zones until every
         # camera next reports — and on a box where the workers are stopped,
@@ -248,8 +291,9 @@ class SQLiteStore(Store):
             self._conn.execute(
                 "INSERT INTO zone_live(camera_id,zone_id,site_id,"
                 "zone_name,zone_type,restricted,ts,occupancy,density,capacity_pct,"
-                "peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "peak_occupancy,avg_occupancy,trend,extra,inflow,outflow,status,"
+                "occupants,physical_area_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(camera_id,zone_id) DO UPDATE SET "
                 "site_id=excluded.site_id, zone_name=excluded.zone_name, "
                 "zone_type=excluded.zone_type, restricted=excluded.restricted, "
@@ -258,7 +302,9 @@ class SQLiteStore(Store):
                 "peak_occupancy=excluded.peak_occupancy, "
                 "avg_occupancy=excluded.avg_occupancy, trend=excluded.trend, "
                 "extra=excluded.extra, inflow=excluded.inflow, "
-                "outflow=excluded.outflow, status=excluded.status "
+                "outflow=excluded.outflow, status=excluded.status, "
+                "occupants=excluded.occupants, "
+                "physical_area_id=excluded.physical_area_id "
                 "WHERE excluded.ts >= zone_live.ts",
                 (s.get("camera_id") or "", s["zone_id"], s.get("site_id"),
                  s.get("zone_name"), s.get("zone_type"),
@@ -267,7 +313,13 @@ class SQLiteStore(Store):
                  int(s.get("peak_occupancy", s["occupancy"])),
                  float(s.get("avg_occupancy", 0)), s.get("trend", "flat"),
                  json.dumps(extra), float(s.get("inflow_per_min", 0)),
-                 float(s.get("outflow_per_min", 0)), s.get("status")))
+                 float(s.get("outflow_per_min", 0)), s.get("status"),
+                 # None, not "[]", when the worker reports no identities:
+                 # "nobody here" and "this worker does not tell us who" must
+                 # stay distinguishable downstream.
+                 (json.dumps(s["occupants"]) if s.get("occupants") is not None
+                  else None),
+                 s.get("physical_area_id")))
             self._conn.commit()
         # A write makes the cached snapshot wrong, so drop it. Relying on the
         # TTL alone meant a post followed immediately by a read returned the
@@ -476,7 +528,8 @@ class SQLiteStore(Store):
                 "SELECT zone_id,camera_id,site_id,zone_name,zone_type,restricted,ts,"
                 "occupancy,density,"
                 "capacity_pct,peak_occupancy,avg_occupancy,trend,extra,"
-                "inflow AS inflow_per_min,outflow AS outflow_per_min,status "
+                "inflow AS inflow_per_min,outflow AS outflow_per_min,status,"
+                "occupants,physical_area_id "
                 # One row per zone, so no grouping and no scan of history.
                 #
                 # This used to read MAX(id) ... GROUP BY zone_id, camera_id over
@@ -497,6 +550,11 @@ class SQLiteStore(Store):
                     r.update(json.loads(extra))
                 except Exception:
                     pass
+            if r.get("occupants") is not None:
+                try:
+                    r["occupants"] = json.loads(r["occupants"])
+                except Exception:
+                    r["occupants"] = None
         out = _fresh_zones(out)   # drop zones no longer reporting (removed/renamed)
         self._zone_cache = (time.time(), out)
         return out
@@ -709,7 +767,8 @@ class SQLiteStore(Store):
                     "INSERT OR REPLACE INTO zones(camera_id,zone_id,zone_name,zone_type,"
                     "restricted,capacity_max,area_sqm,warning_density,critical_density,"
                     "loitering_threshold_sec,colour,enabled,normalized_polygon,polygon,"
-                    "adjacency_list,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "adjacency_list,updated_at,physical_area_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (camera_id, z.get("zone_id"), z.get("zone_name"), z.get("zone_type", "MONITORED"),
                      1 if z.get("restricted") else 0, int(z.get("capacity_max", 0)),
                      float(z.get("area_sqm", 0.0)), float(z.get("warning_density", 2.0)),
@@ -717,13 +776,15 @@ class SQLiteStore(Store):
                      z.get("colour"), 1 if z.get("enabled", True) else 0,
                      json.dumps(z.get("normalized_polygon") or []),
                      json.dumps(z.get("polygon") or []),
-                     json.dumps(z.get("adjacency_list") or []), _t.time()))
+                     json.dumps(z.get("adjacency_list") or []), _t.time(),
+                     (z.get("physical_area_id") or None)))
             self._conn.commit()
 
     def list_zones(self, camera_id: str = None) -> List[dict]:
         q = ("SELECT camera_id,zone_id,zone_name,zone_type,restricted,capacity_max,area_sqm,"
              "warning_density,critical_density,loitering_threshold_sec,colour,enabled,"
-             "normalized_polygon,polygon,adjacency_list,updated_at FROM zones")
+             "normalized_polygon,polygon,adjacency_list,updated_at,physical_area_id "
+             "FROM zones")
         p = []
         if camera_id is not None:
             q += " WHERE camera_id=?"; p.append(camera_id)
@@ -739,6 +800,59 @@ class SQLiteStore(Store):
                 except Exception:
                     r[k] = []
         return rows
+
+    # -- physical areas -----------------------------------------------------
+    def save_area(self, area: dict) -> None:
+        import time as _t
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO physical_areas(area_id,name,area_type,"
+                "capacity_max,area_sqm,site_id,updated_at) VALUES (?,?,?,?,?,?,?)",
+                (str(area["area_id"]), area.get("name") or area["area_id"],
+                 str(area.get("area_type") or "ROOM").upper(),
+                 int(area.get("capacity_max") or 0),
+                 float(area.get("area_sqm") or 0.0),
+                 area.get("site_id"), _t.time()))
+            self._conn.commit()
+
+    def list_areas(self) -> List[dict]:
+        with self._lock:
+            return _row(self._conn.execute(
+                "SELECT area_id,name,area_type,capacity_max,area_sqm,site_id,"
+                "updated_at FROM physical_areas ORDER BY area_id"))
+
+    def delete_area(self, area_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM physical_areas WHERE area_id=?", (str(area_id),))
+            # Detach the zones too, so no zone is left pointing at an area that
+            # no longer exists — those zones fall back to single-camera
+            # behaviour rather than silently vanishing from every total.
+            self._conn.execute(
+                "UPDATE zones SET physical_area_id=NULL WHERE physical_area_id=?",
+                (str(area_id),))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def save_area_state(self, s: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO area_state_ts(area_id,ts,occupancy,capacity_pct,"
+                "density,summed_observations,camera_count,site_id) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (s["area_id"], float(s["ts"]), int(s.get("occupancy") or 0),
+                 float(s.get("capacity_pct") or 0.0), float(s.get("density") or 0.0),
+                 int(s.get("summed_observations") or 0),
+                 int(s.get("camera_count") or 0), s.get("site_id")))
+            self._conn.commit()
+
+    def area_state_range(self, area_id: str, t0: float, t1: float) -> List[dict]:
+        with self._lock:
+            return _row(self._conn.execute(
+                "SELECT area_id,ts,occupancy,capacity_pct,density,"
+                "summed_observations,camera_count FROM area_state_ts "
+                "WHERE area_id=? AND ts BETWEEN ? AND ? ORDER BY ts",
+                (str(area_id), float(t0), float(t1))))
 
     def rebind_global_ref(self, drop_ref: str, keep_ref: str) -> int:
         """Merge write-back: history follows the correction, not just the gallery."""

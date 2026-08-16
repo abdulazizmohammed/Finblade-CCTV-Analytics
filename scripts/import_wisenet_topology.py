@@ -828,7 +828,10 @@ def main(argv=None):
     if args.out_topology:
         path = os.path.join(repo_root, args.out_topology) \
             if not os.path.isabs(args.out_topology) else args.out_topology
-        with open(path, "w", encoding="utf-8") as fh:
+        # newline="\n" because this file is read on the Linux box that runs the
+        # API, and generating it from a Windows checkout would otherwise write
+        # CRLF and show the whole file as modified on every regeneration.
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(topology_yaml)
         print("wrote %s" % path)
         wrote = True
@@ -849,7 +852,7 @@ def main(argv=None):
             "adjacency": model["adjacency"],
             "door_spaces": model["door_spaces"],
         }
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(plan, fh, indent=2, sort_keys=False)
             fh.write("\n")
         print("wrote %s" % path)

@@ -29,9 +29,57 @@ overlapping_pairs:
   - a: CAM-03
     b: CAM-04
 
+  # Added 2026-08-17. Both of these pairs were already declared by the operator
+  # as sharing a room — each camera's zone carries the same physical_area_id —
+  # but neither appeared here, so the identity matcher was treating them as
+  # unknown pairs on the default window below. Live at the time: unknown_pair
+  # 899, rejected_topology 233, and two cameras on one office reporting 1 + 3
+  # people for the three who were in it.
+  #
+  # The area mapping is the authority for an overlap, not observed timing.
+  # scripts/propose_topology.py classified CAM-ST-05 <-> CAM-ST1-04 as a WALK
+  # of median 21s from 292 samples, which is wrong and instructively so: those
+  # samples were produced by ReID running under this file's previous contents,
+  # where the pair was unknown. The 21s it measured is how long re-matching took
+  # to recover, not how long anyone walked. The script warns about exactly this
+  # circularity in its own header. Two zones pointing at one physical area is a
+  # statement a human made about the building; prefer it.
+
+  # Room2 — ZONE-ST1-04 and ZONE-ST1-05, both physical_area_id "Room2".
+  # Two angles on one office. Confirmed against the live feeds.
+  - a: CAM-ST1-04
+    b: CAM-ST-05
+
+  # Entrance-ST1 — ZONE-ST1-01 and ZONE-ST1-02, both physical_area_id
+  # "Entrance-ST1". Declared from the same area mapping. NOT yet confirmed
+  # against footage: both cameras were offline when this was written, so if the
+  # entrance and the lobby turn out to be adjacent rather than shared, move this
+  # to `transits` with a paced walk time.
+  - a: CAM-ST1-01
+    b: CAM-ST1-02
+
+  # CAM-VID-1 <-> CAM-VID-2 (site SITE-DXB-01) is the one pair the observed data
+  # can settle on its own: 264 handovers at a median gap of 0.31s, 65% inside the
+  # overlap window. A third of a second is simultaneity, not a walk, and unlike
+  # the Room2 pair that conclusion does not depend on the topology being right
+  # beforehand. Left commented because both cameras are offline and neither has
+  # zones drawn, so nothing has confirmed it visually — uncomment when that site
+  # is next running.
+  # - a: CAM-VID-1
+  #   b: CAM-VID-2
+
   # STILL UNSURVEYED. Add any other pair that shares floor area, and put walk
   # times in `transits` for pairs separated by a route. Order does not matter;
   # pairs are stored normalised.
+  #
+  # Not overlapping, and deliberately absent: CAM-ST1-03 (Room1) is the only
+  # camera on its area, so it has no partner to share floor with.
+  #
+  # The CAM-03/CAM-04 entry above is kept as the operator left it. Note both
+  # cameras have since been deleted — only their zones remain — and that the
+  # area mapping now pairs CAM-04 with CAM-05 (both OFFICE-01) while CAM-03's
+  # zone has no area at all. If those cameras come back, that pairing wants
+  # rechecking. Left alone rather than silently corrected.
 
 # Pairs separated by a walk. min_seconds is the fastest a person could
 # physically cover it; max_seconds is the longest gap still worth treating as
@@ -41,6 +89,21 @@ transits: []
   #   b: CAM-B-02
   #   min_seconds: 12      # measured: brisk walk, lobby -> terminal
   #   max_seconds: 90      # beyond this, treat as a new visit
+
+  # NEEDS A HUMAN — the routes between the three ST1 areas. A person can walk
+  # Entrance-ST1 -> Room1 -> Room2, so these pairs are real transits and their
+  # minimum is genuinely non-zero, but nothing here knows how far apart they
+  # are. propose_topology.py saw 1 to 3 samples each, which is not enough to
+  # take a number from. Pace each walk and fill them in:
+  #
+  #   CAM-ST1-01 / CAM-ST1-02  (Entrance-ST1)  <->  CAM-ST1-03  (Room1)
+  #   CAM-ST1-01 / CAM-ST1-02  (Entrance-ST1)  <->  CAM-ST1-04 / CAM-ST-05  (Room2)
+  #   CAM-ST1-03               (Room1)         <->  CAM-ST1-04 / CAM-ST-05  (Room2)
+  #
+  # Until then they fall through to default_transit below, which is permissive
+  # (0-120s) and will accept a handover that was really too fast to be one.
+  # That is the deliberate trade: an unsurveyed site keeps matching rather than
+  # silently refusing every candidate.
 
 # Applied to any pair not listed above. Deliberately permissive so an
 # incomplete topology degrades to "matching still works, just less precisely"

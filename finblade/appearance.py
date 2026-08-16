@@ -226,11 +226,61 @@ class TrackFeatureBank:
 
     capacity: int = 5
     vectors: List[List[float]] = field(default_factory=list)
+    # Which camera each view came from, when the caller says. Parallel to
+    # ``vectors``; entries are None when unknown.
+    sources: List[Optional[str]] = field(default_factory=list)
 
-    def add(self, embedding: Sequence[float]) -> None:
+    def add(self, embedding: Sequence[float],
+            source: Optional[str] = None) -> None:
         self.vectors.append(_l2_normalize(embedding))
-        if len(self.vectors) > self.capacity:
-            self.vectors.pop(0)      # oldest out; recent views describe them best
+        self.sources.append(source)
+        while len(self.vectors) > self.capacity:
+            self._evict()
+
+    def _evict(self) -> None:
+        """Drop a view, protecting viewpoint diversity.
+
+        A plain oldest-out FIFO starves the bank down to ONE camera's angle.
+        The binding is sticky, so the camera holding a track keeps pushing
+        fresh views in; after `capacity` of them the bank holds nothing but
+        that camera's viewpoint. A second camera looking at the same person
+        from behind then scores against five front views, falls under the
+        threshold, and gets minted as a new identity — one person, counted
+        twice, on exactly the overlapping pair this is supposed to join.
+
+        It also explains why re-entry works when simultaneous overlap does not:
+        coming back to the SAME camera matches the angle the bank is full of.
+
+        So evict the oldest view of whichever camera is best represented,
+        rather than the oldest view overall. With two cameras and capacity 5
+        the bank settles at roughly 3/2 instead of 5/0, and the cross-angle
+        comparison actually has something to match against.
+        """
+        if not any(self.sources):
+            self.vectors.pop(0)          # no source info: previous behaviour
+            self.sources.pop(0)
+            return
+        counts: dict = {}
+        for s in self.sources:
+            counts[s] = counts.get(s, 0) + 1
+        # Most-represented source; ties break toward the one holding the
+        # oldest view, so eviction stays deterministic.
+        crowded = max(counts, key=lambda s: (counts[s], -self.sources.index(s)))
+        i = self.sources.index(crowded)
+        self.vectors.pop(i)
+        self.sources.pop(i)
+
+    def clear(self) -> None:
+        """Drop every template. The privacy control — see globalid._forget."""
+        self.vectors.clear()
+        self.sources.clear()
+
+    def source_mix(self) -> dict:
+        """How many views per camera. Diagnostic for cross-camera match failures."""
+        mix: dict = {}
+        for s in self.sources:
+            mix[s] = mix.get(s, 0) + 1
+        return mix
 
     @property
     def n(self) -> int:

@@ -155,6 +155,11 @@ class GlobalIdentityRegistry:
         self._seq = 0
         self.stats = {"created": 0, "matched": 0, "rejected_margin": 0,
                       "rejected_topology": 0, "expired": 0,
+                      # Candidates that passed the physics gate but scored
+                      # under `threshold`, plus the highest such score seen.
+                      # Together they say whether the threshold is set right
+                      # for THIS site's cameras and angles.
+                      "below_threshold": 0, "best_rejected_score": 0.0,
                       # Ambiguities resolved by folding two gallery records of
                       # the same person together instead of splitting again.
                       "consolidated": 0,
@@ -195,7 +200,7 @@ class GlobalIdentityRegistry:
         ident = self._identities.pop(ref, None)
         if ident is None:
             return
-        ident.bank.vectors.clear()      # explicit: do not leave templates around
+        ident.bank.clear()              # explicit: do not leave templates around
         for binding in list(self._bindings):
             if self._bindings[binding] == ref:
                 del self._bindings[binding]
@@ -243,7 +248,10 @@ class GlobalIdentityRegistry:
             self._seen_pairs.add((camera_id, existing))
             ident.note_seen(camera_id, now, zone_id)
             for v in bank.vectors[-1:]:          # keep the signature fresh
-                ident.bank.add(v)
+                # Stamped with the camera, so this steady drip from whichever
+                # camera holds the binding cannot crowd every other viewpoint
+                # out of the bank. See TrackFeatureBank._evict.
+                ident.bank.add(v, source=camera_id)
             return MatchResult(global_ref=existing, matched=True,
                                reason="existing_binding")
 
@@ -284,7 +292,7 @@ class GlobalIdentityRegistry:
         def _bind(ref: str, reason: str) -> MatchResult:
             ident = self._identities[ref]
             for v in bank.vectors:
-                ident.bank.add(v)
+                ident.bank.add(v, source=camera_id)
             ident.note_seen(camera_id, now, zone_id)
             ident.active.add(binding)
             self._note_co_present(ref, camera_id)
@@ -333,11 +341,22 @@ class GlobalIdentityRegistry:
             reason = "ambiguous_margin"
         else:
             reason = "below_threshold" if considered else "no_candidates"
+            if considered:
+                # Counted, and the best score kept, because this is the number
+                # that tells you whether the threshold is wrong for this site.
+                # A high near-miss rate with best scores clustered just under
+                # the threshold means genuine matches are being refused — the
+                # cross-angle case, where two cameras see opposite sides of one
+                # person — and the fix is to lower it, not to distrust ReID.
+                self.stats["below_threshold"] += 1
+                prev = self.stats.get("best_rejected_score", 0.0)
+                self.stats["best_rejected_score"] = round(
+                    max(prev, best_score), 4)
 
         ref = self._mint_ref()
         new_bank = TrackFeatureBank(capacity=self.bank_capacity)
         for v in bank.vectors:
-            new_bank.add(v)
+            new_bank.add(v, source=camera_id)
         ident = GlobalIdentity(global_ref=ref, bank=new_bank, first_seen=now,
                                last_seen=now, last_camera=camera_id)
         ident.note_seen(camera_id, now, zone_id)
@@ -393,8 +412,12 @@ class GlobalIdentityRegistry:
         drop = self._identities.get(drop_ref)
         if keep is None or drop is None:
             return False
-        for v in drop.bank.vectors:
-            keep.bank.add(v)
+        # Carry the source labels across, or a merge would erase the viewpoint
+        # diversity the two records had between them — which is usually the
+        # most useful thing about a merged pair.
+        drop_sources = drop.bank.sources or [None] * len(drop.bank.vectors)
+        for v, src in zip(drop.bank.vectors, drop_sources):
+            keep.bank.add(v, source=src)
         keep.first_seen = min(keep.first_seen, drop.first_seen)
         if drop.last_seen > keep.last_seen:
             keep.last_seen, keep.last_camera = drop.last_seen, drop.last_camera

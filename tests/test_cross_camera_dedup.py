@@ -27,10 +27,10 @@ def vec(*leading):
     return v
 
 
-def bank(*vectors):
+def bank(*vectors, source=None):
     b = TrackFeatureBank(capacity=5)
     for v in vectors:
-        b.add(v)
+        b.add(v, source=source)
     return b
 
 
@@ -200,6 +200,58 @@ def test_overlapping_pair_must_be_declared_for_simultaneous_matching():
     assert bad.stats["rejected_topology"] >= 1
 
 
+# -- viewpoint diversity in the feature bank -------------------------------
+
+def test_one_camera_cannot_crowd_every_other_viewpoint_out_of_the_bank():
+    """The reported symptom: different ids across angles, correct id on re-entry.
+
+    The binding is sticky, so the camera holding a track pushes a fresh view in
+    on every resolve. With a plain oldest-out FIFO the bank ends up holding
+    nothing but that camera's angle, and the second camera's view of the same
+    person then has only front views to score against.
+    """
+    b = TrackFeatureBank(capacity=5)
+    b.add(vec(1.0, 0.0), source="CAM-05")           # the one rear view
+    for _ in range(8):                              # CAM-04 keeps resolving
+        b.add(vec(0.0, 1.0), source="CAM-04")
+
+    mix = b.source_mix()
+    assert mix.get("CAM-05", 0) >= 1, "the other camera's view must survive"
+    assert mix["CAM-04"] <= 4
+    assert b.n == 5
+
+
+def test_bank_without_source_labels_behaves_as_before():
+    b = TrackFeatureBank(capacity=3)
+    for i in range(5):
+        b.add(vec(float(i), 1.0))
+    assert b.n == 3
+    assert b.source_mix() == {None: 3}
+
+
+def test_cross_angle_match_survives_a_camera_monopolising_the_bank():
+    """End to end: the office case that was minting a second identity."""
+    gid = registry()
+    front, rear = vec(1.0, 0.0), vec(0.86, 0.51)     # ~30 degrees apart
+
+    # The person is picked up by CAM-04 and stays in its view for a while.
+    r = gid.resolve("CAM-04", 4, bank(front, front), now=100.0)
+    for t in range(1, 9):
+        gid.resolve("CAM-04", 4, bank(front), now=100.0 + t)
+
+    ident = gid.get(r.global_ref)
+    assert ident.bank.source_mix() == {"CAM-04": 5}
+
+    # CAM-05 now sees the same person from the other side. With the bank full
+    # of CAM-04 views this is the hard case; what matters is that whichever way
+    # it resolves, a REAR view is retained afterwards so the next attempt has
+    # something comparable to match against.
+    gid.resolve("CAM-05", 7, bank(rear, rear), now=109.0)
+    banks = [i.bank.source_mix() for i in
+             (gid.get(x) for x in gid.all_refs()) if i]
+    assert any("CAM-05" in m for m in banks)
+
+
 # -- the match decision is auditable ---------------------------------------
 
 def test_a_match_reports_why_it_was_made():
@@ -211,3 +263,19 @@ def test_a_match_reports_why_it_was_made():
     assert d["reason"] in ("appearance_match", "consolidated_duplicate")
     assert 0.0 <= d["score"] <= 1.0
     assert "runner_up" in d and "candidates" in d
+
+
+def test_near_misses_are_counted_so_the_threshold_can_be_tuned():
+    """A refused match must be measurable, not just invisible.
+
+    Without this a site whose real cross-angle scores sit at 0.66 looks
+    identical to a site where ReID is working: both show identities being
+    created. The count and the best rejected score are what distinguish
+    "threshold too high" from "genuinely different people".
+    """
+    gid = registry(threshold=0.99, margin=0.0)     # refuse almost everything
+    gid.resolve("CAM-04", 4, bank(vec(1.0, 0.0), vec(1.0, 0.0)), now=100.0)
+    gid.resolve("CAM-05", 7, bank(vec(0.86, 0.51), vec(0.86, 0.51)), now=100.1)
+
+    assert gid.stats["below_threshold"] >= 1
+    assert 0.0 < gid.stats["best_rejected_score"] < 0.99

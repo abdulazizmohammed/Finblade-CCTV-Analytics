@@ -1,0 +1,262 @@
+{
+  "set": 1,
+  "site_id": "SITE-WISENET",
+  "resolution": {
+    "width": 1280,
+    "height": 720
+  },
+  "cameras": [
+    {
+      "camera_id": "WN-S1-C01",
+      "camera_number": 1,
+      "video": "video1_1.avi",
+      "rtsp": "rtsp://192.168.65.122:8554/set_1/cam_01",
+      "ifc_space": "IfcSpace_102572"
+    },
+    {
+      "camera_id": "WN-S1-C02",
+      "camera_number": 2,
+      "video": "video1_2.avi",
+      "rtsp": "rtsp://192.168.65.122:8554/set_1/cam_02",
+      "ifc_space": "IfcSpace_102572"
+    },
+    {
+      "camera_id": "WN-S1-C03",
+      "camera_number": 3,
+      "video": "video1_3.avi",
+      "rtsp": "rtsp://192.168.65.122:8554/set_1/cam_03",
+      "ifc_space": "IfcSpace_24737"
+    },
+    {
+      "camera_id": "WN-S1-C04",
+      "camera_number": 4,
+      "video": "video1_4.avi",
+      "rtsp": "rtsp://192.168.65.122:8554/set_1/cam_04",
+      "ifc_space": "IfcSpace_23922"
+    },
+    {
+      "camera_id": "WN-S1-C05",
+      "camera_number": 5,
+      "video": "video1_5.avi",
+      "rtsp": "rtsp://192.168.65.122:8554/set_1/cam_05",
+      "ifc_space": "IfcSpace_23922"
+    }
+  ],
+  "areas": [
+    {
+      "area_id": "WN-SPACE-1",
+      "name": "WiseNET space 1",
+      "area_type": "ROOM",
+      "area_sqm": 0.0,
+      "capacity_max": 0,
+      "_ifc_space": "IfcSpace_102572",
+      "_cameras": [
+        1,
+        2
+      ]
+    },
+    {
+      "area_id": "WN-SPACE-2",
+      "name": "WiseNET space 2",
+      "area_type": "ROOM",
+      "area_sqm": 0.0,
+      "capacity_max": 0,
+      "_ifc_space": "IfcSpace_23922",
+      "_cameras": [
+        4,
+        5
+      ]
+    },
+    {
+      "area_id": "WN-SPACE-3",
+      "name": "WiseNET space 3",
+      "area_type": "ROOM",
+      "area_sqm": 0.0,
+      "capacity_max": 0,
+      "_ifc_space": "IfcSpace_24737",
+      "_cameras": [
+        3
+      ]
+    }
+  ],
+  "zones": {
+    "WN-S1-C01": [
+      {
+        "zone_id": "WN-S1-C01-ROOM",
+        "zone_name": "Space 1 floor",
+        "zone_type": "MONITORED",
+        "physical_area_id": "WN-SPACE-1",
+        "polygon": [
+          [
+            0,
+            0
+          ],
+          [
+            1280,
+            0
+          ],
+          [
+            1280,
+            720
+          ],
+          [
+            0,
+            720
+          ]
+        ],
+        "capacity_max": 0,
+        "area_sqm": 0.0
+      }
+    ],
+    "WN-S1-C02": [
+      {
+        "zone_id": "WN-S1-C02-ROOM",
+        "zone_name": "Space 1 floor",
+        "zone_type": "MONITORED",
+        "physical_area_id": "WN-SPACE-1",
+        "polygon": [
+          [
+            0,
+            0
+          ],
+          [
+            1280,
+            0
+          ],
+          [
+            1280,
+            720
+          ],
+          [
+            0,
+            720
+          ]
+        ],
+        "capacity_max": 0,
+        "area_sqm": 0.0
+      }
+    ],
+    "WN-S1-C03": [
+      {
+        "zone_id": "WN-S1-C03-ROOM",
+        "zone_name": "Space 3 floor",
+        "zone_type": "MONITORED",
+        "physical_area_id": "WN-SPACE-3",
+        "polygon": [
+          [
+            0,
+            0
+          ],
+          [
+            1280,
+            0
+          ],
+          [
+            1280,
+            720
+          ],
+          [
+            0,
+            720
+          ]
+        ],
+        "capacity_max": 0,
+        "area_sqm": 0.0
+      }
+    ],
+    "WN-S1-C04": [
+      {
+        "zone_id": "WN-S1-C04-ROOM",
+        "zone_name": "Space 2 floor",
+        "zone_type": "MONITORED",
+        "physical_area_id": "WN-SPACE-2",
+        "polygon": [
+          [
+            0,
+            0
+          ],
+          [
+            1280,
+            0
+          ],
+          [
+            1280,
+            720
+          ],
+          [
+            0,
+            720
+          ]
+        ],
+        "capacity_max": 0,
+        "area_sqm": 0.0
+      }
+    ],
+    "WN-S1-C05": [
+      {
+        "zone_id": "WN-S1-C05-ROOM",
+        "zone_name": "Space 2 floor",
+        "zone_type": "MONITORED",
+        "physical_area_id": "WN-SPACE-2",
+        "polygon": [
+          [
+            0,
+            0
+          ],
+          [
+            1280,
+            0
+          ],
+          [
+            1280,
+            720
+          ],
+          [
+            0,
+            720
+          ]
+        ],
+        "capacity_max": 0,
+        "area_sqm": 0.0
+      }
+    ]
+  },
+  "adjacency": {
+    "IfcSpace_102572": [
+      "IfcSpace_23922",
+      "IfcSpace_24737"
+    ],
+    "IfcSpace_23922": [
+      "IfcSpace_102572"
+    ],
+    "IfcSpace_24737": [
+      "IfcSpace_102572"
+    ]
+  },
+  "door_spaces": {
+    "IfcDoor_588559": [
+      "IfcSpace_102572",
+      "IfcSpace_23922"
+    ],
+    "IfcDoor_589362": [
+      "IfcSpace_102572"
+    ],
+    "IfcDoor_588624": [
+      "IfcSpace_102572",
+      "IfcSpace_23922"
+    ],
+    "IfcDoor_588754": [
+      "IfcSpace_102572",
+      "IfcSpace_24737"
+    ],
+    "IfcDoor_588175": [
+      "IfcSpace_102572"
+    ],
+    "IfcDoor_589198": [
+      "IfcSpace_23922"
+    ],
+    "IfcDoor_589135": [
+      "IfcSpace_23922"
+    ]
+  }
+}

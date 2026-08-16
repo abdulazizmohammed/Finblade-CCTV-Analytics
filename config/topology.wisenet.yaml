@@ -1,0 +1,96 @@
+# Camera topology for WiseNET set 1 — GENERATED, do not hand-edit.
+#
+# Regenerate with:
+#   python3 scripts/import_wisenet_topology.py --set 1 \
+#       --dataset <wisenet_dataset> --out-topology <this file>
+#
+# Source: network_enviroment/camera_calibration/*/cam_N.json.
+# 'isHostedBy' states which room each camera is in; the door regions
+# state which doorways it can see. Everything below follows from those
+# two fields, except where a comment says otherwise.
+
+# Cameras hosted by the SAME IfcSpace. They see one room between them,
+# so the same person is legitimately on both at the same instant and a
+# dt near zero is evidence FOR a match, not against it. Without these
+# pairs declared, simultaneous sightings fall through the non-
+# overlapping branch and every correct match is a coin toss on the
+# default transit window.
+overlapping_pairs:
+  # s1 (IfcSpace_102572)
+  - a: WN-S1-C01
+    b: WN-S1-C02
+  # s2 (IfcSpace_23922)
+  - a: WN-S1-C04
+    b: WN-S1-C05
+
+# Camera pairs in DIFFERENT rooms that share a doorway.
+#
+# min_seconds is 0.0 and that is a considered value, not a placeholder:
+# the rooms share a door, so the walk between them really can be
+# instantaneous, and topology.py argues at length that inventing a
+# non-zero minimum for an unsurveyed pair rejects correct matches while
+# looking healthy in the logs. gt.json cannot supply a better number —
+# its tracklets are contiguous, so a space change takes zero annotated
+# seconds. Measure the real walk if you want these tightened.
+transits:
+  # s1 <-> s2 via D2, D3
+  - a: WN-S1-C01
+    b: WN-S1-C04
+    min_seconds: 0.0
+    max_seconds: 120.0
+  # s1 <-> s2 via D2, D3
+  - a: WN-S1-C01
+    b: WN-S1-C05
+    min_seconds: 0.0
+    max_seconds: 120.0
+  # s1 <-> s2 via D2, D3
+  - a: WN-S1-C02
+    b: WN-S1-C04
+    min_seconds: 0.0
+    max_seconds: 120.0
+  # s1 <-> s2 via D2, D3
+  - a: WN-S1-C02
+    b: WN-S1-C05
+    min_seconds: 0.0
+    max_seconds: 120.0
+  # s1 <-> s3 via D4
+  - a: WN-S1-C01
+    b: WN-S1-C03
+    min_seconds: 0.0
+    max_seconds: 120.0
+  # s1 <-> s3 via D4
+  - a: WN-S1-C02
+    b: WN-S1-C03
+    min_seconds: 0.0
+    max_seconds: 120.0
+
+# NEEDS A HUMAN — pairs this script will not guess.
+#
+# These rooms do not share a door, so a person must cross at least
+# one other space to get between them and the minimum transit is
+# genuinely non-zero. How non-zero depends on the size of the
+# building, which the calibration does not record. Pace the walk and
+# add the pair to `transits` above.
+#   s2 <-> s3 : 2 doorways apart
+
+default_transit:
+  min_seconds: 0.0
+  max_seconds: 120.0
+
+overlap_tolerance_seconds: 5.0
+
+# Every camera pair in this set is listed above, so an unlisted pair
+# means a camera the topology does not know about. Left permissive
+# because a stray camera should degrade matching, not stop it; set
+# false once you are confident the set is fully described.
+allow_unknown_pairs: true
+
+# Carried over from config/topology.yaml unchanged. These are ReID
+# matching parameters, independent of the building, and WiseNET is the
+# footage to retune them on — see the threshold comment there.
+matching:
+  threshold: 0.70
+  margin: 0.06
+  ttl_seconds: 300
+  bank_capacity: 5
+  max_identities: 2000

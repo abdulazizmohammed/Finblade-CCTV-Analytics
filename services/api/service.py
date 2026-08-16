@@ -28,6 +28,11 @@ _POLICY_TTL_S = 30.0
 # immediately and never batched.
 _PRESENCE_FLUSH_S = 30.0
 
+# Upper bound on a declared opening headcount. Not a capacity limit — it is a
+# typo guard, so a fat-fingered 40000 cannot bury the observed roster under a
+# number no building holds.
+_MAX_BASELINE = 100_000
+
 
 class IngestService:
     def __init__(self, store: Store, bus=None, state_gate=None):
@@ -117,9 +122,22 @@ class IngestService:
         # provisional and reported separately rather than being quietly mixed in
         # with the trustworthy ones.
         gref = evt.get("global_ref")
-        ref = gref or evt.get("person_ref")
-        if not gref and evt.get("person_ref"):
+        pref = evt.get("person_ref")
+        ref = gref or pref
+        if not gref and pref:
             view["_provisional"] = True
+        elif gref and pref:
+            # ReID has resolved this track, and it may well have been admitted
+            # before it did — the views of somebody in a doorway are the worst
+            # crops the gate ever sees, so resolution usually lands AFTER the
+            # entry crossing, not before it. In that case the roster entry is
+            # keyed on the tracker hash while every event from here on carries
+            # the global ref, and their exit would remove nothing.
+            #
+            # Cheap to attempt and a no-op unless a stale entry is actually
+            # sitting there, so it runs on every resolved event rather than
+            # needing to detect the transition.
+            self.roster.rekey(pref, gref)
         # Which doorway this is, captured BEFORE the crossing resolves: for a
         # two-way door the pending crossing knows it, and resolving pops it.
         door = self.roster.crossing_zone(ref) if ref else None
@@ -182,8 +200,11 @@ class IngestService:
         if not force and (now - self._presence_flushed_at) < _PRESENCE_FLUSH_S:
             return
         try:
+            # baseline travels in the stats dict — see FacilityRoster
+            # .from_records for why it is not a fourth store argument.
             self.store.save_presence(self.roster.to_records(),
-                                     dict(self.roster.stats),
+                                     dict(self.roster.stats,
+                                          baseline=self.roster.baseline),
                                      self.roster.doors.to_records())
         except Exception:                                   # noqa: BLE001
             return
@@ -208,7 +229,42 @@ class IngestService:
         return 200, {"ok": True, "removed": removed,
                      "occupancy": self.roster.occupancy(),
                      "note": "Door tallies and lifetime counters are kept — they "
-                             "record observed traffic, which stays true."}
+                             "record observed traffic, which stays true. Any "
+                             "declared baseline is cleared: it claims people are "
+                             "inside, which resetting to empty contradicts."}
+
+    def set_facility_baseline(self, payload: dict) -> Tuple[int, dict]:
+        """Declare how many people were already inside at startup.
+
+        The count cannot be measured from here. An interior sighting proves one
+        person is inside but says nothing about the rooms no camera watches, so
+        a number derived from cameras would be an unknowable fraction of the
+        truth presented as the whole of it. This takes the figure from wherever
+        the site actually knows it — badge system, fire register, a walk round —
+        and then lets the exits drain it.
+        """
+        if not isinstance(payload, dict):
+            return 422, {"ok": False, "errors": ["payload must be an object"]}
+        raw = payload.get("count")
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return 422, {"ok": False, "errors": ["count must be a number"]}
+        if isinstance(raw, float) and raw != int(raw):
+            # A headcount is people. Silently truncating 12.7 would be a
+            # measurement error accepted as a fact.
+            return 422, {"ok": False, "errors": ["count must be a whole number"]}
+        if raw < 0:
+            return 422, {"ok": False, "errors": ["count must be >= 0"]}
+        if raw > _MAX_BASELINE:
+            return 422, {"ok": False,
+                         "errors": [f"count must be <= {_MAX_BASELINE}"]}
+        self.roster.set_baseline(int(raw))
+        self._flush_presence(force=True)
+        return 200, {"ok": True, "baseline": self.roster.baseline,
+                     "observed": self.roster.observed(),
+                     "occupancy": self.roster.occupancy(),
+                     "note": "Drains by one each time somebody leaves who was "
+                             "never seen to arrive, so it decays to zero as the "
+                             "opening population turns over."}
 
     def facility_members(self, now: float = None) -> List[dict]:
         return self.roster.members(now=time.time() if now is None else now)

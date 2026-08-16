@@ -278,9 +278,20 @@ class FacilityRoster:
     camera can see right now. That is the point.
     """
 
-    def __init__(self, site_id: Optional[str] = None):
+    def __init__(self, site_id: Optional[str] = None, baseline: int = 0):
         self.site_id = site_id
         self._people: Dict[str, Presence] = {}
+        # People known to be inside before this system could observe anyone —
+        # a cold start into an occupied building. They have no refs, so they
+        # cannot be roster members: nothing can ever match them to a specific
+        # exit. Held as a scalar and drained by `discharge_unknown`, which is
+        # precisely the event "somebody left who we never saw arrive".
+        #
+        # Declared by an operator from a source outside this system: a badge
+        # count, a fire register, a walk round. Guessing it is not possible —
+        # an interior sighting proves someone is inside but says nothing about
+        # how many people are in the rooms no camera watches.
+        self.baseline = max(0, int(baseline))
         self.stats = {
             "admitted": 0,          # admissions that changed the roster
             "discharged": 0,        # discharges that changed the roster
@@ -301,6 +312,13 @@ class FacilityRoster:
             "ambiguous_crossings": 0,
             # Reached a bidirectional door and went back the way they came.
             "turned_back": 0,
+            # Roster entries moved from a tracker-scoped ref to the
+            # cross-camera identity once ReID resolved it. See rekey().
+            "rekeyed": 0,
+            # Unmatched discharges absorbed by the baseline. The baseline
+            # remaining is (declared - this), floored at zero, so the pair says
+            # how much of the opening count has since walked out.
+            "baseline_discharged": 0,
         }
         # Per-door traffic tallies (REQ-14). Fed by apply_event so a door's
         # counters can never disagree with the roster movements that caused them.
@@ -341,10 +359,87 @@ class FacilityRoster:
             # Never let occupancy go negative by "removing" someone who was
             # never counted. The discrepancy is recorded, not absorbed.
             self.stats["discharge_unknown"] += 1
+            # ...and if a baseline was declared, this is very likely one of the
+            # people it stands for: they were inside before we could see them,
+            # so they leave without ever having been admitted. Draining the
+            # baseline here is what makes an opening count decay to nothing as
+            # the original population turns over, instead of sitting on top of
+            # the roster for ever.
+            #
+            # It is a guess, but a bounded one. It cannot push the count below
+            # zero, it can only ever remove people the operator declared, and
+            # when the baseline is zero this is a no-op and the old behaviour
+            # is exactly preserved.
+            if self.baseline > 0:
+                self.baseline -= 1
+                self.stats["baseline_discharged"] += 1
             return False
         del self._people[ref]
         self.stats["discharged"] += 1
         return True
+
+    def rekey(self, old_ref: str, new_ref: str) -> bool:
+        """Move a roster entry onto the identity it turned out to be.
+
+        Cross-camera ReID needs a couple of good views before it will resolve a
+        track, and the views it gets of somebody walking through a doorway are
+        the worst it will ever see — edge-truncated, often partly occluded by
+        the door frame. So the overwhelmingly common case is that a person is
+        admitted under the tracker-scoped person_ref and resolves to a
+        global_ref a second or two later, once they are properly in shot.
+
+        Without this, that person can never be discharged. Every event after
+        resolution carries the global ref, so their exit tries to remove a key
+        that was never admitted: the exit is lost, `discharge_unknown` ticks,
+        and the original entry stays on the roster for ever. One phantom per
+        visitor, which on a busy door is most of them.
+
+        Returns True if an entry moved. Both directions are safe to call
+        blindly — unknown refs and no-op moves return False.
+        """
+        if not old_ref or not new_ref or old_ref == new_ref:
+            return False
+        entry = self._people.get(old_ref)
+        if entry is None:
+            return False
+
+        existing = self._people.get(new_ref)
+        if existing is not None:
+            # Both keys are on the roster, so one person is currently counted
+            # twice — admitted once before resolution and once after. Fold them
+            # together rather than leaving the duplicate: keep the earlier
+            # arrival (that is when they really came in) and the later sighting,
+            # and add the observations up.
+            existing.admitted_at = min(existing.admitted_at, entry.admitted_at)
+            if entry.last_seen > existing.last_seen:
+                existing.last_seen = entry.last_seen
+                existing.last_zone = entry.last_zone
+            existing.entry_zone = existing.entry_zone or entry.entry_zone
+            existing.sightings += entry.sightings
+        else:
+            entry.ref = new_ref
+            self._people[new_ref] = entry
+        del self._people[old_ref]
+
+        # A crossing in progress is keyed the same way and would otherwise be
+        # orphaned mid-door — the person would arrive on the far side with no
+        # pending crossing and the direction would be lost.
+        pending = self._crossing.pop(old_ref, None)
+        if pending is not None and new_ref not in self._crossing:
+            self._crossing[new_ref] = pending
+
+        self.stats["rekeyed"] += 1
+        return True
+
+    def set_baseline(self, count: int) -> int:
+        """Declare how many people were already inside. Returns the value set.
+
+        Replaces rather than adds: this is a statement of fact about the
+        building at one moment, and an operator recounting the room means the
+        new number, not the sum of both attempts.
+        """
+        self.baseline = max(0, int(count))
+        return self.baseline
 
     def note_seen(self, ref: str, now: float,
                   zone_id: Optional[str] = None) -> bool:
@@ -378,9 +473,13 @@ class FacilityRoster:
         what the roster believes, and zeroing them would erase the evidence that
         the drift happened.
         """
-        n = len(self._people)
+        n = self.occupancy()
         self._people.clear()
         self._crossing.clear()
+        # The baseline goes too. It is a claim about how many people are inside,
+        # and "reset because the building is empty" contradicts it outright —
+        # leaving it standing would reset the roster to a non-zero number.
+        self.baseline = 0
         self.stats["cleared"] = self.stats.get("cleared", 0) + n
         return n
 
@@ -403,7 +502,17 @@ class FacilityRoster:
 
     # ---- queries ----------------------------------------------------------
     def occupancy(self) -> int:
-        """People inside, seen or not. THE number this module exists to produce."""
+        """People inside, seen or not. THE number this module exists to produce.
+
+        Observed roster plus whatever remains of the declared baseline. Note
+        this makes occupancy larger than ``len(members())`` whenever a baseline
+        is running: baseline people have no refs, so they can be counted but
+        never listed. ``observed()`` is the members-only figure.
+        """
+        return len(self._people) + self.baseline
+
+    def observed(self) -> int:
+        """People this system actually watched walk in. Excludes the baseline."""
         return len(self._people)
 
     def contains(self, ref: str) -> bool:
@@ -433,6 +542,12 @@ class FacilityRoster:
         body = {
             "site_id": self.site_id,
             "occupancy": self.occupancy(),
+            # The decomposition, always present so nobody has to guess which
+            # part of the headline they are looking at. observed is people this
+            # system watched arrive and can name; baseline is the declared
+            # opening count still unaccounted for.
+            "observed": self.observed(),
+            "baseline": self.baseline,
             "pending_crossings": self.pending_crossings(),
             "stats": dict(self.stats),
         }
@@ -455,7 +570,14 @@ class FacilityRoster:
     def from_records(cls, records, site_id: Optional[str] = None,
                      stats: Optional[dict] = None,
                      doors: Optional[List[dict]] = None) -> "FacilityRoster":
-        roster = cls(site_id=site_id)
+        # The baseline rides in on the stats dict rather than through a fourth
+        # store argument. It has to survive a restart — an opening count that
+        # evaporated when the API bounced would be worse than not having one,
+        # because the number would silently drop mid-day — and the stats dict
+        # already round-trips through the store as key/value pairs. Adding a
+        # column would mean touching every backend, and one of them is behind.
+        stats = dict(stats or {})
+        roster = cls(site_id=site_id, baseline=int(stats.pop("baseline", 0) or 0))
         roster.doors.load_records(doors)
         for r in records or []:
             ref = r.get("ref")

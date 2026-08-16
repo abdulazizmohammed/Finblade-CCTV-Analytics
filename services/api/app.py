@@ -553,6 +553,29 @@ async def facility_clear():
     return JSONResponse(status_code=code, content=body)
 
 
+@app.post("/api/v1/facility/baseline")
+async def facility_baseline(request: Request):
+    """Declare how many people were already inside before counting started.
+
+    A cold start into an occupied building reads zero, because nobody in it was
+    observed crossing in — and no interior camera can fix that, since it cannot
+    see the rooms it cannot see. Supply the count from a source that knows it
+    (badge system, fire register, a walk round) and the exits drain it: each
+    person who leaves without ever having been admitted takes one off, so the
+    figure decays to nothing as the opening population turns over.
+
+    Send {"count": N}. Replaces any previous value; 0 removes it.
+    """
+    try:
+        payload = await request.json()
+    except Exception:                                        # noqa: BLE001
+        # A malformed body is the caller's mistake, not a 500. Say which.
+        return JSONResponse(status_code=422, content={
+            "ok": False, "errors": ["body must be JSON: {\"count\": N}"]})
+    code, body = svc.set_facility_baseline(payload)
+    return JSONResponse(status_code=code, content=body)
+
+
 @app.get("/api/v1/facility/stale")
 async def facility_stale(older_than: float = Query(3600.0)):
     """Roster entries nobody has seen for a while — the drift report.

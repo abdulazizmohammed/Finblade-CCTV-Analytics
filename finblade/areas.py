@@ -341,6 +341,12 @@ class AreaOccupancy:
         summed = sum(o["observed"] for o in obs if not o["stale"])
         occ = len(members)
         cap = area.capacity_max
+        mapped = self.registry.zones_of(area_id)
+        # camera_count is what the operator CONFIGURED, not what happens to be
+        # reporting. Deriving it from observations made a correctly mapped room
+        # read "0 cam" whenever its workers were stopped, which is
+        # indistinguishable from the mapping not having saved — and that is the
+        # first thing anyone checks. `reporting` carries the other half.
         return {
             "area_id": area_id,
             "name": area.name or area_id,
@@ -351,7 +357,10 @@ class AreaOccupancy:
             "capacity_pct": round(100.0 * occ / cap, 1) if cap else 0.0,
             "density": round(occ / area.area_sqm, 3) if area.area_sqm else 0.0,
             "area_sqm": area.area_sqm,
-            "camera_count": len({o["camera_id"] for o in obs}),
+            "camera_count": len({cam for cam, _z in mapped}),
+            "zone_count": len(mapped),
+            "reporting_cameras": len({o["camera_id"] for o in obs
+                                      if not o["stale"]}),
             "observations": obs,
             # What a naive sum would have said. Equal to `occupancy` unless
             # cameras genuinely overlap, so it doubles as the live measure of

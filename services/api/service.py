@@ -697,6 +697,12 @@ class IngestService:
         # Retyping a zone as a door (or away from one) must take effect on the
         # next event, not up to the policy TTL later.
         self.invalidate_door_policy()
+        # Same for a zone's physical area. Without this the registry keeps the
+        # previous mapping for up to _AREA_RELOAD_S, so zone state arriving in
+        # the seconds right after an operator maps two cameras to one room is
+        # still attributed the old way — the room reads 2 and then settles to
+        # 1, which looks exactly like the de-duplication being unreliable.
+        self._areas_loaded = 0.0
         return 200, {"saved": True, "camera_id": payload["camera_id"],
                      "count": len(payload["zones"])}
 

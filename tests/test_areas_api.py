@@ -124,6 +124,48 @@ def test_unknown_area_is_404(client):
     assert client.get("/api/v1/areas/NOPE").status_code == 404
 
 
+def test_mapping_a_zone_takes_effect_immediately(client):
+    """No stale-registry window after the editor saves.
+
+    save_zones did not invalidate the area registry, which was cached for 5s.
+    State posted in that window was attributed with the OLD mapping, so a room
+    that had just been mapped read 2 and then settled to 1 — indistinguishable
+    from the de-duplication being flaky.
+    """
+    client.post("/api/v1/areas", json={"area_id": "OFFICE-01"})
+    for cam, zid in (("CAM-04", "ZONE-04"), ("CAM-05", "ZONE-05")):
+        client.post("/api/v1/zones", json={"camera_id": cam, "zones": [{
+            "zone_id": zid, "zone_name": "office", "zone_type": "MONITORED",
+            "physical_area_id": "OFFICE-01",
+            "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}]})
+
+    # Immediately — no sleep, no second call to warm anything.
+    client.post("/api/v1/zones/state", json=_state("CAM-04", "ZONE-04", ["gp_101"], NOW))
+    client.post("/api/v1/zones/state", json=_state("CAM-05", "ZONE-05", ["gp_101"], NOW))
+    assert client.get("/api/v1/areas/OFFICE-01").json()["occupancy"] == 1
+
+
+def test_camera_count_reflects_the_mapping_not_the_traffic(client):
+    """A mapped room with stopped workers must not read as unmapped."""
+    _map_office(client)
+    st = client.get("/api/v1/areas/OFFICE-01").json()
+    assert st["camera_count"] == 2        # configured
+    assert st["zone_count"] == 2
+    assert st["reporting_cameras"] == 0   # nothing posting yet
+
+    client.post("/api/v1/zones/state", json=_state("CAM-04", "ZONE-01", ["gp_1"], NOW))
+    st = client.get("/api/v1/areas/OFFICE-01").json()
+    assert st["camera_count"] == 2        # still 2 — the mapping did not change
+    assert st["reporting_cameras"] == 1
+
+
+def test_area_with_no_zones_mapped_reports_zero_cameras(client):
+    """The 'Office 1 / 0 cam' case: an area exists but nothing points at it."""
+    client.post("/api/v1/areas", json={"area_id": "LONELY", "name": "Office 1"})
+    st = client.get("/api/v1/areas/LONELY").json()
+    assert st["camera_count"] == 0 and st["zone_count"] == 0
+
+
 def test_deleting_an_area_detaches_its_zones(client):
     _map_office(client)
     assert client.delete("/api/v1/areas/OFFICE-01").status_code == 200

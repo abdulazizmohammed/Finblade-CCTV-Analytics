@@ -515,10 +515,19 @@ function renderAreas(areas){
       ? `<div class="zrow"><span>${a.camera_count} cameras · ${a.summed_observations} observations</span>`+
         `<span title="people seen by more than one camera, counted once">−${a.double_counted} duplicate</span></div>`
       : '';
+    // "0 cam" on its own is ambiguous — unmapped and not-reporting look
+    // identical, and they need completely different fixes. Say which.
+    const mapped=+a.camera_count||0, live=+a.reporting_cameras||0;
+    const warn = mapped===0
+      ? `<div class="zrow"><span style="color:var(--fb-warning)">No camera zones mapped to this area — open the zone editor and set Physical area on each camera's zone.</span></div>`
+      : (live===0
+          ? `<div class="zrow"><span style="color:var(--fb-warning)">${mapped} camera(s) mapped, none reporting — are the camera workers running?</span></div>`
+          : '');
     return `<div class="zcard fb-bracket">
       <div class="zh"><h3>${esc(a.name||a.area_id)}</h3><span class="pill normal">${esc(a.area_type||'ROOM')}</span></div>
       <div class="zbig"><span class="n fb-num">${occ}</span><span class="of">/ ${capMax}</span>
-        <span class="of" style="margin-left:auto">${a.camera_count||0} cam</span></div>
+        <span class="of" style="margin-left:auto">${live}/${mapped} cam</span></div>
+      ${warn}
       <div class="zrow"><span class="fb-num">${(+a.density||0).toFixed(2)} /m²</span><span>${cap.toFixed(0)}% capacity</span></div>
       <div class="meter"><span style="width:${cap}%"></span></div>
       ${dedup}

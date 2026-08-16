@@ -327,9 +327,32 @@ function paintTile(t, cameraId, streamUrl){
     if(!t.snapTimer) startSnapshots();
   }
 }
+// Working pipelines first, dead ones last.
+//
+// A wall display is read top-left first, and a site with a few stopped cameras
+// was pushing the running ones below them — so the tiles worth watching were
+// the ones you had to scroll for. Rank by how much of the pipeline is actually
+// alive: ONLINE is producing frames, DEGRADED and RECONNECTING are still
+// trying, OFFLINE has stopped, DISABLED was switched off deliberately and is
+// the least interesting of all.
+//
+// An unrecognised state ranks just after DEGRADED: the worker reported
+// something, so it is alive, and guessing it is dead would hide a live camera.
+const STATE_RANK={ONLINE:0, DEGRADED:1, RECONNECTING:2, OFFLINE:4, DISABLED:5};
+function pipelineRank(c){
+  const s=String((c&&c.effective_state)||'OFFLINE').toUpperCase();
+  const r=STATE_RANK[s];
+  return (r===undefined)?3:r;
+}
+function byPipelineHealth(a,b){
+  const d=pipelineRank(a)-pipelineRank(b);
+  // Stable within a tier, so cameras do not swap places on every poll.
+  return d!==0 ? d : String(a.camera_id||'').localeCompare(String(b.camera_id||''));
+}
+
 function renderFeeds(cameras){
   const host=$('feeds');
-  const feeds=cameras.filter(c=>c.stream_url);
+  const feeds=cameras.filter(c=>c.stream_url).sort(byPipelineHealth);
   if(!feeds.length){
     Object.keys(feedTiles).forEach(id=>{feedTiles[id].tile.remove();delete feedTiles[id];});
     if(!host.querySelector('.ph')) host.innerHTML='<div class="feed fb-bracket"><div class="ph">no camera streams yet — add a camera on the Cameras page</div></div>';
@@ -378,6 +401,24 @@ function renderFeeds(cameras){
       if(ph){ph.style.display='';ph.textContent='no signal · '+(c.effective_state||'offline').toLowerCase();}
     }
   });
+
+  // Put the tiles in health order. A tile is only appended when it is FIRST
+  // created, so without this a camera that came back online kept whatever
+  // position it happened to be created in and the sort above changed nothing
+  // on screen.
+  //
+  // appendChild MOVES an existing node rather than copying it, so the <img>
+  // keeps its src and no stream is re-fetched. Guarded by an order signature
+  // so the DOM is only touched when the order genuinely changed — reordering
+  // on every poll would restart CSS animations on every tile.
+  const order=feeds.map(c=>c.camera_id).join('|');
+  if(order!==host.dataset.order){
+    host.dataset.order=order;
+    feeds.forEach(c=>{
+      const t=feedTiles[c.camera_id];
+      if(t) host.appendChild(t.tile);
+    });
+  }
 }
 document.querySelectorAll('#ovlbar input[data-ovl]').forEach(cb=>cb.addEventListener('change',()=>{
   OVL[cb.getAttribute('data-ovl')]=cb.checked;
@@ -564,7 +605,10 @@ function renderCameras(cameras){
   $('kCams').innerHTML=`${online}<span class="u">/ ${cameras.length}</span>`;
   const host=$('cams');
   if(!cameras.length){host.innerHTML='<span class="empty">no cameras reporting</span>';}
-  else host.innerHTML=cameras.map(c=>{
+  // Same health ordering as the feeds, so the two panels agree. Sorting a copy
+  // — cameras is also read by renderFeeds and by the KPI above, and sorting in
+  // place would reorder those as a side effect.
+  else host.innerHTML=cameras.slice().sort(byPipelineHealth).map(c=>{
     const st=String(c.effective_state||'OFFLINE');
     const on=st!=='OFFLINE'&&st!=='DISABLED';
     return `<span class="cam"><span class="d ${on?'on':'off'}"></span>${esc(c.camera_id)} · ${esc(st.toLowerCase())}</span>`;

@@ -40,7 +40,12 @@ analysis:
                     wrong once rows cover unequal time, and on live data the
                     two answers differ by up to 8x.
 
-  v_zone_events     events with zone and camera context attached.
+  v_zone_events     events with zone and camera context attached. Resolves the
+                    zone from whichever column carried it, so movement events
+                    are filterable by name like everything else.
+  v_zone_entries    one row per arrival in a zone, with a person_key that is
+                    safe to COUNT(DISTINCT). Encodes the derived-event rule so
+                    nobody has to remember it.
   v_alerts          alerts with their lifecycle state resolved.
   v_zone_current    one row per zone, the live reading.
 
@@ -159,21 +164,81 @@ LEFT JOIN zones z ON z.zone_id = l.zone_id AND z.camera_id = l.camera_id
 """.strip()))
 
     # --------------------------------------------------------------- events --
+    # WHICH COLUMN HOLDS THE ZONE depends on the event type, and getting this
+    # wrong is silent. A movement event leaves `zone_id` NULL and puts the zone
+    # in `zone_to` (arrival) or `zone_from` (departure); only the in-place
+    # events — density, loitering, restricted, capacity — populate `zone_id`.
+    #
+    # This view used to join on e.zone_id alone. For every ZONE_ENTRY, ZONE_EXIT
+    # and ZONE_TRANSITION row the join therefore missed, zone_name resolved to
+    # NULL, and `WHERE zone_name = 'GF Ele-Stairs'` returned zero rows with no
+    # error — for the three event types anyone asking "who entered" actually
+    # needs. Observed live: a query that should have returned 15 returned 0.
+    #
+    # zone_ref picks the zone the row is ABOUT: zone_id when present, else the
+    # arrival, else the departure. Arrival before departure because a person is
+    # attributed to where they went.
+    zone_ref = "COALESCE(e.zone_id, e.zone_to, e.zone_from)"
     views.append(("v_zone_events", f"""
 CREATE VIEW v_zone_events AS
 SELECT
     e.event_id, e.event_type, e.camera_id, e.site_id,
     e.zone_id, e.zone_from, e.zone_to,
-    -- An anonymous, per-session hash. Not a person, not stable across a
-    -- restart, and not joinable to anything outside this database.
+    -- The zone this row is about, whichever column carried it.
+    {zone_ref} AS zone_ref,
+    -- An anonymous, per-session hash of the TRACKER id. Not a person: it
+    -- changes every time tracking breaks, so COUNT(DISTINCT person_ref)
+    -- measures track churn. Counting people needs global_ref below.
     e.person_ref,
+    -- The cross-camera identity, and the only ref that survives a track break
+    -- or a walk between cameras. NULL when ReID had not resolved the track —
+    -- and NULL on every row written before this column existed, so a count
+    -- over old history reads zero rather than wrong.
+    e.global_ref,
     e.ts            AS event_ts,
     {ts('e.ts')}    AS event_utc,
-    COALESCE(z.zone_name, e.zone_id) AS zone_name,
+    COALESCE(z.zone_name, {zone_ref}) AS zone_name,
     z.zone_type,
     {_bool(dialect, 'z.restricted = 1')} AS restricted
 FROM events e
-LEFT JOIN zones z ON z.zone_id = e.zone_id AND z.camera_id = e.camera_id
+LEFT JOIN zones z
+       ON z.zone_id = {zone_ref} AND z.camera_id = e.camera_id
+""".strip()))
+
+    # One row per person ARRIVING in a zone, already de-duplicated.
+    #
+    # Exists because the obvious query is wrong in a way that looks right. A
+    # confirmed move between zones emits THREE rows: the authoritative
+    # ZONE_TRANSITION plus a derived ZONE_EXIT/ZONE_ENTRY pair. Counting
+    # ZONE_ENTRY *and* ZONE_TRANSITION therefore counts every movement twice,
+    # and the inflated figure is entirely plausible. Counting ZONE_ENTRY alone
+    # is correct — the derived pair means every transition already has one — but
+    # that is a rule you have to know, and nothing enforced it.
+    views.append(("v_zone_entries", f"""
+CREATE VIEW v_zone_entries AS
+SELECT
+    e.event_id,
+    e.camera_id,
+    e.site_id,
+    e.zone_to                          AS zone_id,
+    COALESCE(z.zone_name, e.zone_to)   AS zone_name,
+    z.zone_type,
+    e.person_ref,
+    e.global_ref,
+    -- What to count as one person. Falls back to a camera-scoped tracker ref
+    -- when ReID has not resolved the track, so two unresolved people are never
+    -- merged by both happening to be track 17 on different cameras. Unresolved
+    -- entries OVER-count rather than under-count, which is the same bias the
+    -- rest of the system takes.
+    COALESCE(e.global_ref, e.camera_id || ':' || e.person_ref) AS person_key,
+    {_bool(dialect, 'e.global_ref IS NOT NULL')} AS identity_resolved,
+    e.ts            AS event_ts,
+    {ts('e.ts')}    AS event_utc
+FROM events e
+LEFT JOIN zones z
+       ON z.zone_id = e.zone_to AND z.camera_id = e.camera_id
+WHERE e.event_type = 'ZONE_ENTRY'
+  AND e.zone_to IS NOT NULL
 """.strip()))
 
     # --------------------------------------------------------------- alerts --
@@ -220,6 +285,10 @@ SELECT 'event',
        e.event_type, e.person_ref,
        NULL, NULL, NULL
 FROM events e
+-- zone_id here is the raw column, so a movement event contributes NULL. That
+-- is deliberate: v_timeline answers "what happened between X and Y" on one
+-- time axis, and inventing a zone for it would make the column mean different
+-- things per record_type. Use v_zone_events when the zone matters.
 UNION ALL
 SELECT 'alert',
        a.ts, {ts('a.ts')},

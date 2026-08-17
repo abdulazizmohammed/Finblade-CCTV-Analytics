@@ -31,8 +31,8 @@ CREATE TABLE zone_live(
   PRIMARY KEY (camera_id, zone_id));
 CREATE TABLE events(
   event_id TEXT PRIMARY KEY, event_type TEXT, camera_id TEXT, site_id TEXT,
-  zone_id TEXT, zone_from TEXT, zone_to TEXT, person_ref TEXT, ts REAL,
-  frame TEXT, payload TEXT);
+  zone_id TEXT, zone_from TEXT, zone_to TEXT, person_ref TEXT,
+  global_ref TEXT, ts REAL, frame TEXT, payload TEXT);
 CREATE TABLE alerts(
   alert_id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id TEXT, severity TEXT,
   message TEXT, zone_id TEXT, camera_id TEXT, person_ref TEXT, ts REAL,
@@ -219,6 +219,174 @@ class TestTimeline(Base):
         self.assertEqual(2, got, "the event and the alert")
 
 
+class TestZoneEventsNamesTheZone(Base):
+    """A movement event leaves zone_id NULL and carries the zone in zone_to or
+    zone_from. Joining on zone_id alone therefore resolved zone_name to NULL for
+    every ZONE_ENTRY, ZONE_EXIT and ZONE_TRANSITION — the three types anyone
+    asking "who entered" needs — and `WHERE zone_name = '...'` returned nothing
+    with no error. Live, a query that should have answered 15 answered 0."""
+
+    def event(self, eid, etype, zone_id=None, zone_from=None, zone_to=None,
+              person="pr_a", gref=None, ts=T0, cam="CAM-01"):
+        self.conn.execute(
+            "INSERT INTO events(event_id, event_type, camera_id, site_id, "
+            "zone_id, zone_from, zone_to, person_ref, global_ref, ts) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (eid, etype, cam, "SITE-01", zone_id, zone_from, zone_to,
+             person, gref, ts))
+
+    def test_an_arrival_is_named_by_the_zone_it_arrived_in(self):
+        self.event("e1", "ZONE_ENTRY", zone_to="ZONE-01")
+        self.build()
+        got = self.rows("SELECT zone_name, zone_ref FROM v_zone_events")
+        self.assertEqual("Lobby", got[0]["zone_name"])
+        self.assertEqual("ZONE-01", got[0]["zone_ref"])
+
+    def test_a_departure_is_named_by_the_zone_it_left(self):
+        self.event("e1", "ZONE_EXIT", zone_from="ZONE-01")
+        self.build()
+        self.assertEqual("Lobby", self.rows(
+            "SELECT zone_name FROM v_zone_events")[0]["zone_name"])
+
+    def test_a_transition_is_attributed_to_where_they_went(self):
+        # Arrival wins over departure: a person belongs to where they are now.
+        self.conn.execute(
+            "INSERT INTO zones(camera_id, zone_id, zone_name) "
+            "VALUES ('CAM-01','ZONE-02','Corridor')")
+        self.event("e1", "ZONE_TRANSITION", zone_from="ZONE-01", zone_to="ZONE-02")
+        self.build()
+        self.assertEqual("Corridor", self.rows(
+            "SELECT zone_name FROM v_zone_events")[0]["zone_name"])
+
+    def test_an_in_place_event_still_uses_zone_id(self):
+        self.event("e1", "LOITERING_START", zone_id="ZONE-01")
+        self.build()
+        self.assertEqual("Lobby", self.rows(
+            "SELECT zone_name FROM v_zone_events")[0]["zone_name"])
+
+    def test_filtering_by_zone_name_finds_movement_events(self):
+        """The exact query that returned 0 on the live server."""
+        for i in range(3):
+            self.event(f"e{i}", "ZONE_ENTRY", zone_to="ZONE-01", ts=T0 + i)
+        self.build()
+        got = self.rows("SELECT COUNT(*) AS n FROM v_zone_events "
+                        "WHERE event_type = 'ZONE_ENTRY' AND zone_name = 'Lobby'")
+        self.assertEqual(3, got[0]["n"])
+
+    def test_global_ref_is_exposed(self):
+        self.event("e1", "ZONE_ENTRY", zone_to="ZONE-01", gref="gp_abc")
+        self.build()
+        self.assertEqual("gp_abc", self.rows(
+            "SELECT global_ref FROM v_zone_events")[0]["global_ref"])
+
+    def test_an_unconfigured_zone_falls_back_to_its_id(self):
+        self.event("e1", "ZONE_ENTRY", zone_to="ZONE-NOPE")
+        self.build()
+        self.assertEqual("ZONE-NOPE", self.rows(
+            "SELECT zone_name FROM v_zone_events")[0]["zone_name"])
+
+    def test_the_zone_join_is_per_camera(self):
+        # Zone ids are unique only within a camera; CAM-02's ZONE-01 is a
+        # different place and must not borrow CAM-01's name.
+        self.event("e1", "ZONE_ENTRY", zone_to="ZONE-01", cam="CAM-02")
+        self.build()
+        self.assertEqual("ZONE-01", self.rows(
+            "SELECT zone_name FROM v_zone_events")[0]["zone_name"])
+
+
+class TestZoneEntries(Base):
+    """Counting arrivals without having to know the derived-event rule."""
+
+    def entry(self, eid, gref=None, person="pr_a", zone="ZONE-01",
+              cam="CAM-01", ts=T0):
+        self.conn.execute(
+            "INSERT INTO events(event_id, event_type, camera_id, site_id, "
+            "zone_to, person_ref, global_ref, ts) "
+            "VALUES (?,'ZONE_ENTRY',?,?,?,?,?,?)",
+            (eid, cam, "SITE-01", zone, person, gref, ts))
+
+    def transition(self, eid, ts=T0):
+        self.conn.execute(
+            "INSERT INTO events(event_id, event_type, camera_id, site_id, "
+            "zone_from, zone_to, person_ref, ts) "
+            "VALUES (?,'ZONE_TRANSITION','CAM-01','SITE-01','ZONE-02',"
+            "'ZONE-01','pr_a',?)", (eid, ts))
+
+    def test_a_transition_does_not_double_count(self):
+        """The reason this view exists. A move emits ZONE_TRANSITION plus a
+        derived ZONE_ENTRY/ZONE_EXIT pair; counting entries AND transitions
+        counts the movement twice, and the inflated number looks plausible."""
+        self.entry("e1-derived", gref="gp_1")      # the derived half
+        self.transition("e1")                      # the authoritative record
+        self.build()
+        self.assertEqual(1, self.rows(
+            "SELECT COUNT(*) AS n FROM v_zone_entries")[0]["n"])
+
+    def test_distinct_people_uses_the_identity_that_survives_track_breaks(self):
+        # One human, three tracker refs, one global ref.
+        for i, pr in enumerate(("pr_a", "pr_b", "pr_c")):
+            self.entry(f"e{i}", gref="gp_1", person=pr, ts=T0 + i)
+        self.build()
+        got = self.rows("SELECT COUNT(DISTINCT person_key) AS people, "
+                        "COUNT(DISTINCT person_ref) AS tracks FROM v_zone_entries")
+        self.assertEqual(1, got[0]["people"])
+        self.assertEqual(3, got[0]["tracks"], "person_ref measures churn")
+
+    def test_unresolved_tracks_are_scoped_to_their_camera(self):
+        # Two different people, both track 17, on two cameras. Without the
+        # camera prefix they would collapse into one.
+        self.entry("e1", person="pr_17", cam="CAM-01")
+        self.entry("e2", person="pr_17", cam="CAM-02")
+        self.build()
+        self.assertEqual(2, self.rows(
+            "SELECT COUNT(DISTINCT person_key) AS n FROM v_zone_entries")[0]["n"])
+
+    def test_resolution_is_reported_so_a_count_can_be_qualified(self):
+        self.entry("e1", gref="gp_1")
+        self.entry("e2", ts=T0 + 1)
+        self.build()
+        got = self.rows("SELECT identity_resolved, COUNT(*) AS n "
+                        "FROM v_zone_entries GROUP BY identity_resolved "
+                        "ORDER BY identity_resolved")
+        self.assertEqual([(0, 1), (1, 1)],
+                         [(r["identity_resolved"], r["n"]) for r in got])
+
+    def test_it_carries_the_zone_name(self):
+        self.entry("e1", gref="gp_1")
+        self.build()
+        self.assertEqual("Lobby", self.rows(
+            "SELECT zone_name FROM v_zone_entries")[0]["zone_name"])
+
+    def test_only_arrivals_appear(self):
+        self.entry("e1", gref="gp_1")
+        self.conn.execute(
+            "INSERT INTO events(event_id, event_type, camera_id, zone_from, "
+            "person_ref, ts) VALUES ('e2','ZONE_EXIT','CAM-01','ZONE-01','pr_a',?)",
+            (T0,))
+        self.build()
+        self.assertEqual(1, self.rows(
+            "SELECT COUNT(*) AS n FROM v_zone_entries")[0]["n"])
+
+    def test_the_question_that_started_this(self):
+        """'How many unique people entered <zone> today', as one query."""
+        for i in range(4):
+            self.entry(f"a{i}", gref="gp_1", person=f"pr_{i}", ts=T0 + i)
+        for i in range(2):
+            self.entry(f"b{i}", gref="gp_2", person=f"pr_x{i}", ts=T0 + 10 + i)
+        self.entry("c0", ts=T0 + 20)                      # never resolved
+        self.build()
+        got = self.rows("""
+            SELECT COUNT(DISTINCT person_key) AS people,
+                   COUNT(DISTINCT global_ref)  AS identified,
+                   COUNT(*)                    AS entries
+            FROM v_zone_entries
+            WHERE zone_name = 'Lobby'
+              AND event_ts >= ? AND event_ts < ?""", (T0, T0 + 86400))
+        self.assertEqual(3, got[0]["people"], "two identified plus one unresolved")
+        self.assertEqual(2, got[0]["identified"])
+        self.assertEqual(7, got[0]["entries"])
+
+
 class TestNoCredentialsAnywhere(Base):
     """cameras.source holds RTSP URLs with passwords. It reached a read-only
     key once already; no view may select it."""
@@ -241,9 +409,25 @@ class TestNoCredentialsAnywhere(Base):
 
     def test_the_cameras_table_is_not_referenced_at_all(self):
         """Belt and braces: the safest way not to leak that column is for no
-        view to touch the table it lives in."""
+        view to touch the table it lives in.
+
+        Comments are stripped before the check. This used to scan the raw text
+        and fired on a comment containing the word "cameras" — prose, not a
+        reference. A guard that cries wolf gets weakened by whoever hits it
+        next, so it checks executable SQL instead. The two tests above are the
+        real protection: they inspect the columns each view actually exposes and
+        the values it actually returns.
+        """
         for _name, sql in view_definitions(SQLITE):
-            self.assertNotIn(" cameras", sql)
+            code = "\n".join(line.split("--")[0] for line in sql.splitlines())
+            self.assertNotIn(" cameras", code)
+            self.assertNotIn("\tcameras", code)
+
+    def test_the_guard_still_catches_a_real_reference(self):
+        """The stripping must not have made the check unable to fail."""
+        sql = "CREATE VIEW v AS SELECT c.name FROM cameras c  -- harmless words"
+        code = "\n".join(line.split("--")[0] for line in sql.splitlines())
+        self.assertIn(" cameras", code)
 
 
 class TestDialects(unittest.TestCase):

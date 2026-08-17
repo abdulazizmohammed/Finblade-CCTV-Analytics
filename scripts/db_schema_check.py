@@ -110,14 +110,27 @@ def check_postgres(dsn) -> int:
 
 
 def pg_schema(dsn):
-    """{table: {column, ...}} and index names, from a live Postgres."""
+    """{table: {column, ...}} and index names, from a live Postgres.
+
+    BASE TABLE only. information_schema.columns covers views too, and a
+    deployment that has had scripts/pg_apply.py run against it holds five —
+    v_zone_current and friends. Counting those as tables made the summary line
+    read "13 present, 13 expected" on a database that was missing five tables
+    and holding five views, which is exactly the arithmetic that hides a
+    problem instead of showing it.
+    """
     import psycopg
     tables, indexes = {}, set()
     with psycopg.connect(dsn) as conn:
+        base = {r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = current_schema() "
+            "AND table_type = 'BASE TABLE'").fetchall()}
         for t, c in conn.execute(
                 "SELECT table_name, column_name FROM information_schema.columns "
                 "WHERE table_schema = current_schema()").fetchall():
-            tables.setdefault(t, set()).add(c)
+            if t in base:
+                tables.setdefault(t, set()).add(c)
         for (n,) in conn.execute(
                 "SELECT indexname FROM pg_indexes "
                 "WHERE schemaname = current_schema()").fetchall():

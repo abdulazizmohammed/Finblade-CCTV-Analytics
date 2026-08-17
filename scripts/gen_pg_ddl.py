@@ -109,6 +109,47 @@ def generate(db: str) -> str:
         out.append(");")
         out.append("")
 
+    # ---------------------------------------------------------------- upgrade
+    # CREATE TABLE IF NOT EXISTS is enough for an empty server and useless for
+    # one that already has data: an existing table keeps whatever columns it was
+    # created with, so a deployment that predates a column never gets it, and
+    # the failure surfaces later as "column events.global_ref does not exist" on
+    # an endpoint nobody touched. SQLiteStore has _migrate() for exactly this;
+    # Postgres had nothing.
+    #
+    # Emitting an idempotent ADD COLUMN IF NOT EXISTS for EVERY column is
+    # deliberately blunt. A curated list of "columns added since version N" is
+    # the thing that drifts — somebody adds a column and forgets the list — and
+    # a migration that has quietly stopped migrating is worse than none. This is
+    # generated from the same schema as the CREATE TABLEs above, so it cannot
+    # fall behind them. On a current database every statement is a no-op.
+    #
+    # Type changes and drops are NOT handled and never will be by a generator:
+    # both need a human deciding what happens to the existing rows.
+    out.append("-- Bring an EXISTING database up to the schema above. Every")
+    out.append("-- statement is idempotent; on a current database all are no-ops.")
+    for t in tables:
+        cols = list(conn.execute(f"PRAGMA table_info({t})"))
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (t,)).fetchone()[0] or ""
+        for _cid, name, decl, _notnull, default, pk in cols:
+            if pk:
+                continue          # a primary key cannot be bolted on afterwards
+            typ = pg_type(name, decl)
+            if "AUTOINCREMENT" in sql.upper() and "INT" in (decl or "").upper():
+                continue
+            piece = f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {name} {typ}"
+            # NOT NULL is omitted on purpose: adding a NOT NULL column to a
+            # table with rows in it fails unless a default is supplied, and
+            # inventing one here would write a value nobody chose into live
+            # history. New columns arrive nullable; the CREATE TABLE above is
+            # what constrains a fresh database.
+            if default is not None:
+                piece += f" DEFAULT {default}"
+            out.append(piece + ";")
+    out.append("")
+
     out.append("-- Indexes, mirrored from the SQLite schema.")
     for name, sql in conn.execute(
             "SELECT name, sql FROM sqlite_master WHERE type='index' "

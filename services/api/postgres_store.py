@@ -105,17 +105,17 @@ class PostgresStore(Store):
         # INSERT OR REPLACE: a replayed event should overwrite, not be dropped.
         self._x(
             "INSERT INTO events(event_id,event_type,camera_id,site_id,"
-            "zone_id,zone_from,zone_to,person_ref,ts,frame,payload) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "zone_id,zone_from,zone_to,person_ref,global_ref,ts,frame,payload) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
             "ON CONFLICT (event_id) DO UPDATE SET "
             "event_type=excluded.event_type, camera_id=excluded.camera_id, "
             "site_id=excluded.site_id, zone_id=excluded.zone_id, "
             "zone_from=excluded.zone_from, zone_to=excluded.zone_to, "
-            "person_ref=excluded.person_ref, ts=excluded.ts, "
-            "frame=excluded.frame, payload=excluded.payload",
+            "person_ref=excluded.person_ref, global_ref=excluded.global_ref, "
+            "ts=excluded.ts, frame=excluded.frame, payload=excluded.payload",
             (evt.get("event_id"), evt.get("event_type"), evt.get("camera_id"),
              evt.get("site_id"), evt.get("zone_id"), evt.get("zone_from"),
-             evt.get("zone_to"), evt.get("person_ref"),
+             evt.get("zone_to"), evt.get("person_ref"), evt.get("global_ref"),
              float(evt.get("timestamp", 0)), evt.get("frame"), json.dumps(evt)))
 
     def save_zone_state(self, s: dict, history: bool = True) -> None:
@@ -144,8 +144,15 @@ class PostgresStore(Store):
             conn.execute(
                 "INSERT INTO zone_live(camera_id,zone_id,site_id,zone_name,zone_type,"
                 "restricted,ts,occupancy,density,capacity_pct,peak_occupancy,"
-                "avg_occupancy,trend,extra,inflow,outflow,status) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "avg_occupancy,trend,extra,inflow,outflow,status,"
+                # Who is in the zone, and which real place it looks at. Without
+                # these two the physical-area layer has nothing to work from:
+                # area occupancy is the count of DISTINCT people across every
+                # zone mapped to it, and a count with no identities cannot be
+                # merged with another camera's — so two cameras on one office
+                # would go back to reporting that office twice.
+                "occupants,physical_area_id) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "ON CONFLICT (camera_id,zone_id) DO UPDATE SET "
                 "site_id=excluded.site_id, zone_name=excluded.zone_name, "
                 "zone_type=excluded.zone_type, restricted=excluded.restricted, "
@@ -154,7 +161,9 @@ class PostgresStore(Store):
                 "peak_occupancy=excluded.peak_occupancy, "
                 "avg_occupancy=excluded.avg_occupancy, trend=excluded.trend, "
                 "extra=excluded.extra, inflow=excluded.inflow, "
-                "outflow=excluded.outflow, status=excluded.status "
+                "outflow=excluded.outflow, status=excluded.status, "
+                "occupants=excluded.occupants, "
+                "physical_area_id=excluded.physical_area_id "
                 "WHERE excluded.ts >= zone_live.ts",
                 (s.get("camera_id") or "", s["zone_id"], s.get("site_id"),
                  s.get("zone_name"), s.get("zone_type"),
@@ -163,7 +172,13 @@ class PostgresStore(Store):
                  int(s.get("peak_occupancy", s["occupancy"])),
                  float(s.get("avg_occupancy", 0)), s.get("trend", "flat"),
                  json.dumps(extra), float(s.get("inflow_per_min", 0)),
-                 float(s.get("outflow_per_min", 0)), s.get("status")))
+                 float(s.get("outflow_per_min", 0)), s.get("status"),
+                 # None, not "[]", when the worker reports no identities:
+                 # "nobody here" and "this worker does not tell us who" must
+                 # stay distinguishable downstream.
+                 (json.dumps(s["occupants"]) if s.get("occupants") is not None
+                  else None),
+                 s.get("physical_area_id")))
         # A write makes the cached snapshot wrong, so drop it.
         #
         # The TTL alone was enough while InMemoryStore — which has no cache —
@@ -260,8 +275,15 @@ class PostgresStore(Store):
         self._x(
             "INSERT INTO cameras(camera_id,site_id,last_seen,health_ts,state,input_fps,"
             "resolution,dropped_frames,reconnects,loops,frozen,enabled,stream_url,"
-            "people_in_view,people_in_zones) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            # Detection-quality regime reported by the worker. Dropping these
+            # meant /api/v1/cameras reported nothing about whether a count could
+            # be believed, while the worker was computing and posting it.
+            # counts_reliable is tri-state: a worker that reports nothing must
+            # read as "not reported", never as reliable, so no COALESCE here.
+            "people_in_view,people_in_zones,tracking_quality,counts_reliable,"
+            "counting_mode,mean_confidence,track_churn_per_min,detector_saturation) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+            "%s,%s,%s,%s,%s,%s) "
             "ON CONFLICT (camera_id) DO UPDATE SET last_seen=excluded.last_seen, "
             "health_ts=excluded.health_ts, state=excluded.state, "
             "input_fps=excluded.input_fps, resolution=excluded.resolution, "
@@ -270,13 +292,24 @@ class PostgresStore(Store):
             "stream_url=COALESCE(excluded.stream_url, cameras.stream_url), "
             "site_id=COALESCE(excluded.site_id, cameras.site_id), "
             "people_in_view=excluded.people_in_view, "
-            "people_in_zones=excluded.people_in_zones",
+            "people_in_zones=excluded.people_in_zones, "
+            "tracking_quality=excluded.tracking_quality, "
+            "counts_reliable=excluded.counts_reliable, "
+            "counting_mode=excluded.counting_mode, "
+            "mean_confidence=excluded.mean_confidence, "
+            "track_churn_per_min=excluded.track_churn_per_min, "
+            "detector_saturation=excluded.detector_saturation",
             (camera_id, site_id, ts, ts, health.get("state"), health.get("input_fps"),
              res, health.get("dropped_frames"), health.get("reconnects"),
              health.get("loops"), 1 if health.get("frozen") else 0,
              1 if health.get("enabled", True) else 0, health.get("stream_url"),
              int(health.get("people_in_view") or 0),
-             int(health.get("people_in_zones") or 0)))
+             int(health.get("people_in_zones") or 0),
+             health.get("tracking_quality"),
+             (None if health.get("counts_reliable") is None
+              else (1 if health.get("counts_reliable") else 0)),
+             health.get("counting_mode"), health.get("mean_confidence"),
+             health.get("track_churn_per_min"), health.get("detector_saturation")))
 
     def upsert_camera(self, camera_id: str, **fields) -> None:
         if not camera_id:
@@ -323,7 +356,8 @@ class PostgresStore(Store):
         out = self._q(
             "SELECT zone_id,camera_id,site_id,zone_name,zone_type,restricted,ts,"
             "occupancy,density,capacity_pct,peak_occupancy,avg_occupancy,trend,extra,"
-            "inflow AS inflow_per_min,outflow AS outflow_per_min,status "
+            "inflow AS inflow_per_min,outflow AS outflow_per_min,status,"
+            "occupants,physical_area_id "
             "FROM zone_live")
         for r in out:
             r["restricted"] = bool(r.get("restricted"))
@@ -333,6 +367,14 @@ class PostgresStore(Store):
                     r.update(json.loads(extra))
                 except Exception:                       # noqa: BLE001
                     pass
+            # Stays None on failure rather than becoming []: an empty list
+            # means "this zone reported nobody", which is a different claim
+            # from "we could not read who it reported".
+            if r.get("occupants") is not None:
+                try:
+                    r["occupants"] = json.loads(r["occupants"])
+                except Exception:                       # noqa: BLE001
+                    r["occupants"] = None
         out = _fresh_zones(out)
         self._zone_cache = (time.time(), out)
         return out
@@ -370,10 +412,20 @@ class PostgresStore(Store):
         return self._q(q, p)
 
     def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
-                    event_type=None, person_ref=None, limit: int = 500) -> List[dict]:
+                    event_type=None, person_ref=None, global_ref=None,
+                    limit: int = 500) -> List[dict]:
         q = ("SELECT event_id,event_type,camera_id,site_id,zone_id,zone_from,zone_to,"
-             "person_ref,ts,frame,payload FROM events WHERE ts BETWEEN %s AND %s")
+             "person_ref,global_ref,ts,frame,payload FROM events "
+             "WHERE ts BETWEEN %s AND %s")
         p: list = [t0, t1]
+        if global_ref:
+            # The cross-camera query person_ref cannot serve: person_ref is a
+            # hash of the tracker id, scoped to one camera process and one
+            # session, so the same human on two cameras carries two unrelated
+            # refs. Missing this parameter made /api/v1/history/events raise
+            # TypeError on EVERY call under Postgres, filtered or not, because
+            # app.py always passes it.
+            q += " AND global_ref=%s"; p.append(global_ref)
         if camera_id:
             q += " AND camera_id=%s"; p.append(camera_id)
         if zone_id:
@@ -442,12 +494,19 @@ class PostgresStore(Store):
         rows = self._q(
             "SELECT camera_id,site_id,last_seen,name,state,input_fps,resolution,"
             "dropped_frames,reconnects,loops,frozen,enabled,stream_url,health_ts,"
-            "sim_failure,source,people_in_view,people_in_zones "
+            "sim_failure,source,people_in_view,people_in_zones,"
+            "tracking_quality,counts_reliable,counting_mode,mean_confidence,"
+            "track_churn_per_min,detector_saturation "
             "FROM cameras ORDER BY camera_id")
         for r in rows:
             for k in ("frozen", "enabled", "sim_failure"):
                 if r.get(k) is not None:
                     r[k] = bool(r[k])
+            # Separate loop: counts_reliable is tri-state and None must survive
+            # as None. Folding it in above would turn "not reported" into False,
+            # which reads as "unreliable" rather than "unknown".
+            if r.get("counts_reliable") is not None:
+                r["counts_reliable"] = bool(r["counts_reliable"])
         return rows
 
     def zone_state_stats(self, t0: float, t1: float, camera_id=None,
@@ -563,3 +622,122 @@ class PostgresStore(Store):
     def _alert_out(r: dict) -> dict:
         r["alert_id"] = str(r["alert_id"])
         return r
+
+    # ---- physical areas ---------------------------------------------------
+    # A real place, as opposed to one camera's polygon of it. Two cameras on one
+    # office own two rows in `zones` pointing at one row here, and the area's
+    # occupancy is the count of DISTINCT people across them — never the sum.
+    def save_area(self, area: dict) -> None:
+        self._x(
+            "INSERT INTO physical_areas(area_id,name,area_type,capacity_max,"
+            "area_sqm,site_id,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (area_id) DO UPDATE SET "
+            "name=excluded.name, area_type=excluded.area_type, "
+            "capacity_max=excluded.capacity_max, area_sqm=excluded.area_sqm, "
+            "site_id=excluded.site_id, updated_at=excluded.updated_at",
+            (str(area["area_id"]), area.get("name") or area["area_id"],
+             str(area.get("area_type") or "ROOM").upper(),
+             int(area.get("capacity_max") or 0),
+             float(area.get("area_sqm") or 0.0),
+             area.get("site_id"), time.time()))
+
+    def list_areas(self) -> List[dict]:
+        return self._q(
+            "SELECT area_id,name,area_type,capacity_max,area_sqm,site_id,"
+            "updated_at FROM physical_areas ORDER BY area_id")
+
+    def delete_area(self, area_id: str) -> bool:
+        with self._pool.connection() as conn:
+            gone = conn.execute("DELETE FROM physical_areas WHERE area_id=%s",
+                                (str(area_id),)).rowcount
+            # Detach the zones too. A zone left pointing at an area that no
+            # longer exists would drop out of every area total while still
+            # looking mapped; detached, it falls back to single-camera
+            # behaviour, which is the honest state.
+            conn.execute(
+                "UPDATE zones SET physical_area_id=NULL WHERE physical_area_id=%s",
+                (str(area_id),))
+        self._zone_cache = None
+        return gone > 0
+
+    def save_area_state(self, s: dict) -> None:
+        self._x(
+            "INSERT INTO area_state_ts(area_id,ts,occupancy,capacity_pct,"
+            "density,summed_observations,camera_count,site_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (s["area_id"], float(s["ts"]), int(s.get("occupancy") or 0),
+             float(s.get("capacity_pct") or 0.0), float(s.get("density") or 0.0),
+             int(s.get("summed_observations") or 0),
+             int(s.get("camera_count") or 0), s.get("site_id")))
+
+    def area_state_range(self, area_id: str, t0: float, t1: float) -> List[dict]:
+        return self._q(
+            "SELECT area_id,ts,occupancy,capacity_pct,density,"
+            "summed_observations,camera_count FROM area_state_ts "
+            "WHERE area_id=%s AND ts BETWEEN %s AND %s ORDER BY ts",
+            (str(area_id), float(t0), float(t1)))
+
+    # ---- identity merge write-back ----------------------------------------
+    def rebind_global_ref(self, drop_ref: str, keep_ref: str) -> int:
+        """Point stored events at the surviving ref after two identities merge.
+
+        Without this a merge only corrects the live gallery and history keeps
+        two people where there was one, so every report built from it stays
+        wrong and the correction is invisible.
+        """
+        if not drop_ref or not keep_ref or drop_ref == keep_ref:
+            return 0
+        return self._x("UPDATE events SET global_ref=%s WHERE global_ref=%s",
+                       (keep_ref, drop_ref))
+
+    # ---- facility roster ---------------------------------------------------
+    # The one piece of state that cannot be recomputed from live video: zone
+    # occupancy is derived fresh every frame, but a roster is event-sourced and
+    # an in-memory-only one silently resets to zero on restart while the
+    # building is still full.
+    def load_presence(self):
+        people = self._q(
+            "SELECT ref,admitted_at,last_seen,entry_zone,last_zone,sightings "
+            "FROM facility_presence")
+        doors = self._q("SELECT door_zone_id,entries,exits FROM facility_doors")
+        meta = self._q("SELECT key,value FROM facility_meta")
+        return people, {m["key"]: int(m["value"] or 0) for m in meta}, doors
+
+    def save_presence(self, records: List[dict], stats: dict,
+                      doors: List[dict]) -> None:
+        """Write the roster through as a whole.
+
+        Replace rather than merge, matching SQLiteStore: the roster is a SET and
+        a person's absence from it is as meaningful as their presence. Merging
+        would leave a discharged person in the table for ever, which is the one
+        error this table must not make. One row per person currently inside —
+        tens or hundreds — so rewriting it is cheap.
+
+        All three writes share a connection so they land in one transaction. A
+        crash between the delete and the insert would otherwise empty the
+        roster, which is the exact failure the table exists to prevent.
+        """
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                conn.execute("DELETE FROM facility_presence")
+                for r in (records or []):
+                    conn.execute(
+                        "INSERT INTO facility_presence"
+                        "(ref,admitted_at,last_seen,entry_zone,last_zone,sightings) "
+                        "VALUES (%s,%s,%s,%s,%s,%s)",
+                        (r.get("ref"), r.get("admitted_at"), r.get("last_seen"),
+                         r.get("entry_zone"), r.get("last_zone"),
+                         int(r.get("sightings", 0))))
+                for d in (doors or []):
+                    conn.execute(
+                        "INSERT INTO facility_doors(door_zone_id,entries,exits) "
+                        "VALUES (%s,%s,%s) ON CONFLICT (door_zone_id) DO UPDATE "
+                        "SET entries=excluded.entries, exits=excluded.exits",
+                        (d.get("door_zone_id"), int(d.get("entries", 0)),
+                         int(d.get("exits", 0))))
+                for k, v in (stats or {}).items():
+                    conn.execute(
+                        "INSERT INTO facility_meta(key,value) VALUES (%s,%s) "
+                        "ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+                        (k, float(v)))
+

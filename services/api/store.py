@@ -177,6 +177,9 @@ class InMemoryStore(Store):
         self._cursors: Dict[str, float] = {}
         self._areas: Dict[str, dict] = {}
         self._area_states: List[dict] = []
+        self._presence: List[dict] = []
+        self._presence_stats: Dict[str, float] = {}
+        self._presence_doors: Dict[str, dict] = {}
 
     def save_event(self, evt: dict) -> None:
         """Replace on event_id, matching both durable stores.
@@ -346,8 +349,14 @@ class InMemoryStore(Store):
     def list_cameras(self) -> List[dict]:
         return [dict(c) for c in self._cameras.values()]
 
+    # Absent keys are left unset rather than defaulted, which is what keeps
+    # counts_reliable tri-state: a worker running older code reports nothing and
+    # that must read as "not reported", never as "reliable" or "unreliable".
     _HEALTH_FIELDS = ("state", "input_fps", "resolution", "dropped_frames",
-                      "reconnects", "frozen", "enabled", "stream_url", "loops")
+                      "reconnects", "frozen", "enabled", "stream_url", "loops",
+                      "tracking_quality", "counts_reliable", "counting_mode",
+                      "mean_confidence", "track_churn_per_min",
+                      "detector_saturation")
 
     def record_camera_health(self, camera_id: str, health: dict, ts: float,
                              site_id: str = None) -> None:
@@ -398,7 +407,7 @@ class InMemoryStore(Store):
             self._cursors[name] = float(ts)
 
     def list_events(self, t0, t1, camera_id=None, zone_id=None, event_type=None,
-                    person_ref=None, limit=500):
+                    person_ref=None, global_ref=None, limit=500):
         out = []
         for e in self._events:
             ts = e.get("timestamp", 0)
@@ -409,6 +418,10 @@ class InMemoryStore(Store):
             if event_type and e.get("event_type") != event_type:
                 continue
             if person_ref and e.get("person_ref") != person_ref:
+                continue
+            # The cross-camera query person_ref cannot serve. app.py passes this
+            # on every call, so it must also accept None as "no filter".
+            if global_ref and e.get("global_ref") != global_ref:
                 continue
             if zone_id and zone_id not in (e.get("zone_id"), e.get("zone_from"), e.get("zone_to")):
                 continue
@@ -485,6 +498,40 @@ class InMemoryStore(Store):
     def area_state_range(self, area_id, t0, t1):
         return [dict(s) for s in self._area_states
                 if s.get("area_id") == area_id and t0 <= s.get("ts", 0) <= t1]
+
+    def rebind_global_ref(self, drop_ref, keep_ref):
+        """Point stored events at the surviving ref after two identities merge."""
+        if not drop_ref or not keep_ref or drop_ref == keep_ref:
+            return 0
+        n = 0
+        for e in self._events:
+            if e.get("global_ref") == drop_ref:
+                e["global_ref"] = keep_ref
+                n += 1
+        return n
+
+    # ---- facility roster ---------------------------------------------------
+    # Held in memory like everything else here, so it does not survive the
+    # process — which is the honest behaviour for this backend and exactly why
+    # it is documented as ephemeral. What it must NOT do is silently no-op,
+    # because then the roster round-trip looks tested when nothing was tested.
+    def load_presence(self):
+        return ([dict(p) for p in self._presence],
+                dict(self._presence_stats),
+                [dict(d) for d in self._presence_doors.values()])
+
+    def save_presence(self, records, stats, doors):
+        # Replace, not merge: the roster is a SET and a person's absence from it
+        # is as meaningful as their presence.
+        self._presence = [dict(r) for r in (records or [])]
+        self._presence_stats = dict(stats or {})
+        # Door tallies are cumulative and keyed, so these upsert rather than
+        # replace — unlike the roster, a door missing from one save has not
+        # stopped existing.
+        for d in (doors or []):
+            key = d.get("door_zone_id")
+            if key:
+                self._presence_doors[key] = dict(d)
 
     def zone_state_stats(self, t0, t1, camera_id=None, zone_id=None):
         groups = {}

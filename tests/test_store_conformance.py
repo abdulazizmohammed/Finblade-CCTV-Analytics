@@ -388,6 +388,178 @@ class StoreContract:
         self.assertEqual(T0 + 100, got["events"])
         self.assertEqual(T0 + 5, got["alerts"])
 
+    # ---- cross-camera identity in stored history --------------------------
+    # This whole block existed only for SQLite. PostgresStore inherited the base
+    # class's silent no-op defaults instead, so areas accepted writes and
+    # returned nothing, the roster reset to zero on every restart, and an
+    # identity merge corrected the gallery while history kept two people. None
+    # of it raised. The suite passed because it never asked.
+
+    def test_global_ref_survives_a_round_trip(self):
+        self.store.save_event(event("g1", global_ref="gp_aaa"))
+        got = self.store.list_events(0, T0 + 10_000)
+        self.assertEqual("gp_aaa", got[0].get("global_ref"))
+
+    def test_events_filter_by_global_ref(self):
+        self.store.save_event(event("g1", global_ref="gp_aaa"))
+        self.store.save_event(event("g2", global_ref="gp_bbb"))
+        self.store.save_event(event("g3"))
+        hit = self.store.list_events(0, T0 + 10_000, global_ref="gp_aaa")
+        self.assertEqual(["g1"], [e["event_id"] for e in hit])
+
+    def test_listing_events_accepts_a_null_global_ref(self):
+        # app.py passes global_ref= on EVERY call to /history/events, not only
+        # filtered ones. A backend whose signature lacked the parameter raised
+        # TypeError on every request; passing None must behave as "no filter".
+        self.store.save_event(event("g1"))
+        self.assertEqual(1, len(self.store.list_events(0, T0 + 10_000,
+                                                       global_ref=None)))
+
+    def test_a_merge_rebinds_stored_history(self):
+        self.store.save_event(event("m1", global_ref="gp_drop"))
+        self.store.save_event(event("m2", global_ref="gp_keep"))
+        moved = self.store.rebind_global_ref("gp_drop", "gp_keep")
+        self.assertEqual(1, moved)
+        self.assertEqual(2, len(self.store.list_events(0, T0 + 10_000,
+                                                       global_ref="gp_keep")))
+        self.assertEqual(0, len(self.store.list_events(0, T0 + 10_000,
+                                                       global_ref="gp_drop")))
+
+    def test_rebinding_to_itself_is_a_no_op(self):
+        self.store.save_event(event("m1", global_ref="gp_x"))
+        self.assertEqual(0, self.store.rebind_global_ref("gp_x", "gp_x"))
+        self.assertEqual(0, self.store.rebind_global_ref("", "gp_x"))
+
+    # ---- physical areas ----------------------------------------------------
+    def test_areas_round_trip(self):
+        self.store.save_area({"area_id": "OFFICE-01", "name": "Office",
+                              "area_type": "ROOM", "capacity_max": 12,
+                              "area_sqm": 40.0, "site_id": "S"})
+        got = self.store.list_areas()
+        self.assertEqual(1, len(got))
+        self.assertEqual("OFFICE-01", got[0]["area_id"])
+        self.assertEqual(12, got[0]["capacity_max"])
+
+    def test_saving_an_area_twice_updates_rather_than_duplicates(self):
+        self.store.save_area({"area_id": "A", "name": "First"})
+        self.store.save_area({"area_id": "A", "name": "Second"})
+        got = self.store.list_areas()
+        self.assertEqual(1, len(got))
+        self.assertEqual("Second", got[0]["name"])
+
+    def test_deleting_an_area_detaches_its_zones(self):
+        # A zone left pointing at a deleted area drops out of every area total
+        # while still looking mapped. Detached, it falls back to single-camera
+        # behaviour, which is the honest state.
+        self.store.save_area({"area_id": "A", "name": "Room"})
+        self.store.save_zones("CAM-01", [{"zone_id": "ZONE-01",
+                                          "physical_area_id": "A"}])
+        self.assertTrue(self.store.delete_area("A"))
+        self.assertIsNone(self.store.list_zones("CAM-01")[0].get("physical_area_id"))
+        self.assertEqual([], self.store.list_areas())
+
+    def test_deleting_an_unknown_area_is_false_not_an_exception(self):
+        self.assertFalse(self.store.delete_area("nope"))
+
+    def test_area_state_history_round_trips(self):
+        for i, occ in enumerate((3, 5, 4)):
+            self.store.save_area_state({"area_id": "A", "ts": T0 + i, "occupancy": occ,
+                                        "capacity_pct": occ * 10.0, "density": 0.1,
+                                        "summed_observations": occ + 1,
+                                        "camera_count": 2, "site_id": "S"})
+        got = self.store.area_state_range("A", 0, T0 + 100)
+        self.assertEqual([3, 5, 4], [r["occupancy"] for r in got])
+        self.assertEqual(2, got[0]["camera_count"])
+
+    def test_area_state_is_filtered_by_area_and_window(self):
+        self.store.save_area_state({"area_id": "A", "ts": T0, "occupancy": 1})
+        self.store.save_area_state({"area_id": "B", "ts": T0, "occupancy": 9})
+        self.assertEqual([1], [r["occupancy"] for r in
+                               self.store.area_state_range("A", 0, T0 + 100)])
+        self.assertEqual([], self.store.area_state_range("A", T0 + 50, T0 + 100))
+
+    # ---- zone_live carries who, not just how many -------------------------
+    def test_occupants_and_area_survive_a_zone_state_write(self):
+        self.store.save_zone_state(dict(state(T0, 2),
+                                        occupants=["gp_a", "gp_b"],
+                                        physical_area_id="OFFICE-01"))
+        live = self.store.latest_zone_states()[0]
+        self.assertEqual(["gp_a", "gp_b"], live["occupants"])
+        self.assertEqual("OFFICE-01", live["physical_area_id"])
+
+    def test_no_occupants_reported_stays_none_not_empty(self):
+        # "nobody is here" and "this worker does not tell us who" are different
+        # claims, and the area layer treats them differently: a count with no
+        # identities cannot be de-duplicated against another camera's.
+        self.store.save_zone_state(state(T0, 2))
+        self.assertIsNone(self.store.latest_zone_states()[0].get("occupants"))
+
+    def test_an_empty_occupant_list_is_preserved_as_empty(self):
+        self.store.save_zone_state(dict(state(T0, 0), occupants=[]))
+        self.assertEqual([], self.store.latest_zone_states()[0]["occupants"])
+
+    # ---- facility roster persistence --------------------------------------
+    def test_presence_round_trips(self):
+        people = [{"ref": "gp_1", "admitted_at": T0, "last_seen": T0 + 5,
+                   "entry_zone": "IN", "last_zone": "LOBBY", "sightings": 3}]
+        doors = [{"door_zone_id": "IN", "entries": 7, "exits": 2}]
+        self.store.save_presence(people, {"admitted": 7, "baseline": 4}, doors)
+        back, stats, back_doors = self.store.load_presence()
+        self.assertEqual(1, len(back))
+        self.assertEqual("gp_1", back[0]["ref"])
+        self.assertEqual(3, back[0]["sightings"])
+        self.assertEqual(7, stats["admitted"])
+        self.assertEqual(4, stats["baseline"], "the declared opening count")
+        self.assertEqual(7, back_doors[0]["entries"])
+
+    def test_saving_presence_replaces_rather_than_merges(self):
+        # The roster is a SET and a person's absence from it is as meaningful as
+        # their presence. Merging would leave a discharged person in the table
+        # for ever, which is the one error this table must not make.
+        self.store.save_presence([{"ref": "a", "admitted_at": T0, "last_seen": T0}],
+                                 {}, [])
+        self.store.save_presence([{"ref": "b", "admitted_at": T0, "last_seen": T0}],
+                                 {}, [])
+        back, _, _ = self.store.load_presence()
+        self.assertEqual(["b"], [p["ref"] for p in back])
+
+    def test_an_emptied_roster_persists_as_empty(self):
+        self.store.save_presence([{"ref": "a", "admitted_at": T0, "last_seen": T0}],
+                                 {}, [])
+        self.store.save_presence([], {}, [])
+        back, _, _ = self.store.load_presence()
+        self.assertEqual([], back)
+
+    def test_door_tallies_accumulate_across_saves(self):
+        self.store.save_presence([], {}, [{"door_zone_id": "IN", "entries": 1,
+                                           "exits": 0}])
+        self.store.save_presence([], {}, [{"door_zone_id": "IN", "entries": 9,
+                                           "exits": 4}])
+        _, _, doors = self.store.load_presence()
+        self.assertEqual(1, len(doors))
+        self.assertEqual(9, doors[0]["entries"])
+
+    # ---- camera detection quality -----------------------------------------
+    def test_detection_quality_reaches_the_store(self):
+        self.store.record_camera_health("CAM-01", {
+            "state": "OK", "tracking_quality": "STRAINED",
+            "counts_reliable": False, "counting_mode": "track_degraded",
+            "mean_confidence": 0.65, "track_churn_per_min": 3.84,
+            "detector_saturation": 0.0}, T0)
+        cam = [c for c in self.store.list_cameras() if c["camera_id"] == "CAM-01"][0]
+        self.assertEqual("STRAINED", cam["tracking_quality"])
+        self.assertIs(False, cam["counts_reliable"])
+        self.assertEqual("track_degraded", cam["counting_mode"])
+        self.assertAlmostEqual(3.84, cam["track_churn_per_min"], places=2)
+
+    def test_unreported_reliability_stays_unknown_not_false(self):
+        # Tri-state. A worker running older code sends nothing, and a missing
+        # value must read as "not reported", never as "reliable" or "unreliable".
+        self.store.record_camera_health("CAM-01", {"state": "OK"}, T0)
+        cam = [c for c in self.store.list_cameras() if c["camera_id"] == "CAM-01"][0]
+        self.assertIsNone(cam.get("counts_reliable"))
+
+
 
 class TestInMemoryStore(StoreContract, unittest.TestCase):
     def make_store(self):

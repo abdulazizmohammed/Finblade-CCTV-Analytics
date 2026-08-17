@@ -1,0 +1,635 @@
+# FinBlade CCTV Analytics — machine-readable database metadata for a chatbot.
+#
+# Companion to docs/CHATBOT_DATABASE_INSTRUCTIONS.md. Generated 2026-08-17 by
+# reading services/api/ddl_pg.sql, services/api/analytics_views.py,
+# services/api/postgres_store.py and the finblade/ rule modules. Nothing here is
+# inferred from requirements; where a capability is absent it says so.
+
+database:
+  engine: postgresql
+  verified_against: ["16.2", "18.4"]
+  schema_source: services/api/ddl_pg.sql
+  views_source: services/api/analytics_views.py
+  views_applied_by: scripts/pg_apply.py       # out of band; not created by the app
+  timestamps: epoch_seconds_double_precision_utc
+  foreign_keys: none                          # all relationships are logical
+  materialized_views: none
+  sites_table: absent                         # site_id is an unvalidated label
+
+tables:
+  - name: events
+    purpose: Every discrete occurrence — zone movement, camera state, facility crossings, rule-derived events.
+    recommended_for_chatbot: caution
+    primary_key: [event_id]
+    columns:
+      event_id: {type: text, meaning: "unique id"}
+      event_type: {type: text, meaning: "one of the 17 event types"}
+      camera_id: {type: text}
+      site_id: {type: text, meaning: "label only"}
+      zone_id: {type: text, meaning: "populated only for in-place events, NULL for movement"}
+      zone_from: {type: text, meaning: "departure zone on movement events"}
+      zone_to: {type: text, meaning: "arrival zone on movement events"}
+      person_ref: {type: text, meaning: "tracker hash, per camera per session, UNSTABLE"}
+      global_ref: {type: text, meaning: "cross-camera identity, NULL when unresolved and on all history before 2026-08-17"}
+      ts: {type: double, meaning: "epoch seconds UTC"}
+      frame: {type: text, meaning: "optional snapshot path"}
+      payload: {type: text, meaning: "full event JSON including the derived flag"}
+    relationships:
+      - camera_id -> cameras.camera_id
+      - (camera_id, zone_id|zone_from|zone_to) -> zones.(camera_id, zone_id)
+    warnings:
+      - Only source for FACILITY_ENTRY and FACILITY_EXIT; no view exposes them.
+      - Movement events leave zone_id NULL; filtering on it silently returns nothing.
+      - A confirmed move emits ZONE_TRANSITION plus a derived ZONE_ENTRY/ZONE_EXIT pair.
+      - Very large. Never SELECT *.
+
+  - name: cameras
+    purpose: One row per camera, with stream health and detection-quality signals.
+    recommended_for_chatbot: caution
+    primary_key: [camera_id]
+    columns:
+      camera_id: {type: text}
+      site_id: {type: text}
+      name: {type: text}
+      state: {type: text, meaning: "worker-reported state"}
+      last_seen: {type: double, meaning: "epoch of last contact"}
+      health_ts: {type: double, meaning: "epoch of last health snapshot"}
+      enabled: {type: bigint, meaning: "0 or 1"}
+      input_fps: {type: double}
+      resolution: {type: text}
+      dropped_frames: {type: bigint}
+      reconnects: {type: bigint}
+      loops: {type: bigint}
+      frozen: {type: bigint}
+      people_in_view: {type: bigint, meaning: "people detected anywhere in frame"}
+      people_in_zones: {type: bigint, meaning: "subset inside a drawn polygon"}
+      tracking_quality: {type: text, meaning: "worker-reported regime, e.g. OK or STRAINED"}
+      counts_reliable: {type: bigint, meaning: "TRI-STATE. NULL means not reported, not reliable"}
+      counting_mode: {type: text}
+      mean_confidence: {type: double}
+      track_churn_per_min: {type: double, meaning: "high values mean the tracker is fragmenting"}
+      detector_saturation: {type: double}
+      source: {type: text, meaning: "RTSP URL WITH EMBEDDED PASSWORD"}
+      stream_url: {type: text, meaning: "RTSP URL WITH EMBEDDED PASSWORD"}
+    relationships: []
+    warnings:
+      - NEVER select source or stream_url. They contain credentials.
+      - There is no effective_state column. Derive offline from enabled and health_ts.
+      - Deleting a camera does not cascade to its zones; orphaned zone rows exist.
+
+  - name: zones
+    purpose: Polygon configuration, one row per camera per zone.
+    recommended_for_chatbot: yes
+    primary_key: [camera_id, zone_id]
+    columns:
+      camera_id: {type: text}
+      zone_id: {type: text, meaning: "UNIQUE ONLY WITHIN A CAMERA"}
+      zone_name: {type: text}
+      zone_type: {type: text, meaning: "MONITORED RESTRICTED ENTRANCE EXIT DOOR TRANSITION UNMONITORED OUTSIDE"}
+      restricted: {type: bigint, meaning: "0 or 1; wins zone assignment on overlap"}
+      capacity_max: {type: bigint}
+      area_sqm: {type: double, meaning: "denominator for density"}
+      warning_density: {type: double, meaning: "per-zone amber threshold"}
+      critical_density: {type: double, meaning: "per-zone red threshold"}
+      loitering_threshold_sec: {type: double}
+      enabled: {type: bigint}
+      physical_area_id: {type: text, meaning: "the real room, NULL for single-camera zones"}
+      polygon: {type: text, meaning: "JSON"}
+      normalized_polygon: {type: text, meaning: "JSON"}
+      adjacency_list: {type: text, meaning: "JSON"}
+      colour: {type: text}
+      updated_at: {type: double}
+    relationships:
+      - camera_id -> cameras.camera_id
+      - physical_area_id -> physical_areas.area_id
+    warnings:
+      - Always join or filter on camera_id as well as zone_id.
+
+  - name: physical_areas
+    purpose: A real room, as opposed to one camera's polygon of it.
+    recommended_for_chatbot: yes
+    primary_key: [area_id]
+    columns:
+      area_id: {type: text}
+      name: {type: text}
+      area_type: {type: text, meaning: "e.g. ROOM"}
+      capacity_max: {type: bigint, meaning: "the room's capacity regardless of camera count"}
+      area_sqm: {type: double}
+      site_id: {type: text}
+      updated_at: {type: double}
+    relationships: []
+    warnings:
+      - May be empty. Mapping is explicit, never inferred from names.
+
+  - name: zone_live
+    purpose: Current reading per camera per zone.
+    recommended_for_chatbot: no        # prefer v_zone_current
+    primary_key: [camera_id, zone_id]
+    columns:
+      occupancy: {type: bigint, meaning: "people in THIS camera's polygon"}
+      density: {type: double}
+      capacity_pct: {type: double}
+      status: {type: text, meaning: "NORMAL AMBER RED"}
+      trend: {type: text}
+      peak_occupancy: {type: bigint}
+      inflow: {type: double, meaning: "people per minute"}
+      outflow: {type: double}
+      ts: {type: double}
+      extra: {type: text, meaning: "JSON with net_flow, inflow_5m, outflow_5m, inflow_15m, outflow_15m, capacity_max, area_sqm"}
+      occupants: {type: text, meaning: "JSON array of identity refs, or NULL when the worker reports none"}
+      physical_area_id: {type: text}
+    relationships:
+      - (camera_id, zone_id) -> zones.(camera_id, zone_id)
+    warnings:
+      - occupants NULL means "identities not reported", which differs from an empty array meaning "nobody here".
+      - Never SUM occupancy across rows for a site total.
+
+  - name: zone_state_ts
+    purpose: Append-only occupancy history per camera per zone.
+    recommended_for_chatbot: no        # prefer v_zone_intervals
+    primary_key: [id]
+    columns:
+      zone_id: {type: text}
+      camera_id: {type: text}
+      ts: {type: double}
+      occupancy: {type: bigint}
+      density: {type: double}
+      capacity_pct: {type: double}
+      status: {type: text}
+      site_id: {type: text}
+    relationships:
+      - (camera_id, zone_id) -> zones.(camera_id, zone_id)
+    warnings:
+      - Writes are event-driven, so rows cover UNEQUAL spans of time.
+      - AVG(occupancy) over these rows is wrong; use v_zone_intervals and weight by duration_seconds.
+
+  - name: area_state_ts
+    purpose: Room-level occupancy history, already de-duplicated across cameras.
+    recommended_for_chatbot: yes
+    primary_key: [id]
+    columns:
+      area_id: {type: text}
+      ts: {type: double}
+      occupancy: {type: bigint, meaning: "DISTINCT people across every zone mapped to the area"}
+      capacity_pct: {type: double}
+      density: {type: double}
+      summed_observations: {type: bigint, meaning: "what a naive per-camera sum would have said"}
+      camera_count: {type: bigint}
+      site_id: {type: text}
+    relationships:
+      - area_id -> physical_areas.area_id
+    warnings:
+      - Only written for zones an operator mapped to an area. May be empty.
+      - summed_observations minus occupancy is the double-count that was removed.
+
+  - name: facility_presence
+    purpose: The building roster — people admitted through a door and not yet observed leaving.
+    recommended_for_chatbot: yes
+    primary_key: [ref]
+    columns:
+      ref: {type: text, meaning: "identity, global_ref when resolved"}
+      admitted_at: {type: double}
+      last_seen: {type: double}
+      entry_zone: {type: text}
+      last_zone: {type: text}
+      sightings: {type: bigint}
+    relationships: []
+    warnings:
+      - COUNT(*) is the observed building occupancy; add facility_meta.baseline.
+      - Strict discharge — only falls when an exit is observed. No timeout. Can drift upward.
+
+  - name: facility_meta
+    purpose: Key/value counters for the roster, including the declared opening headcount.
+    recommended_for_chatbot: yes
+    primary_key: [key]
+    columns:
+      key: {type: text, meaning: "admitted discharged readmit_ignored discharge_unknown ambiguous_crossings turned_back rekeyed baseline_discharged cleared provisional_admits baseline"}
+      value: {type: double}
+    relationships: []
+    warnings:
+      - baseline is people known to be inside before counting started; add it to the roster count.
+
+  - name: facility_doors
+    purpose: Cumulative traffic per doorway.
+    recommended_for_chatbot: yes
+    primary_key: [door_zone_id]
+    columns:
+      door_zone_id: {type: text}
+      entries: {type: bigint}
+      exits: {type: bigint}
+    relationships: []
+    warnings:
+      - Traffic tallies, NOT occupancy. Other doors exist; the roster is authoritative.
+
+  - name: alerts
+    purpose: Rule firings and clearings.
+    recommended_for_chatbot: no        # prefer v_alerts
+    primary_key: [alert_id]
+    columns:
+      rule_id: {type: text}
+      severity: {type: text, meaning: "INFO AMBER RED CRITICAL"}
+      kind: {type: text, meaning: "FIRE or CLEAR"}
+      status: {type: text, meaning: "NULL until acted on; treat NULL as OPEN"}
+      ts: {type: double}
+      acknowledged_by: {type: text}
+      acknowledged_at: {type: double}
+      resolved_by: {type: text}
+      resolved_at: {type: double}
+      note: {type: text}
+      frame: {type: text}
+    relationships:
+      - camera_id -> cameras.camera_id
+      - (camera_id, zone_id) -> zones.(camera_id, zone_id)
+    warnings:
+      - Filtering status = 'OPEN' misses every untouched alert. Use v_alerts.is_active.
+      - Counting rows without kind = 'FIRE' counts clearings too.
+
+  - name: reports
+    purpose: Generated occupancy reports (R-08).
+    recommended_for_chatbot: no
+    primary_key: [report_id]
+    columns:
+      kind: {type: text}
+      generated_at: {type: double}
+      from_ts: {type: double}
+      to_ts: {type: double}
+      peak_occupancy: {type: bigint}
+      total_alerts: {type: bigint}
+      payload: {type: text}
+    relationships: []
+    warnings: [Internal. Prefer computing figures from the views.]
+
+  - name: forwarder_cursors
+    purpose: Internal bookkeeping for the outbound forwarder.
+    recommended_for_chatbot: no
+    primary_key: [name]
+    columns:
+      name: {type: text}
+      ts: {type: double}
+    relationships: []
+    warnings: [Not analytics data.]
+
+views:
+  - name: v_zone_entries
+    purpose: One row per person arriving in a zone, safe to count.
+    recommended_for: [people entering a zone, footfall, busiest hours, one person's route]
+    source: events
+    columns:
+      event_id: {type: text}
+      camera_id: {type: text}
+      site_id: {type: text}
+      zone_id: {type: text, meaning: "from events.zone_to"}
+      zone_name: {type: text}
+      zone_type: {type: text}
+      person_key: {type: text, meaning: "COUNT DISTINCT THIS to count people"}
+      global_ref: {type: text, meaning: "NULL when ReID did not resolve"}
+      identity_resolved: {type: boolean}
+      event_ts: {type: double}
+      event_utc: {type: timestamptz}
+    warnings:
+      - person_key falls back to camera_id:person_ref, so unresolved entries over-count rather than merge strangers.
+      - Not for building entries; those are FACILITY_ENTRY in events.
+
+  - name: v_zone_events
+    purpose: All events with the zone resolved from whichever column carried it.
+    recommended_for: [loitering, restricted entries, transitions, wrong-way, group crossings]
+    source: events
+    columns:
+      event_id: {type: text}
+      event_type: {type: text}
+      camera_id: {type: text}
+      site_id: {type: text}
+      zone_id: {type: text}
+      zone_from: {type: text}
+      zone_to: {type: text}
+      zone_ref: {type: text, meaning: "COALESCE(zone_id, zone_to, zone_from)"}
+      zone_name: {type: text}
+      zone_type: {type: text}
+      restricted: {type: boolean}
+      person_ref: {type: text, meaning: "NEVER COUNT — tracker hash"}
+      person_key: {type: text, meaning: "the safe thing to count"}
+      global_ref: {type: text}
+      event_ts: {type: double}
+      event_utc: {type: timestamptz}
+    warnings:
+      - For counting arrivals use v_zone_entries, which excludes the duplicate rows a transition emits.
+
+  - name: v_zone_current
+    purpose: Live reading, one row per camera per zone.
+    recommended_for: [current zone occupancy, density now, most crowded zone]
+    source: zone_live
+    columns:
+      camera_id: {type: text}
+      zone_id: {type: text}
+      site_id: {type: text}
+      zone_name: {type: text}
+      zone_type: {type: text}
+      occupancy: {type: bigint}
+      density: {type: double}
+      capacity_pct: {type: double}
+      status: {type: text}
+      trend: {type: text}
+      peak_occupancy: {type: bigint}
+      inflow: {type: double}
+      outflow: {type: double}
+      capacity_max: {type: bigint}
+      area_sqm: {type: double}
+      restricted: {type: boolean}
+      reading_ts: {type: double}
+      reading_utc: {type: timestamptz}
+    warnings:
+      - Never SUM(occupancy) for a site total.
+
+  - name: v_zone_intervals
+    purpose: History with the duration each reading stood for.
+    recommended_for: [occupancy at a time, averages, peaks, time over capacity, unobserved gaps]
+    source: zone_state_ts
+    columns:
+      camera_id: {type: text}
+      zone_id: {type: text}
+      site_id: {type: text}
+      zone_name: {type: text}
+      zone_type: {type: text}
+      valid_from: {type: double}
+      valid_from_utc: {type: timestamptz}
+      valid_to: {type: double}
+      valid_to_utc: {type: timestamptz}
+      duration_seconds: {type: double, meaning: "NULL on the newest row per zone"}
+      occupancy: {type: bigint}
+      density: {type: double}
+      capacity_pct: {type: double}
+      status: {type: text}
+      trend: {type: text}
+      inflow: {type: double}
+      outflow: {type: double}
+      capacity_max: {type: bigint}
+      area_sqm: {type: double}
+      restricted: {type: boolean}
+      is_stale: {type: boolean, meaning: "stood longer than 600s — treat as unobserved"}
+      is_open: {type: boolean, meaning: "newest row per zone; current, not stale"}
+    warnings:
+      - Averages MUST be weighted by duration_seconds. AVG(occupancy) has been wrong by 8x.
+      - Exclude is_stale from any statistic.
+
+  - name: v_alerts
+    purpose: Alerts with lifecycle resolved.
+    recommended_for: [active alerts, restricted-zone alerts, unacknowledged alerts]
+    source: alerts
+    columns:
+      alert_id: {type: bigint}
+      rule_id: {type: text}
+      severity: {type: text}
+      message: {type: text}
+      camera_id: {type: text}
+      zone_id: {type: text}
+      site_id: {type: text}
+      zone_name: {type: text}
+      status: {type: text, meaning: "COALESCE(status, 'OPEN')"}
+      is_active: {type: boolean, meaning: "true for OPEN and ACK"}
+      acknowledged_by: {type: text}
+      acknowledged_at: {type: double}
+      resolved_by: {type: text}
+      resolved_at: {type: double}
+      note: {type: text}
+      raised_ts: {type: double}
+      raised_utc: {type: timestamptz}
+    warnings:
+      - Use is_active rather than status = 'OPEN'.
+
+  - name: v_timeline
+    purpose: Everything on one time axis. UNION ALL of zone_state_ts, events and alerts.
+    recommended_for: [what happened between X and Y]
+    source: [zone_state_ts, events, alerts]
+    columns:
+      record_type: {type: text, meaning: "zone_state, event or alert"}
+      ts: {type: double}
+      ts_utc: {type: timestamptz}
+      camera_id: {type: text}
+      zone_id: {type: text, meaning: "RAW column, so movement events contribute NULL"}
+      site_id: {type: text}
+      detail: {type: text}
+      occupancy: {type: bigint}
+      density: {type: double}
+      capacity_pct: {type: double}
+      event_type: {type: text}
+      rule_id: {type: text}
+      severity: {type: text}
+      message: {type: text}
+    warnings:
+      - Use v_zone_events when the zone matters; zone_id is NULL for movement events here.
+      - Very large. Always add a time window and a LIMIT.
+
+business_terms:
+  site: A text label on several tables. No sites table, no constraint, no validation.
+  camera: One row in cameras, one worker process, one stream.
+  zone: A polygon on ONE camera's frame, keyed (camera_id, zone_id). Not globally unique.
+  physical_area: A real room. Several cameras' zones may point at one via zones.physical_area_id.
+  restricted_zone: zones.restricted = 1. Wins zone assignment on overlap and triggers R-06 immediately.
+  person_detection: A YOLO bounding box, class 0. Not stored individually.
+  track: A tracker integer, valid within one camera and one worker session. Renumbers on every break.
+  track_id: See track.
+  person_ref: Salted hash of the track id. UNSTABLE — counting distinct values measures churn.
+  global_ref: Cross-camera identity (gp_...). Survives track breaks and movement between cameras. NULL when unresolved.
+  canonical_person_identity: Synonym for global_ref. No separate table exists.
+  cross_camera_identity: The mechanism producing global_ref — OSNet appearance matching plus a camera-topology gate.
+  reid: Appearance re-identification. Embeddings live in RAM only and are never stored.
+  person_key: View-only column. global_ref, else camera_id:person_ref. The safe thing to COUNT(DISTINCT).
+  occupancy: Scope-dependent. Unqualified it usually means zone occupancy.
+  zone_occupancy: Foot points inside one polygon on one frame. Self-correcting, blind to unmonitored floor.
+  area_occupancy: DISTINCT people across every zone mapped to a room.
+  site_occupancy: People admitted through a door and not yet observed leaving. facility_presence.
+  people_in_view: Everyone the detector sees anywhere in a camera's frame.
+  people_in_zones: The subset of people_in_view inside a drawn polygon.
+  entry: Ambiguous. ZONE_ENTRY is arriving in a polygon; FACILITY_ENTRY is entering the building.
+  exit: Ambiguous. ZONE_EXIT is leaving a polygon; FACILITY_EXIT is leaving the building.
+  zone_transition: A confirmed move between two polygons on ONE camera.
+  movement: Any of the above. Cross-camera movement is not a transition.
+  density: occupancy / area_sqm.
+  density_per_m2: Same. Zero or missing area_sqm yields 0.0 rather than an error.
+  warning_density: Per-zone amber threshold, default 2.0 per square metre.
+  critical_density: Per-zone red threshold, default 4.0 per square metre.
+  restricted_zone_alert: R-06. Immediate, no debounce, one per visit, severity CRITICAL.
+  camera_offline: No health report for over 30 seconds, or enabled = 0. Derived in the API, NOT stored.
+  unique_visitor: Distinct global_ref values. Not stored; compute it.
+  current_state: zone_live / v_zone_current, facility_presence, cameras.
+  historical_state: zone_state_ts / v_zone_intervals, area_state_ts, events, alerts.
+  detection: A bounding box. Not a person.
+  event: A row in events.
+  alert: A rule firing or clearing. A row in alerts.
+  derived_event: "An event carrying 'derived': true in its payload — the ZONE_EXIT/ZONE_ENTRY pair emitted alongside a ZONE_TRANSITION."
+
+rules:
+  occupancy:
+    building: SELECT COUNT(*) FROM facility_presence, plus facility_meta.baseline.
+    room: Latest row in area_state_ts for that area_id.
+    zone: v_zone_current.occupancy, one row per camera.
+    camera: cameras.people_in_view for detections, people_in_zones for those inside polygons.
+    historical: v_zone_intervals.
+    average: SUM(occupancy*duration_seconds)/SUM(duration_seconds), excluding is_stale.
+    peak: MAX(occupancy) over v_zone_intervals, excluding is_stale.
+    forbidden:
+      - SUM(occupancy) across cameras
+      - SUM(people_in_view) across cameras
+      - AVG(occupancy) unweighted
+      - reading current state from the newest zone_state_ts row
+
+  multi_camera:
+    mechanism: global_ref from OSNet appearance matching plus a camera-topology feasibility gate.
+    raw_material: zone_live.occupants — a JSON array of identity refs per zone.
+    unresolved_ref_format: "local:<camera_id>:<track_id>"
+    unresolved_behaviour: Camera-scoped by construction, so it can never match another camera's ref. Over-counts rather than merging strangers.
+    room_level: Area occupancy is COUNT(DISTINCT person) across every zone mapped to the area. Never SUM, MAX, MIN or AVG.
+    degradation: Zones reporting occupants are de-duplicated against each other; zones reporting none fall back to their own count and are added on. The result degrades to a plain sum when no zone reports identities.
+    audit_column: area_state_ts.summed_observations minus occupancy is the duplication removed.
+    limitation: De-duplication is only as good as ReID coverage. Check identity_resolved before quoting.
+
+  movement:
+    derived_event_rule: A confirmed move emits ZONE_TRANSITION plus a derived ZONE_ENTRY and ZONE_EXIT. Counting ZONE_ENTRY and ZONE_TRANSITION together doubles every figure.
+    correct_arrival_source: v_zone_entries
+    inside_zone_movement: Produces no event. Zone change requires 3 consecutive frames (boundary debounce).
+    cross_camera_movement: Not a ZONE_TRANSITION. Transitions are computed per worker from that camera's own zones.
+    facility_crossing_source: events, event_type FACILITY_ENTRY or FACILITY_EXIT. No view exposes them.
+    one_way_door: ENTRANCE and EXIT zones resolve on arrival.
+    two_way_door: A DOOR zone resolves on departure, from the zones either side. Undecidable crossings are counted as ambiguous and emit no event.
+    facility_event_payload: [door_zone_id, person_ref, occupancy]
+    facility_event_gap: These events carry no global_ref, so they cannot be joined to a person's zone movements.
+
+  density:
+    formula: density = occupancy / area_sqm
+    implementation: finblade/metrics.py density_per_sqm
+    zero_area_behaviour: returns 0.0 rather than raising
+    status_bands: RED when density > critical, AMBER when density > warning, else NORMAL. Strictly greater than.
+    thresholds_source: zones.warning_density and zones.critical_density, falling back to engine defaults.
+    defaults:
+      amber_on: 2.0
+      amber_off: 1.8
+      red_on: 4.0
+      red_off: 3.6
+      capacity_on_pct: 90.0
+      capacity_off_pct: 85.0
+      loiter_seconds: 30.0
+      offline_seconds: 30.0
+      debounce_seconds: 10.0
+    hysteresis: Alerts clear at the _off value, not the _on value, so oscillation produces one alert.
+    stored_in: [zone_live.density, zone_state_ts.density, area_state_ts.density]
+
+  alerts:
+    source: v_alerts
+    active_filter: is_active   # NOT status = 'OPEN'; status is NULL until acted on
+    kind_filter: kind = 'FIRE' when counting incidents; a clearing writes its own row
+    debounce_seconds: 10       # all rules except R-06
+    types:
+      R-01: {meaning: "density warning above warning_density, severity: AMBER"}
+      R-02: {meaning: "density critical above critical_density, severity: RED"}
+      R-03: {meaning: "capacity pressure at or above 90 percent of capacity_max, severity: AMBER"}
+      R-05: {meaning: "loitering beyond the zone threshold, severity: AMBER"}
+      R-06: {meaning: "restricted-zone intrusion, severity: CRITICAL, debounce: none, note: one alert per visit"}
+      R-07: {meaning: "camera offline after 30s silence, severity: RED, note: also fires INFO on recovery"}
+      R-08: {meaning: "occupancy report, scheduled and on demand"}
+      R-09: {meaning: "zone head-count threshold, severity: AMBER"}
+    not_implemented:
+      R-04: bottleneck detection — explicitly out of scope
+
+  time:
+    storage: epoch seconds UTC in DOUBLE PRECISION columns
+    timestamptz_columns_in_tables: none
+    view_converted_columns: [event_utc, reading_utc, valid_from_utc, valid_to_utc, raised_utc, ts_utc]
+    session_timezone: Servers observed run UTC, so date_trunc('day', now()) is a UTC day.
+    local_day: SET TIME ZONE '<tz>' once per session; every query then follows.
+    raw_table_pattern: to_timestamp(ts) >= date_trunc('day', now())
+    no_created_at_convention: Each table names its own timestamp column.
+
+query_mapping:
+  current_site_occupancy:
+    object: facility_presence
+    sql: SELECT COUNT(*) FROM facility_presence
+    add: facility_meta.baseline
+  current_area_occupancy:
+    object: area_state_ts
+    fields: [occupancy, camera_count, summed_observations, ts]
+  current_zone_occupancy:
+    object: v_zone_current
+    fields: [zone_name, camera_id, occupancy, density, status]
+  camera_detections:
+    object: cameras
+    fields: [people_in_view, people_in_zones, tracking_quality, counts_reliable]
+  camera_status:
+    object: cameras
+    derive: offline when enabled = 0 or COALESCE(health_ts, last_seen) older than 30 seconds
+  zone_entries:
+    object: v_zone_entries
+    count_people_with: COUNT(DISTINCT person_key)
+    count_events_with: COUNT(*)
+  facility_entries:
+    object: events
+    filter: event_type = 'FACILITY_ENTRY'
+  facility_exits:
+    object: events
+    filter: event_type = 'FACILITY_EXIT'
+  zone_transitions:
+    object: v_zone_events
+    filter: event_type = 'ZONE_TRANSITION'
+  unique_visitors:
+    object: v_zone_entries
+    count_with: COUNT(DISTINCT global_ref)
+  historical_occupancy:
+    object: v_zone_intervals
+    fields: [valid_from, valid_to, duration_seconds, occupancy]
+  peak_occupancy:
+    object: v_zone_intervals
+    aggregate: MAX(occupancy) excluding is_stale
+  average_occupancy:
+    object: v_zone_intervals
+    aggregate: SUM(occupancy*duration_seconds)/SUM(duration_seconds) excluding is_stale and is_open
+  density_by_zone:
+    object: v_zone_current
+    fields: [density, capacity_pct, status]
+  alerts:
+    object: v_alerts
+    active_filter: is_active
+  restricted_zone_alerts:
+    object: v_alerts
+    filter: rule_id = 'R-06'
+  identity_coverage:
+    object: v_zone_entries
+    aggregate: COUNT(*) FILTER (WHERE identity_resolved) over COUNT(*)
+    purpose: Run before quoting any people count.
+  unobserved_gaps:
+    object: v_zone_intervals
+    filter: is_stale
+
+sql_safety:
+  allowed: [SELECT, WITH, EXPLAIN]
+  forbidden: [INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, GRANT, REVOKE, "COPY ... TO PROGRAM", DO, CALL, SET, VACUUM, REINDEX, "REFRESH MATERIALIZED VIEW"]
+  never_select_columns: [cameras.source, cameras.stream_url]
+  reason: RTSP URLs with embedded passwords.
+  no_select_star_on: [events, zone_state_ts, v_timeline]
+  select_star_may_be_refused_on: [v_zone_events, v_zone_entries, v_timeline]
+  select_star_refusal_reason: Column-level grants withhold person_ref, and * expands to include it.
+  limit_exploratory_queries: true
+  suggested_limit: 500
+
+known_limitations:
+  - global_ref is NULL on all history written before 2026-08-17.
+  - ReID coverage varies by camera; where identity_resolved is low, people counts are upper bounds.
+  - The facility roster only decreases on an observed exit. No timeout. It can drift upward.
+  - FACILITY_ENTRY and FACILITY_EXIT carry no global_ref.
+  - physical_areas may be empty, in which case room-level de-duplication is not in effect.
+  - area_state_ts is only written for zones mapped to an area.
+  - No sites table; site_id is an unvalidated label.
+  - No foreign keys; orphaned rows are possible. Deleting a camera does not remove its zones.
+  - Camera online/offline is not stored and must be derived.
+  - R-04 bottleneck detection is not implemented.
+  - Cross-camera re-identification is implemented but unverified against ground truth on real cameras.
+  - No embeddings, faces or PII are stored. The system cannot answer "who".
+  - Views are not recreated automatically; rebuilding the schema drops them until pg_apply.py runs.
+
+deprecated:
+  - name: services/api/ddl.sql
+    status: legacy, superseded by the generated ddl_pg.sql. Drifted to five tables against nine.
+  - name: sqlite backend
+    status: still supported when DATABASE_URL is unset. Same logical schema. A SQLite file may hold a divergent history.
+  - name: InMemoryStore
+    status: ephemeral, for tests only.
+  - name: events.person_ref
+    status: not deprecated, but superseded for counting by global_ref and person_key.

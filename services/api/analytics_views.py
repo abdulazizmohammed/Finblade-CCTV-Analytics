@@ -179,6 +179,10 @@ LEFT JOIN zones z ON z.zone_id = l.zone_id AND z.camera_id = l.camera_id
     # arrival, else the departure. Arrival before departure because a person is
     # attributed to where they went.
     zone_ref = "COALESCE(e.zone_id, e.zone_to, e.zone_from)"
+    # What to COUNT(DISTINCT) when counting people. Defined once and used
+    # by both event views, because two spellings of "who is this" is how
+    # they end up disagreeing.
+    person_key = "COALESCE(e.global_ref, e.camera_id || ':' || e.person_ref)"
     views.append(("v_zone_events", f"""
 CREATE VIEW v_zone_events AS
 SELECT
@@ -188,8 +192,10 @@ SELECT
     {zone_ref} AS zone_ref,
     -- An anonymous, per-session hash of the TRACKER id. Not a person: it
     -- changes every time tracking breaks, so COUNT(DISTINCT person_ref)
-    -- measures track churn. Counting people needs global_ref below.
+    -- measures track churn. Counting people needs person_key below.
     e.person_ref,
+    -- The safe thing to COUNT(DISTINCT). Same expression as v_zone_entries.
+    {person_key} AS person_key,
     -- The cross-camera identity, and the only ref that survives a track break
     -- or a walk between cameras. NULL when ReID had not resolved the track —
     -- and NULL on every row written before this column existed, so a count
@@ -230,7 +236,7 @@ SELECT
     -- merged by both happening to be track 17 on different cameras. Unresolved
     -- entries OVER-count rather than under-count, which is the same bias the
     -- rest of the system takes.
-    COALESCE(e.global_ref, e.camera_id || ':' || e.person_ref) AS person_key,
+    {person_key} AS person_key,
     {_bool(dialect, 'e.global_ref IS NOT NULL')} AS identity_resolved,
     e.ts            AS event_ts,
     {ts('e.ts')}    AS event_utc
@@ -308,6 +314,147 @@ FROM alerts a
 
 def view_names(dialect: str = SQLITE) -> List[str]:
     return [name for name, _ in view_definitions(dialect)]
+
+
+# --------------------------------------------------------------------------
+# What a read-only or chatbot role may see.
+#
+# Prompting a model not to use a column is advice; not granting it is a rule.
+# A text-to-SQL bot wrote COUNT(DISTINCT person_ref) against this schema and got
+# a plausible wrong number back — that failure is silent, and the same prompt
+# will be edited by someone who was not there when it was explained. Column
+# privileges turn it into "permission denied", which the bot can react to and a
+# human will notice.
+#
+# person_ref is excluded from every view. It is a hash of the tracker id, so
+# counting it measures churn; person_key is the column that answers the same
+# question correctly and is exposed in its place.
+#
+# Nothing here grants a base table. cameras.source holds RTSP URLs with embedded
+# passwords, and a view runs with its OWNER's privileges — so a role granted
+# SELECT on the views needs no access to the tables underneath and must not have
+# any.
+SAFE_COLUMNS = {
+    "v_zone_current": (
+        "camera_id", "zone_id", "site_id", "zone_name", "zone_type",
+        "occupancy", "density", "capacity_pct", "status", "trend",
+        "peak_occupancy", "inflow", "outflow", "capacity_max", "area_sqm",
+        "restricted", "reading_ts", "reading_utc",
+    ),
+    "v_zone_intervals": (
+        "camera_id", "zone_id", "site_id", "zone_name", "zone_type",
+        "valid_from", "valid_from_utc", "valid_to", "valid_to_utc",
+        "duration_seconds", "occupancy", "density", "capacity_pct", "status",
+        "trend", "inflow", "outflow", "capacity_max", "area_sqm", "restricted",
+        "is_stale", "is_open",
+    ),
+    "v_zone_events": (
+        "event_id", "event_type", "camera_id", "site_id",
+        "zone_id", "zone_from", "zone_to", "zone_ref",
+        "person_key", "global_ref", "event_ts", "event_utc",
+        "zone_name", "zone_type", "restricted",
+    ),
+    "v_zone_entries": (
+        "event_id", "camera_id", "site_id", "zone_id", "zone_name", "zone_type",
+        "person_key", "global_ref", "identity_resolved", "event_ts", "event_utc",
+    ),
+    "v_alerts": (
+        "alert_id", "rule_id", "severity", "message", "camera_id", "zone_id",
+        "site_id", "status", "acknowledged_by", "acknowledged_at",
+        "resolved_by", "resolved_at", "note", "raised_ts", "raised_utc",
+        "is_active", "zone_name",
+    ),
+    "v_timeline": (
+        "record_type", "ts", "ts_utc", "camera_id", "zone_id", "site_id",
+        "detail", "occupancy", "density", "capacity_pct", "event_type",
+        "rule_id", "severity", "message",
+    ),
+}
+
+
+# Warnings that travel WITH the schema rather than in a prompt somebody has to
+# remember to paste. Most text-to-SQL tooling reads these when it introspects,
+# and unlike documentation they cannot drift from the view they describe.
+#
+# Each one states the wrong query, because "use person_key" is forgettable and
+# "never COUNT(DISTINCT person_ref), it measures churn" is not.
+_VIEW_COMMENTS = {
+    "v_zone_current": (
+        "Live reading, one row per zone per camera. Never SUM(occupancy) for a "
+        "site total: two cameras on one room both report the person in the "
+        "overlap. Use the facility roster instead."),
+    "v_zone_intervals": (
+        "History, one row per reading with the time it stayed valid. Averages "
+        "MUST be time-weighted: SUM(occupancy*duration_seconds)/"
+        "SUM(duration_seconds). Plain AVG(occupancy) has been wrong by 8x on "
+        "this data. Exclude is_stale."),
+    "v_zone_events": (
+        "All zone events with the zone resolved from whichever column carried "
+        "it. For counting arrivals use v_zone_entries, which already excludes "
+        "the duplicate rows a transition emits."),
+    "v_zone_entries": (
+        "One row per arrival in a zone. Already handles the derived-event rule "
+        "— NEVER union this with ZONE_TRANSITION, a single movement emits "
+        "both and the total doubles. COUNT(DISTINCT person_key) for people."),
+    "v_alerts": (
+        "Alerts with lifecycle resolved. status is NULL on an untouched alert, "
+        "so filter is_active rather than status='OPEN'."),
+    "v_timeline": (
+        "Every record on one time axis: a UNION, not a join. Joining the fact "
+        "tables instead would produce 5.66 trillion rows from a 1.15GB source. "
+        "zone_id is the raw column, so movement events contribute NULL — use "
+        "v_zone_events when the zone matters."),
+}
+
+_COLUMN_COMMENTS = {
+    ("v_zone_entries", "person_key"): (
+        "COUNT(DISTINCT this) to count people. Falls back to a camera-scoped "
+        "tracker ref when ReID has not resolved the track, so unresolved "
+        "entries over-count rather than merging two strangers."),
+    ("v_zone_entries", "global_ref"): (
+        "Cross-camera identity. NULL when ReID had not resolved the track, and "
+        "NULL on all history written before the column existed."),
+    ("v_zone_entries", "identity_resolved"): (
+        "Whether this row has a real identity behind it. Report the share that "
+        "is true alongside any count; a camera at 0% gives an upper bound."),
+    ("v_zone_events", "person_key"): (
+        "COUNT(DISTINCT this) to count people, never person_ref."),
+    ("v_zone_events", "zone_ref"): (
+        "The zone this row is about: zone_id when present, else zone_to, else "
+        "zone_from. Movement events leave zone_id NULL."),
+    ("v_zone_intervals", "duration_seconds"): (
+        "How long this reading stood. NULL on the newest row per zone, which "
+        "is open rather than zero-length. Weight every average by this."),
+    ("v_zone_intervals", "is_stale"): (
+        "The reading stood longer than a sample may speak for — almost always "
+        "a dead camera worker. Treat as unobserved, not as a quiet period."),
+    ("v_zone_current", "occupancy"): (
+        "People in THIS camera's polygon. Not additive across cameras."),
+    ("v_alerts", "is_active"): (
+        "True for OPEN and ACK. Use this rather than status, which is NULL "
+        "until somebody touches the alert."),
+}
+
+
+def comment_sql(dialect: str = POSTGRES) -> List[str]:
+    """COMMENT ON statements for the views and their sharpest columns.
+
+    Postgres only — SQLite has no COMMENT ON and returns an empty list rather
+    than raising, so a caller can apply comments unconditionally on whichever
+    backend it finds.
+    """
+    if dialect != POSTGRES:
+        return []
+    out = []
+    for view, text in _VIEW_COMMENTS.items():
+        out.append(f"COMMENT ON VIEW {view} IS {_quote(text)}")
+    for (view, column), text in _COLUMN_COMMENTS.items():
+        out.append(f"COMMENT ON COLUMN {view}.{column} IS {_quote(text)}")
+    return out
+
+
+def _quote(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
 
 
 def drop_sql(dialect: str = SQLITE) -> List[str]:

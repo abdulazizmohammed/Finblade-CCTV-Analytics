@@ -3,6 +3,7 @@
 
     .venv/bin/python scripts/db_schema_check.py                # data/finblade.db
     .venv/bin/python scripts/db_schema_check.py path/to.db
+    .venv/bin/python scripts/db_schema_check.py --dsn "$DATABASE_URL"   # Postgres
 
 WHY THIS IS NOT A LIST OF EXPECTED TABLES. Any hardcoded expectation drifts the
 first time someone adds a column and forgets to update it here, and a schema
@@ -42,7 +43,97 @@ def indexes_of(conn):
         "AND name NOT LIKE 'sqlite_%'")}
 
 
+def check_postgres(dsn) -> int:
+    """Compare a live Postgres against ddl_pg.sql applied to a scratch schema.
+
+    Applying the DDL into a throwaway schema and diffing beats parsing the SQL,
+    for the same reason the SQLite path builds a reference database: the parser
+    is a second implementation of the schema and drifts from the first.
+    """
+    import psycopg
+    ddl_path = os.path.join(os.path.dirname(__file__), "..",
+                            "services", "api", "ddl_pg.sql")
+    if not os.path.exists(ddl_path):
+        print("services/api/ddl_pg.sql missing — run scripts/gen_pg_ddl.py")
+        return 2
+
+    scratch = "fb_schema_ref"
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(f"DROP SCHEMA IF EXISTS {scratch} CASCADE")
+            conn.execute(f"CREATE SCHEMA {scratch}")
+            conn.execute(f"SET search_path TO {scratch}")
+            with open(ddl_path) as fh:
+                conn.execute(fh.read())
+            want, want_ix = {}, set()
+            for t, c in conn.execute(
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE table_schema = %s", (scratch,)).fetchall():
+                want.setdefault(t, set()).add(c)
+            conn.execute(f"DROP SCHEMA {scratch} CASCADE")
+    except Exception as exc:                       # noqa: BLE001
+        print(f"could not build the reference schema: {exc.__class__.__name__}: {exc}")
+        return 2
+
+    have, _have_ix = pg_schema(dsn)
+
+    missing_tables = sorted(set(want) - set(have))
+    missing_cols = {t: sorted(want[t] - have[t])
+                    for t in sorted(set(want) & set(have)) if want[t] - have[t]}
+    extra = sorted(set(have) - set(want))
+
+    print(f"database : postgres, {dsn.split('@')[-1]}")
+    print(f"tables   : {len(have)} present, {len(want)} expected")
+
+    if not (missing_tables or missing_cols):
+        print()
+        print("UP TO DATE — every table and column the current code expects "
+              "is present.")
+        if extra:
+            print(f"  (also holds {len(extra)} table(s) the code no longer uses: "
+                  f"{', '.join(extra)} — harmless)")
+        return 0
+
+    print()
+    print("BEHIND — this database is missing:")
+    for t in missing_tables:
+        print(f"  table   {t}")
+    for t, cols in missing_cols.items():
+        for c in cols:
+            print(f"  column  {t}.{c}")
+    print()
+    print("Fix: apply the DDL, which is idempotent and includes ADD COLUMN IF "
+          "NOT EXISTS for every column:")
+    print("  psql \"$DATABASE_URL\" -f services/api/ddl_pg.sql")
+    print("The API also applies it at startup, so a restart is equivalent.")
+    return 1
+
+
+def pg_schema(dsn):
+    """{table: {column, ...}} and index names, from a live Postgres."""
+    import psycopg
+    tables, indexes = {}, set()
+    with psycopg.connect(dsn) as conn:
+        for t, c in conn.execute(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema()").fetchall():
+            tables.setdefault(t, set()).add(c)
+        for (n,) in conn.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE schemaname = current_schema()").fetchall():
+            indexes.add(n)
+    return tables, indexes
+
+
 def main() -> int:
+    # --dsn checks a Postgres instead of a SQLite file. The reference schema is
+    # built the same way either side: whatever the code in this tree produces
+    # from nothing. For Postgres that is ddl_pg.sql, which is itself generated
+    # from the SQLite schema, so both paths trace back to one authority.
+    if "--dsn" in sys.argv:
+        dsn = sys.argv[sys.argv.index("--dsn") + 1]
+        return check_postgres(dsn)
+
     live_path = sys.argv[1] if len(sys.argv) > 1 else "data/finblade.db"
     if not os.path.exists(live_path):
         print(f"no database at {live_path} — it is created on first API start")

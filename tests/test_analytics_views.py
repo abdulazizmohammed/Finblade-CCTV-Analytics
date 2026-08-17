@@ -44,10 +44,27 @@ CREATE TABLE zones(
   restricted INTEGER, capacity_max INTEGER, area_sqm REAL,
   warning_density REAL, critical_density REAL, loitering_threshold_sec REAL,
   colour TEXT, enabled INTEGER, normalized_polygon TEXT, polygon TEXT,
-  adjacency_list TEXT, updated_at REAL);
+  adjacency_list TEXT, updated_at REAL, physical_area_id TEXT);
 CREATE TABLE cameras(
   camera_id TEXT PRIMARY KEY, site_id TEXT, last_seen REAL, name TEXT,
-  state TEXT, source TEXT, stream_url TEXT);
+  state TEXT, source TEXT, stream_url TEXT, health_ts REAL, enabled INTEGER,
+  input_fps REAL, resolution TEXT, dropped_frames INTEGER, reconnects INTEGER,
+  people_in_view INTEGER, people_in_zones INTEGER, tracking_quality TEXT,
+  counts_reliable INTEGER, counting_mode TEXT, mean_confidence REAL,
+  track_churn_per_min REAL, detector_saturation REAL);
+CREATE TABLE physical_areas(
+  area_id TEXT PRIMARY KEY, name TEXT, area_type TEXT, capacity_max INTEGER,
+  area_sqm REAL, site_id TEXT, updated_at REAL);
+CREATE TABLE area_state_ts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, area_id TEXT, ts REAL,
+  occupancy INTEGER, capacity_pct REAL, density REAL,
+  summed_observations INTEGER, camera_count INTEGER, site_id TEXT);
+CREATE TABLE facility_presence(
+  ref TEXT PRIMARY KEY, admitted_at REAL, last_seen REAL, entry_zone TEXT,
+  last_zone TEXT, sightings INTEGER);
+CREATE TABLE facility_doors(
+  door_zone_id TEXT PRIMARY KEY, entries INTEGER, exits INTEGER);
+CREATE TABLE facility_meta(key TEXT PRIMARY KEY, value REAL);
 """
 
 T0 = 1_700_000_000.0
@@ -407,9 +424,40 @@ class TestNoCredentialsAnywhere(Base):
                     if isinstance(value, str):
                         self.assertNotIn("hunter2", value, f"{name} leaked a password")
 
-    def test_the_cameras_table_is_not_referenced_at_all(self):
-        """Belt and braces: the safest way not to leak that column is for no
-        view to touch the table it lives in.
+    def test_only_the_camera_status_view_touches_the_cameras_table(self):
+        """The old rule was "no view references cameras at all", which was the
+        safest thing while nothing needed to.
+
+        v_camera_status now does, deliberately. Camera online/offline is derived
+        in the API and stored nowhere, so a read-only client either gets a view
+        that computes it or gets column-level SELECT on the cameras table — and
+        the view is the stronger boundary. A view has no `source` column to
+        leak, whereas a table grant is one mis-typed statement away from
+        exposing one.
+
+        So the rule narrows rather than relaxes: exactly one view may reference
+        the table, and the two behavioural guards above still prove no view
+        exposes the column or its value. A second view touching cameras fails
+        here.
+        """
+        allowed = {"v_camera_status"}
+        for name, sql in view_definitions(SQLITE):
+            code = "\n".join(line.split("--")[0] for line in sql.splitlines())
+            if name in allowed:
+                continue
+            self.assertNotIn(" cameras", code, f"{name} references cameras")
+            self.assertNotIn("\tcameras", code)
+
+    def test_the_camera_status_view_selects_no_credential(self):
+        """The exception above is only safe because of this."""
+        sql = dict(view_definitions(SQLITE))["v_camera_status"]
+        code = "\n".join(line.split("--")[0] for line in sql.splitlines())
+        for banned in ("source", "stream_url"):
+            self.assertNotIn(banned, code,
+                             f"v_camera_status selects {banned}")
+
+    def test_no_view_selects_a_credential_column_by_text(self):
+        """Belt and braces alongside the behavioural checks above.
 
         Comments are stripped before the check. This used to scan the raw text
         and fired on a comment containing the word "cameras" — prose, not a
@@ -418,16 +466,18 @@ class TestNoCredentialsAnywhere(Base):
         real protection: they inspect the columns each view actually exposes and
         the values it actually returns.
         """
-        for _name, sql in view_definitions(SQLITE):
+        for name, sql in view_definitions(SQLITE):
             code = "\n".join(line.split("--")[0] for line in sql.splitlines())
-            self.assertNotIn(" cameras", code)
-            self.assertNotIn("\tcameras", code)
+            for banned in ("source", "stream_url"):
+                self.assertNotIn(banned, code, f"{name} names {banned}")
 
     def test_the_guard_still_catches_a_real_reference(self):
-        """The stripping must not have made the check unable to fail."""
-        sql = "CREATE VIEW v AS SELECT c.name FROM cameras c  -- harmless words"
+        """The comment stripping must not have made the checks unable to fail."""
+        sql = ("CREATE VIEW v AS SELECT c.source FROM cameras c"
+               "  -- source and cameras in a comment are harmless")
         code = "\n".join(line.split("--")[0] for line in sql.splitlines())
         self.assertIn(" cameras", code)
+        self.assertIn("source", code)
 
 
 class TestDialects(unittest.TestCase):

@@ -72,27 +72,43 @@ They are not interchangeable and must never be summed together.
 
 ### Preferred for chatbot use
 
-| Object | Type |
+| Object | Answers |
 |---|---|
-| `v_zone_entries` | view |
-| `v_zone_events` | view |
-| `v_zone_current` | view |
-| `v_zone_intervals` | view |
-| `v_alerts` | view |
-| `v_timeline` | view |
+| `v_facility_current` | how many people are in the **building** |
+| `v_facility_roster` | who is inside and for how long; likely missed exits |
+| `v_facility_crossings` | entering and leaving the building |
+| `v_facility_doors` | cumulative traffic per doorway |
+| `v_area_current` | room occupancy, de-duplicated across cameras |
+| `v_area_intervals` | room occupancy history |
+| `v_zone_current` | live occupancy per polygon |
+| `v_zone_intervals` | zone history, with the duration each reading stood |
+| `v_zone_entries` | arrivals in a zone, safe to count |
+| `v_zone_events` | all events with the zone resolved |
+| `v_zone_config` | zone definitions and thresholds |
+| `v_camera_status` | camera health with online/offline derived |
+| `v_alerts` | alerts with lifecycle resolved |
+| `v_timeline` | everything on one time axis |
+
+Fourteen views. **Every question in §19 is answerable through them.** The base
+tables below are documented for completeness, but a read-only role provisioned
+by `scripts/pg_grants.py` cannot reach any of them — and does not need to.
 
 ### Use with caution — raw tables, correct but easy to misuse
 
-| Object | Why caution |
+These are the sources behind the views. A chatbot role cannot read them and
+should not need to; they are listed so you can understand what a view is built
+from.
+
+| Object | Covered by |
 |---|---|
-| `events` | the only source for `FACILITY_ENTRY` / `FACILITY_EXIT`, which no view exposes. Very large. |
-| `facility_presence` | authoritative building occupancy, but a row count, not a metric |
-| `facility_meta` | key/value counters including the declared opening headcount |
-| `facility_doors` | cumulative per-door traffic, **not** occupancy |
-| `physical_areas` | room definitions; empty on some deployments |
-| `area_state_ts` | area occupancy history; only written for mapped areas |
-| `cameras` | see the credential warning below |
-| `zones` | polygon config, useful for joins and names |
+| `events` | `v_zone_events`, `v_zone_entries`, `v_facility_crossings` |
+| `facility_presence` | `v_facility_current`, `v_facility_roster` |
+| `facility_meta` | `v_facility_current` |
+| `facility_doors` | `v_facility_doors` |
+| `physical_areas`, `area_state_ts` | `v_area_current`, `v_area_intervals` |
+| `cameras` | `v_camera_status` — the **only** view touching it, and it selects no credential |
+| `zones` | `v_zone_config` |
+| `zone_live`, `zone_state_ts` | `v_zone_current`, `v_zone_intervals` |
 
 ### Avoid
 
@@ -447,17 +463,15 @@ Two rules that catch people out:
 ## 8. Camera Model
 
 `cameras` is one row per camera. Health is pushed by the worker; the API derives
-display state. To find offline cameras in SQL:
+display state, and **`v_camera_status` implements the same rule in SQL** so every
+consumer agrees. Use the view — it also omits the credential columns. To find
+offline cameras:
 
 ```sql
-SELECT camera_id, name,
-       to_timestamp(COALESCE(health_ts, last_seen)) AS last_contact,
-       ROUND((EXTRACT(EPOCH FROM now())
-              - COALESCE(health_ts, last_seen))::numeric, 0) AS seconds_silent
-FROM cameras
-WHERE enabled IS DISTINCT FROM 0
-  AND (COALESCE(health_ts, last_seen) IS NULL
-       OR COALESCE(health_ts, last_seen) < EXTRACT(EPOCH FROM now()) - 30)
+SELECT camera_id, name, effective_state, last_seen_utc,
+       ROUND(seconds_since_seen::numeric, 0) AS seconds_silent
+FROM v_camera_status
+WHERE NOT is_online
 ORDER BY seconds_silent DESC NULLS FIRST;
 ```
 
@@ -549,9 +563,8 @@ This is visible, not hidden — check the coverage before quoting.
 ### 11.1 How many people are inside the site right now
 
 ```sql
-SELECT (SELECT COUNT(*) FROM facility_presence)
-     + COALESCE((SELECT value FROM facility_meta WHERE key = 'baseline'), 0)
-       AS people_inside;
+SELECT people_inside, observed_inside, baseline
+FROM v_facility_current;
 ```
 
 The roster counts people admitted through a door and not yet seen to leave, so
@@ -566,11 +579,9 @@ self-corrects. Sanity-check with §11.7.
 ### 11.2 How many people are in Area A
 
 ```sql
-SELECT occupancy, camera_count, summed_observations, to_timestamp(ts) AS at
-FROM area_state_ts
-WHERE area_id = 'AREA-ID'
-ORDER BY ts DESC
-LIMIT 1;
+SELECT occupancy, camera_count, summed_observations, reading_utc
+FROM v_area_current
+WHERE area_id = 'AREA-ID';
 ```
 
 If `area_state_ts` is empty, no zones are mapped to areas on this deployment;
@@ -592,7 +603,7 @@ possibly the same people — do not add them.
 ```sql
 SELECT camera_id, people_in_view, people_in_zones,
        tracking_quality, counts_reliable
-FROM cameras WHERE camera_id = 'CAM-04';
+FROM v_camera_status WHERE camera_id = 'CAM-04';
 ```
 
 `people_in_view` is everyone in frame; `people_in_zones` is the subset inside a
@@ -961,9 +972,8 @@ Every query below uses only columns confirmed present in `ddl_pg.sql` or
 **Interpretation.** The building, including people in unmonitored space — not the sum of zone counts.
 
 ```sql
-SELECT (SELECT COUNT(*) FROM facility_presence)
-     + COALESCE((SELECT value FROM facility_meta WHERE key = 'baseline'), 0)
-       AS people_inside;
+SELECT people_inside, observed_inside, baseline
+FROM v_facility_current;
 ```
 
 **Why.** The roster is the only object that keeps counting someone no camera can see.
@@ -991,14 +1001,10 @@ ORDER BY occupancy DESC;
 **Interpretation.** Distinct people in the room, however many cameras watch it.
 
 ```sql
-SELECT a.name, s.occupancy, s.camera_count,
-       s.summed_observations,
-       s.summed_observations - s.occupancy AS duplicates_removed,
-       to_timestamp(s.ts) AS reading_at
-FROM area_state_ts s
-JOIN physical_areas a ON a.area_id = s.area_id
-WHERE s.ts = (SELECT MAX(ts) FROM area_state_ts WHERE area_id = s.area_id)
-  AND a.name = 'Main Office';
+SELECT area_name, occupancy, camera_count,
+       summed_observations, duplicates_removed, reading_utc
+FROM v_area_current
+WHERE area_name = 'Main Office';
 ```
 
 **Why.** `occupancy` is the union of identities; `summed_observations` is what a naive sum would have said.
@@ -1012,7 +1018,7 @@ WHERE s.ts = (SELECT MAX(ts) FROM area_state_ts WHERE area_id = s.area_id)
 ```sql
 SELECT camera_id, people_in_view, people_in_zones,
        tracking_quality, counts_reliable, track_churn_per_min
-FROM cameras WHERE camera_id = 'CAM-04';
+FROM v_camera_status WHERE camera_id = 'CAM-04';
 ```
 
 **Why.** Detections, with the trust signals attached so the answer can be qualified.
@@ -1024,14 +1030,10 @@ FROM cameras WHERE camera_id = 'CAM-04';
 **Question.** Which cameras are offline?
 
 ```sql
-SELECT camera_id, name,
-       to_timestamp(COALESCE(health_ts, last_seen)) AS last_contact,
-       ROUND((EXTRACT(EPOCH FROM now())
-              - COALESCE(health_ts, last_seen))::numeric, 0) AS seconds_silent
-FROM cameras
-WHERE enabled IS DISTINCT FROM 0
-  AND (COALESCE(health_ts, last_seen) IS NULL
-       OR COALESCE(health_ts, last_seen) < EXTRACT(EPOCH FROM now()) - 30)
+SELECT camera_id, name, effective_state, last_seen_utc,
+       ROUND(seconds_since_seen::numeric, 0) AS seconds_silent
+FROM v_camera_status
+WHERE NOT is_online
 ORDER BY seconds_silent DESC NULLS FIRST;
 ```
 
@@ -1042,11 +1044,10 @@ ORDER BY seconds_silent DESC NULLS FIRST;
 ### 20.6 Cameras online
 
 ```sql
-SELECT camera_id, name, state, input_fps, resolution,
-       to_timestamp(last_seen) AS last_contact
-FROM cameras
-WHERE enabled IS DISTINCT FROM 0
-  AND COALESCE(health_ts, last_seen) >= EXTRACT(EPOCH FROM now()) - 30
+SELECT camera_id, name, effective_state, input_fps, resolution,
+       last_seen_utc
+FROM v_camera_status
+WHERE is_online
 ORDER BY camera_id;
 ```
 
@@ -1088,11 +1089,11 @@ WHERE zone_name = 'GF Ele-Stairs'
 
 ```sql
 SELECT COUNT(*) AS admission_events,
-       MIN(to_timestamp(ts)) AS first_entry,
-       MAX(to_timestamp(ts)) AS last_entry
-FROM events
+       MIN(event_utc) AS first_entry,
+       MAX(event_utc) AS last_entry
+FROM v_facility_crossings
 WHERE event_type = 'FACILITY_ENTRY'
-  AND to_timestamp(ts) >= date_trunc('day', now());
+  AND event_utc >= date_trunc('day', now());
 ```
 
 **Why.** Facility crossings exist only in `events`. Note this counts admission *events*; `facility_meta.admitted` counts those that grew the roster.
@@ -1103,9 +1104,9 @@ WHERE event_type = 'FACILITY_ENTRY'
 
 ```sql
 SELECT COUNT(*) AS departures
-FROM events
+FROM v_facility_crossings
 WHERE event_type = 'FACILITY_EXIT'
-  AND to_timestamp(ts) >= date_trunc('day', now());
+  AND event_utc >= date_trunc('day', now());
 ```
 
 **Why.** `ZONE_EXIT` would count internal movement instead.
@@ -1115,14 +1116,10 @@ WHERE event_type = 'FACILITY_EXIT'
 ### 20.11 The building's occupancy curve
 
 ```sql
-SELECT to_timestamp(ts)                        AS at,
-       event_type,
-       (payload::jsonb) ->> 'door_zone_id'     AS door,
-       ((payload::jsonb) ->> 'occupancy')::int AS occupancy_after
-FROM events
-WHERE event_type LIKE 'FACILITY_%'
-  AND to_timestamp(ts) >= date_trunc('day', now())
-ORDER BY ts;
+SELECT event_utc AS at, event_type, door_zone_id, occupancy_after
+FROM v_facility_crossings
+WHERE event_utc >= date_trunc('day', now())
+ORDER BY event_ts;
 ```
 
 **Why.** Each crossing records the resulting headcount, so the curve is reconstructable from events alone.
@@ -1162,8 +1159,8 @@ ORDER BY movements DESC;
 ### 20.14 Busiest doorway
 
 ```sql
-SELECT door_zone_id, entries, exits, entries - exits AS net
-FROM facility_doors ORDER BY entries DESC;
+SELECT door_zone_id, entries, exits, net
+FROM v_facility_doors ORDER BY entries DESC;
 ```
 
 **Why.** Cumulative traffic per doorway. Not occupancy.
@@ -1359,13 +1356,10 @@ ORDER BY event_ts DESC;
 ### 20.29 Who is inside, and for how long
 
 ```sql
-SELECT ref,
-       to_timestamp(admitted_at) AS admitted,
-       to_timestamp(last_seen)   AS last_seen,
-       ROUND((EXTRACT(EPOCH FROM now()) - admitted_at)::numeric / 60, 0)
-         AS minutes_inside,
+SELECT ref, admitted_utc, last_seen_utc,
+       ROUND(minutes_inside::numeric, 0) AS minutes_inside,
        entry_zone, last_zone, sightings
-FROM facility_presence
+FROM v_facility_roster
 ORDER BY admitted_at;
 ```
 
@@ -1376,11 +1370,10 @@ ORDER BY admitted_at;
 ### 20.30 Possible missed exits
 
 ```sql
-SELECT ref, to_timestamp(admitted_at) AS admitted,
-       ROUND((EXTRACT(EPOCH FROM now()) - last_seen)::numeric / 3600, 1)
-         AS hours_unseen
-FROM facility_presence
-WHERE last_seen < EXTRACT(EPOCH FROM now()) - 3600
+SELECT ref, admitted_utc,
+       ROUND((minutes_unseen / 60)::numeric, 1) AS hours_unseen
+FROM v_facility_roster
+WHERE possibly_stale
 ORDER BY last_seen;
 ```
 
@@ -1391,11 +1384,10 @@ ORDER BY last_seen;
 ### 20.31 Cross-camera de-duplication, live
 
 ```sql
-SELECT COUNT(DISTINCT o.ref) AS distinct_people,
-       SUM(l.occupancy)      AS naive_sum
-FROM zone_live l
-CROSS JOIN LATERAL jsonb_array_elements_text(l.occupants::jsonb) AS o(ref)
-WHERE l.physical_area_id = 'OFFICE-01';
+SELECT area_name, occupancy AS distinct_people,
+       summed_observations AS naive_sum, duplicates_removed
+FROM v_area_current
+WHERE area_id = 'OFFICE-01';
 ```
 
 **Why.** Shows the union and the naive sum side by side. Zones with NULL `occupants` are excluded by the lateral join, so state that caveat when reporting.
@@ -1467,8 +1459,8 @@ LIMIT 20;
 ```sql
 SELECT camera_id, zone_id, zone_name, zone_type, restricted,
        capacity_max, area_sqm, warning_density, critical_density,
-       physical_area_id, enabled
-FROM zones
+       physical_area_id, area_name, enabled
+FROM v_zone_config
 ORDER BY camera_id, zone_id;
 ```
 
@@ -1485,9 +1477,9 @@ ORDER BY camera_id, zone_id;
 SELECT SUM(occupancy) FROM v_zone_current;
 ```
 **Why.** Two cameras watching one room both report the person standing in the overlap. Observed live: the headline read 2 while the room card correctly read 1.
-**Correct** — use the roster, or the area layer:
+**Correct** — use the facility layer:
 ```sql
-SELECT COUNT(*) FROM facility_presence;
+SELECT people_inside FROM v_facility_current;
 ```
 
 ---
@@ -1731,19 +1723,19 @@ by the running application.
 
 | I need… | Use |
 |---|---|
-| People in the building | `facility_presence` + `facility_meta.baseline` |
-| People in a room | `area_state_ts` |
+| People in the building | `v_facility_current.people_inside` |
+| People in a room | `v_area_current.occupancy` |
 | People in a polygon | `v_zone_current.occupancy` |
-| People a camera can see | `cameras.people_in_view` |
+| People a camera can see | `v_camera_status.people_in_view` |
 | Distinct people | `COUNT(DISTINCT person_key)` |
 | Unique visitors | `COUNT(DISTINCT global_ref)` |
 | Entered a zone | `v_zone_entries` |
-| Entered the building | `events`, `FACILITY_ENTRY` |
-| Left the building | `events`, `FACILITY_EXIT` |
+| Entered the building | `v_facility_crossings`, `FACILITY_ENTRY` |
+| Left the building | `v_facility_crossings`, `FACILITY_EXIT` |
 | Moved between zones | `v_zone_events`, `ZONE_TRANSITION` |
 | History / averages | `v_zone_intervals`, weighted by `duration_seconds` |
 | Alerts | `v_alerts`, filter `is_active` |
-| Camera state | `cameras`, derive offline at 30 s |
+| Camera state | `v_camera_status.effective_state` |
 | Anything in a window | `v_timeline` |
 
 **Six things never to do**
@@ -1777,20 +1769,26 @@ SQL RULES
   person_ref means you should be using person_key.
 - Never invent a result. If the query returns nothing, say so.
 
-PREFER THESE VIEWS
-  v_zone_entries   arrivals in a zone, already de-duplicated for counting
-  v_zone_current   live occupancy per zone
-  v_zone_intervals history, with the duration each reading stood for
-  v_zone_events    all events with the zone resolved
-  v_alerts         alerts with lifecycle resolved
-  v_timeline       everything on one time axis
-Facility entries and exits are NOT in a view: query the events table for
-event_type FACILITY_ENTRY / FACILITY_EXIT.
+USE THESE VIEWS. You have no access to any base table and need none.
+  v_facility_current    the BUILDING count: people_inside
+  v_facility_roster     who is inside, how long, likely missed exits
+  v_facility_crossings  entering and leaving the building
+  v_facility_doors      cumulative traffic per doorway
+  v_area_current        room occupancy, de-duplicated across cameras
+  v_area_intervals      room occupancy history
+  v_zone_current        live occupancy per polygon
+  v_zone_intervals      zone history, with the duration each reading stood for
+  v_zone_entries        arrivals in a zone, safe to count
+  v_zone_events         all events with the zone resolved
+  v_zone_config         zone definitions and thresholds
+  v_camera_status       camera health, online/offline already derived
+  v_alerts              alerts with lifecycle resolved
+  v_timeline            everything on one time axis
 
 COUNTING PEOPLE — the six errors that return plausible wrong numbers
 1. Never SUM(occupancy) across cameras or SUM(people_in_view). Two cameras can
-   watch one room and both see the same person. For the building, use
-   SELECT COUNT(*) FROM facility_presence plus facility_meta.baseline.
+   watch one room and both see the same person. For the building use
+   v_facility_current.people_inside; for a room use v_area_current.occupancy.
 2. Never COUNT(DISTINCT person_ref). It is a hash of the tracker id and changes
    on every track break; it measures churn. Use person_key, or global_ref for
    confirmed unique visitors.
@@ -1805,8 +1803,8 @@ COUNTING PEOPLE — the six errors that return plausible wrong numbers
 SCOPE AND JOINS
 - zone_id is unique only within a camera. Always filter or join on camera_id.
 - site_id is a plain label; there is no sites table and no foreign keys.
-- Camera online/offline is not stored. A camera is offline when enabled = 0, or
-  COALESCE(health_ts, last_seen) is older than 30 seconds.
+- Camera online/offline is derived inside v_camera_status. Use effective_state
+  or is_online; do not re-implement the rule.
 
 TIME
 - All stored timestamps are epoch seconds UTC in DOUBLE PRECISION columns.
@@ -1815,8 +1813,8 @@ TIME
 - On raw tables wrap with to_timestamp(ts). Do not mix styles in one query.
 
 CURRENT VERSUS HISTORICAL
-- Current: v_zone_current, facility_presence, cameras.
-- Historical: v_zone_intervals, area_state_ts, events, alerts.
+- Current: v_zone_current, v_area_current, v_facility_current, v_camera_status.
+- Historical: v_zone_intervals, v_area_intervals, v_zone_events, v_alerts.
 - Never read current state from the newest history row; writes are event-driven
   and the newest row may be hours old.
 

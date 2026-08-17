@@ -270,6 +270,171 @@ tables:
     warnings: [Not analytics data.]
 
 views:
+  - name: v_facility_current
+    purpose: The building count. One row.
+    recommended_for: ["how many people are on site", "roster health"]
+    source: [facility_presence, facility_meta]
+    columns:
+      observed_inside: {type: bigint, meaning: "people watched walking in and not seen to leave"}
+      baseline: {type: double, meaning: "declared opening headcount, drains as unmatched exits occur"}
+      people_inside: {type: double, meaning: "observed_inside + baseline. THE site occupancy figure"}
+      admitted_total: {type: double}
+      discharged_total: {type: double}
+      unmatched_exits: {type: double, meaning: "somebody left who was never seen to arrive"}
+      ambiguous_crossings: {type: double, meaning: "door crossing where neither side was observed"}
+      unseen_over_1h: {type: bigint, meaning: "roster entries that may be missed exits"}
+      as_of_ts: {type: double}
+    warnings:
+      - This is the authoritative site occupancy. Never SUM zone occupancy for it.
+
+  - name: v_facility_roster
+    purpose: One row per person currently inside.
+    recommended_for: ["who is inside", "how long they have been here", "missed exits"]
+    source: facility_presence
+    columns:
+      ref: {type: text, meaning: "anonymous session hash. The system cannot answer WHO"}
+      admitted_at: {type: double}
+      admitted_utc: {type: timestamptz}
+      last_seen: {type: double}
+      last_seen_utc: {type: timestamptz}
+      minutes_inside: {type: double}
+      minutes_unseen: {type: double}
+      entry_zone: {type: text}
+      last_zone: {type: text}
+      sightings: {type: bigint}
+      possibly_stale: {type: boolean, meaning: "unseen over an hour: unmonitored space, or a missed exit"}
+    warnings:
+      - The data cannot distinguish an unmonitored occupant from a missed exit. Report both.
+
+  - name: v_facility_crossings
+    purpose: Entering and leaving the BUILDING.
+    recommended_for: ["how many entered today", "how many left", "occupancy curve"]
+    source: events
+    columns:
+      event_id: {type: text}
+      event_type: {type: text, meaning: "FACILITY_ENTRY or FACILITY_EXIT"}
+      camera_id: {type: text}
+      site_id: {type: text}
+      door_zone_id: {type: text, meaning: "which boundary was crossed"}
+      occupancy_after: {type: integer, meaning: "building headcount after this crossing"}
+      event_ts: {type: double}
+      event_utc: {type: timestamptz}
+    warnings:
+      - Distinct from ZONE_ENTRY and ZONE_EXIT, which describe a polygon.
+      - Carries no global_ref, so it cannot be joined to a person's zone movements.
+      - COUNT(*) counts admission events including re-triggers.
+
+  - name: v_facility_doors
+    purpose: Cumulative traffic per doorway.
+    recommended_for: ["busiest doorway"]
+    source: facility_doors
+    columns:
+      door_zone_id: {type: text}
+      entries: {type: bigint}
+      exits: {type: bigint}
+      net: {type: bigint}
+    warnings:
+      - Traffic tallies, NOT occupancy.
+
+  - name: v_area_current
+    purpose: Room occupancy, already de-duplicated across cameras.
+    recommended_for: ["how many people are in a room"]
+    source: [physical_areas, area_state_ts]
+    columns:
+      area_id: {type: text}
+      area_name: {type: text}
+      area_type: {type: text}
+      site_id: {type: text}
+      capacity_max: {type: bigint}
+      area_sqm: {type: double}
+      occupancy: {type: bigint, meaning: "DISTINCT people across every camera watching the room"}
+      capacity_pct: {type: double}
+      density: {type: double}
+      camera_count: {type: bigint}
+      summed_observations: {type: bigint, meaning: "what a naive per-camera sum would have said"}
+      duplicates_removed: {type: bigint, meaning: "summed_observations minus occupancy"}
+      reading_ts: {type: double}
+      reading_utc: {type: timestamptz}
+    warnings:
+      - Already de-duplicated. Do not add camera figures to it.
+      - NULL readings mean no zones are mapped to that area yet.
+
+  - name: v_area_intervals
+    purpose: Room occupancy history with the duration each reading stood for.
+    recommended_for: ["room occupancy at a time", "room averages and peaks"]
+    source: [area_state_ts, physical_areas]
+    columns:
+      area_id: {type: text}
+      area_name: {type: text}
+      capacity_max: {type: bigint}
+      area_sqm: {type: double}
+      valid_from: {type: double}
+      valid_from_utc: {type: timestamptz}
+      valid_to: {type: double}
+      valid_to_utc: {type: timestamptz}
+      duration_seconds: {type: double}
+      occupancy: {type: bigint}
+      density: {type: double}
+      capacity_pct: {type: double}
+      camera_count: {type: bigint}
+      summed_observations: {type: bigint}
+      is_stale: {type: boolean}
+      is_open: {type: boolean}
+    warnings:
+      - Weight averages by duration_seconds, same rule as v_zone_intervals.
+
+  - name: v_camera_status
+    purpose: Camera health with online/offline derived, and no credentials.
+    recommended_for: ["which cameras are offline", "can these counts be trusted"]
+    source: cameras
+    columns:
+      camera_id: {type: text}
+      name: {type: text}
+      site_id: {type: text}
+      reported_state: {type: text}
+      effective_state: {type: text, meaning: "DISABLED, OFFLINE, or the reported state. Derived at 30s silence"}
+      is_online: {type: boolean}
+      last_seen: {type: double}
+      last_seen_utc: {type: timestamptz}
+      seconds_since_seen: {type: double}
+      input_fps: {type: double}
+      resolution: {type: text}
+      dropped_frames: {type: bigint}
+      reconnects: {type: bigint}
+      people_in_view: {type: bigint, meaning: "detections in frame, not people. Never SUM across cameras"}
+      people_in_zones: {type: bigint}
+      tracking_quality: {type: text}
+      counts_reliable: {type: bigint, meaning: "TRI-STATE. NULL means not reported"}
+      counting_mode: {type: text}
+      mean_confidence: {type: double}
+      track_churn_per_min: {type: double}
+      detector_saturation: {type: double}
+    warnings:
+      - The only view that reads the cameras table. It selects no credential column.
+
+  - name: v_zone_config
+    purpose: Zone definitions and their thresholds.
+    recommended_for: ["resolving a zone name", "thresholds for a zone"]
+    source: [zones, physical_areas]
+    columns:
+      camera_id: {type: text}
+      zone_id: {type: text, meaning: "unique only WITHIN a camera"}
+      zone_name: {type: text}
+      zone_type: {type: text}
+      restricted: {type: boolean}
+      enabled: {type: boolean}
+      capacity_max: {type: bigint}
+      area_sqm: {type: double}
+      warning_density: {type: double}
+      critical_density: {type: double}
+      loitering_threshold_sec: {type: double}
+      physical_area_id: {type: text}
+      area_name: {type: text}
+      updated_at: {type: double}
+      updated_utc: {type: timestamptz}
+    warnings:
+      - Always pair zone_id with camera_id.
+
   - name: v_zone_entries
     purpose: One row per person arriving in a zone, safe to count.
     recommended_for: [people entering a zone, footfall, busiest hours, one person's route]
@@ -460,10 +625,10 @@ business_terms:
 
 rules:
   occupancy:
-    building: SELECT COUNT(*) FROM facility_presence, plus facility_meta.baseline.
-    room: Latest row in area_state_ts for that area_id.
+    building: v_facility_current.people_inside
+    room: v_area_current.occupancy
     zone: v_zone_current.occupancy, one row per camera.
-    camera: cameras.people_in_view for detections, people_in_zones for those inside polygons.
+    camera: v_camera_status.people_in_view for detections, people_in_zones for those inside polygons.
     historical: v_zone_intervals.
     average: SUM(occupancy*duration_seconds)/SUM(duration_seconds), excluding is_stale.
     peak: MAX(occupancy) over v_zone_intervals, excluding is_stale.
@@ -488,7 +653,7 @@ rules:
     correct_arrival_source: v_zone_entries
     inside_zone_movement: Produces no event. Zone change requires 3 consecutive frames (boundary debounce).
     cross_camera_movement: Not a ZONE_TRANSITION. Transitions are computed per worker from that camera's own zones.
-    facility_crossing_source: events, event_type FACILITY_ENTRY or FACILITY_EXIT. No view exposes them.
+    facility_crossing_source: v_facility_crossings
     one_way_door: ENTRANCE and EXIT zones resolve on arrival.
     two_way_door: A DOOR zone resolves on departure, from the zones either side. Undecidable crossings are counted as ambiguous and emit no event.
     facility_event_payload: [door_zone_id, person_ref, occupancy]
@@ -541,31 +706,31 @@ rules:
 
 query_mapping:
   current_site_occupancy:
-    object: facility_presence
-    sql: SELECT COUNT(*) FROM facility_presence
-    add: facility_meta.baseline
+    object: v_facility_current
+    field: people_inside
   current_area_occupancy:
-    object: area_state_ts
+    object: v_area_current
     fields: [occupancy, camera_count, summed_observations, ts]
   current_zone_occupancy:
     object: v_zone_current
     fields: [zone_name, camera_id, occupancy, density, status]
   camera_detections:
-    object: cameras
+    object: v_camera_status
     fields: [people_in_view, people_in_zones, tracking_quality, counts_reliable]
   camera_status:
-    object: cameras
-    derive: offline when enabled = 0 or COALESCE(health_ts, last_seen) older than 30 seconds
+    object: v_camera_status
+    field: effective_state
+    note: Derivation lives inside the view; do not re-implement it.
   zone_entries:
     object: v_zone_entries
     count_people_with: COUNT(DISTINCT person_key)
     count_events_with: COUNT(*)
   facility_entries:
-    object: events
-    filter: event_type = 'FACILITY_ENTRY'
+    object: v_facility_crossings
+    filter: event_type is FACILITY_ENTRY
   facility_exits:
-    object: events
-    filter: event_type = 'FACILITY_EXIT'
+    object: v_facility_crossings
+    filter: event_type is FACILITY_EXIT
   zone_transitions:
     object: v_zone_events
     filter: event_type = 'ZONE_TRANSITION'

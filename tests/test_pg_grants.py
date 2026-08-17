@@ -327,10 +327,27 @@ CREATE TABLE zones(
   restricted INTEGER, capacity_max INTEGER, area_sqm REAL,
   warning_density REAL, critical_density REAL, loitering_threshold_sec REAL,
   colour TEXT, enabled INTEGER, normalized_polygon TEXT, polygon TEXT,
-  adjacency_list TEXT, updated_at REAL);
+  adjacency_list TEXT, updated_at REAL, physical_area_id TEXT);
 CREATE TABLE cameras(
   camera_id TEXT PRIMARY KEY, site_id TEXT, last_seen REAL, name TEXT,
-  state TEXT, source TEXT, stream_url TEXT);
+  state TEXT, source TEXT, stream_url TEXT, health_ts REAL, enabled INTEGER,
+  input_fps REAL, resolution TEXT, dropped_frames INTEGER, reconnects INTEGER,
+  people_in_view INTEGER, people_in_zones INTEGER, tracking_quality TEXT,
+  counts_reliable INTEGER, counting_mode TEXT, mean_confidence REAL,
+  track_churn_per_min REAL, detector_saturation REAL);
+CREATE TABLE physical_areas(
+  area_id TEXT PRIMARY KEY, name TEXT, area_type TEXT, capacity_max INTEGER,
+  area_sqm REAL, site_id TEXT, updated_at REAL);
+CREATE TABLE area_state_ts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, area_id TEXT, ts REAL,
+  occupancy INTEGER, capacity_pct REAL, density REAL,
+  summed_observations INTEGER, camera_count INTEGER, site_id TEXT);
+CREATE TABLE facility_presence(
+  ref TEXT PRIMARY KEY, admitted_at REAL, last_seen REAL, entry_zone TEXT,
+  last_zone TEXT, sightings INTEGER);
+CREATE TABLE facility_doors(
+  door_zone_id TEXT PRIMARY KEY, entries INTEGER, exits INTEGER);
+CREATE TABLE facility_meta(key TEXT PRIMARY KEY, value REAL);
 """
 
 

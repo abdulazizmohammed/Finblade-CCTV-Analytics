@@ -73,6 +73,12 @@ DIALECTS = (SQLITE, POSTGRES)
 # than this is more likely a dead worker than a quiet zone.
 DEFAULT_MAX_HOLD = 600.0
 
+# Silence after which a camera reads OFFLINE. Matches OFFLINE_S in
+# services/api/app.py and RuleThresholds.offline_seconds in finblade/rules.py —
+# the API derives this state rather than storing it, so v_camera_status has to
+# re-implement the rule and must not disagree with them.
+DEFAULT_OFFLINE_AFTER = 30.0
+
 
 def _utc(dialect: str, column: str) -> str:
     """Epoch seconds -> a real timestamp, for humans and BI tools.
@@ -92,8 +98,28 @@ def _bool(dialect: str, expr: str) -> str:
     return expr if dialect == POSTGRES else f"CASE WHEN {expr} THEN 1 ELSE 0 END"
 
 
+def _now(dialect: str) -> str:
+    """Current time as epoch seconds, matching how the application stores it."""
+    if dialect == POSTGRES:
+        return "EXTRACT(EPOCH FROM now())"
+    return "CAST(strftime('%s','now') AS REAL)"
+
+
+def _json_text(dialect: str, column: str, key: str) -> str:
+    """Pull one key out of a JSON text column.
+
+    `events.payload` is TEXT holding the whole event. Facility crossings keep
+    the doorway and the resulting headcount in there and nowhere else, so a view
+    that does not reach into it cannot answer "who crossed which door".
+    """
+    if dialect == POSTGRES:
+        return f"(({column})::jsonb ->> '{key}')"
+    return f"json_extract({column}, '$.{key}')"
+
+
 def view_definitions(dialect: str = SQLITE,
                      max_hold: float = DEFAULT_MAX_HOLD,
+                     offline_after: float = DEFAULT_OFFLINE_AFTER,
                      temp: bool = False) -> List[Tuple[str, str]]:
     """[(view_name, CREATE VIEW sql)], in dependency order.
 
@@ -264,6 +290,231 @@ FROM alerts a
 LEFT JOIN zones z ON z.zone_id = a.zone_id AND z.camera_id = a.camera_id
 """.strip()))
 
+    # ------------------------------------------------------------- facility --
+    # THE BUILDING, as opposed to any polygon in it. Zone occupancy is derived
+    # per frame and is blind the moment somebody steps into a corridor nobody
+    # watches; this layer is event-sourced at the doors and keeps counting them.
+    #
+    # These six views exist because the roster and the crossings lived only in
+    # base tables. A read-only role granted the analytics views could not answer
+    # "how many people are in the building" at all — the single question the
+    # system is most often asked.
+    now = _now(dialect)
+
+    views.append(("v_facility_current", f"""
+CREATE VIEW v_facility_current AS
+SELECT
+    -- People this system watched walk in and has not seen leave.
+    (SELECT COUNT(*) FROM facility_presence)                       AS observed_inside,
+    -- Declared opening headcount: people already inside before counting
+    -- started. Drains as unmatched exits are observed. 0 unless an operator
+    -- set one.
+    COALESCE((SELECT value FROM facility_meta WHERE key = 'baseline'), 0)
+                                                                   AS baseline,
+    (SELECT COUNT(*) FROM facility_presence)
+      + COALESCE((SELECT value FROM facility_meta WHERE key = 'baseline'), 0)
+                                                                   AS people_inside,
+    -- Lifetime counters. admitted counts admissions that grew the roster, which
+    -- is fewer than the FACILITY_ENTRY events: someone already inside
+    -- re-triggering the entrance is ignored.
+    COALESCE((SELECT value FROM facility_meta WHERE key = 'admitted'), 0)
+                                                                   AS admitted_total,
+    COALESCE((SELECT value FROM facility_meta WHERE key = 'discharged'), 0)
+                                                                   AS discharged_total,
+    -- Somebody left who was never seen to arrive. Expected in bulk after a cold
+    -- start; a standing rate afterwards means entrances are being missed.
+    COALESCE((SELECT value FROM facility_meta WHERE key = 'discharge_unknown'), 0)
+                                                                   AS unmatched_exits,
+    -- A two-way door crossing where neither side was observed, so the direction
+    -- could not be established. Rising means a door needs an interior zone.
+    COALESCE((SELECT value FROM facility_meta WHERE key = 'ambiguous_crossings'), 0)
+                                                                   AS ambiguous_crossings,
+    -- Roster entries nobody has seen for over an hour: either a person in
+    -- unmonitored space or a missed exit. The data cannot tell which.
+    (SELECT COUNT(*) FROM facility_presence WHERE last_seen < {now} - 3600)
+                                                                   AS unseen_over_1h,
+    {now}                                                          AS as_of_ts
+""".strip()))
+
+    views.append(("v_facility_roster", f"""
+CREATE VIEW v_facility_roster AS
+SELECT
+    -- An anonymous session hash. The system cannot answer WHO; this identifies
+    -- one person only within the current run.
+    p.ref,
+    p.admitted_at,
+    {ts('p.admitted_at')}                       AS admitted_utc,
+    p.last_seen,
+    {ts('p.last_seen')}                         AS last_seen_utc,
+    ({now} - p.admitted_at) / 60.0              AS minutes_inside,
+    ({now} - p.last_seen)  / 60.0               AS minutes_unseen,
+    p.entry_zone,
+    p.last_zone,
+    p.sightings,
+    -- Discharge is strict: the roster only falls when a crossing out is
+    -- observed. An entry nobody has seen for an hour is the drift signal.
+    {_bool(dialect, f'p.last_seen < {now} - 3600')} AS possibly_stale
+FROM facility_presence p
+""".strip()))
+
+    views.append(("v_facility_crossings", f"""
+CREATE VIEW v_facility_crossings AS
+SELECT
+    e.event_id,
+    e.event_type,                                -- FACILITY_ENTRY | FACILITY_EXIT
+    e.camera_id,
+    e.site_id,
+    -- Which boundary was crossed. Lives in the payload, not a column.
+    {_json_text(dialect, 'e.payload', 'door_zone_id')}   AS door_zone_id,
+    -- The building headcount AFTER this crossing, so the occupancy curve is
+    -- reconstructable from the event stream alone.
+    CAST({_json_text(dialect, 'e.payload', 'occupancy')} AS INTEGER)
+                                                         AS occupancy_after,
+    -- Facility events carry person_ref only; the roster is keyed on the
+    -- cross-camera identity internally but does not stamp it here, so these
+    -- rows cannot be joined to a person's zone movements. A known gap.
+    e.person_ref,
+    e.ts            AS event_ts,
+    {ts('e.ts')}    AS event_utc
+FROM events e
+WHERE e.event_type IN ('FACILITY_ENTRY', 'FACILITY_EXIT')
+""".strip()))
+
+    views.append(("v_facility_doors", """
+CREATE VIEW v_facility_doors AS
+SELECT
+    d.door_zone_id,
+    d.entries,
+    d.exits,
+    -- Cumulative net through THIS doorway over its lifetime. NOT building
+    -- occupancy: other doors exist and the roster is the authority.
+    d.entries - d.exits AS net
+FROM facility_doors d
+""".strip()))
+
+    # ----------------------------------------------------------- areas ------
+    # A physical area is a real room; a zone is one camera's polygon of it.
+    # Occupancy here is COUNT(DISTINCT person) across every zone mapped to the
+    # room, so a person standing where two cameras overlap counts once.
+    views.append(("v_area_current", f"""
+CREATE VIEW v_area_current AS
+SELECT
+    a.area_id,
+    a.name              AS area_name,
+    a.area_type,
+    a.site_id,
+    a.capacity_max,
+    a.area_sqm,
+    s.occupancy,                    -- distinct people, already de-duplicated
+    s.capacity_pct,
+    s.density,
+    s.camera_count,
+    -- What a naive per-camera sum would have said. The difference is the
+    -- double-count that de-duplication removed.
+    s.summed_observations,
+    s.summed_observations - s.occupancy AS duplicates_removed,
+    s.ts                AS reading_ts,
+    {ts('s.ts')}        AS reading_utc
+FROM physical_areas a
+LEFT JOIN area_state_ts s
+       ON s.area_id = a.area_id
+      AND s.ts = (SELECT MAX(ts) FROM area_state_ts x WHERE x.area_id = a.area_id)
+""".strip()))
+
+    views.append(("v_area_intervals", f"""
+CREATE VIEW v_area_intervals AS
+SELECT
+    s.area_id,
+    a.name                                      AS area_name,
+    a.capacity_max,
+    a.area_sqm,
+    s.ts                                        AS valid_from,
+    {ts('s.ts')}                                AS valid_from_utc,
+    LEAD(s.ts) OVER w                           AS valid_to,
+    {ts('LEAD(s.ts) OVER w')}                   AS valid_to_utc,
+    LEAD(s.ts) OVER w - s.ts                    AS duration_seconds,
+    s.occupancy,
+    s.density,
+    s.capacity_pct,
+    s.camera_count,
+    s.summed_observations,
+    -- Same rule as v_zone_intervals: weight every average by duration_seconds.
+    {_bool(dialect, f'LEAD(s.ts) OVER w - s.ts > {max_hold}')} AS is_stale,
+    {_bool(dialect, 'LEAD(s.ts) OVER w IS NULL')}              AS is_open
+FROM area_state_ts s
+LEFT JOIN physical_areas a ON a.area_id = s.area_id
+WINDOW w AS (PARTITION BY s.area_id ORDER BY s.ts)
+""".strip()))
+
+    # ---------------------------------------------------------- cameras -----
+    # Online/offline is DERIVED, not stored — the API computes it and a SQL
+    # client otherwise has to re-implement the rule. It is implemented here once
+    # so every consumer agrees.
+    #
+    # cameras.source and cameras.stream_url are deliberately absent: they hold
+    # RTSP URLs with embedded passwords. This is the only view that touches the
+    # cameras table, and it selects columns explicitly for that reason.
+    views.append(("v_camera_status", f"""
+CREATE VIEW v_camera_status AS
+SELECT
+    c.camera_id,
+    c.name,
+    c.site_id,
+    c.state                                     AS reported_state,
+    CASE
+      WHEN c.enabled = 0 THEN 'DISABLED'
+      WHEN COALESCE(c.health_ts, c.last_seen) IS NULL THEN 'OFFLINE'
+      WHEN COALESCE(c.health_ts, c.last_seen) < {now} - {offline_after}
+           THEN 'OFFLINE'
+      ELSE COALESCE(c.state, 'ONLINE')
+    END                                         AS effective_state,
+    {_bool(dialect, f"c.enabled <> 0 AND COALESCE(c.health_ts, c.last_seen) >= {now} - {offline_after}")}
+                                                AS is_online,
+    c.last_seen,
+    {ts('c.last_seen')}                         AS last_seen_utc,
+    {now} - COALESCE(c.health_ts, c.last_seen)  AS seconds_since_seen,
+    c.input_fps,
+    c.resolution,
+    c.dropped_frames,
+    c.reconnects,
+    -- Detections, not people. The same human on two cameras appears in both.
+    c.people_in_view,
+    c.people_in_zones,
+    -- Whether this camera's counts can be believed. counts_reliable is
+    -- TRI-STATE: NULL means the worker reported nothing, which is not the same
+    -- as reliable.
+    c.tracking_quality,
+    c.counts_reliable,
+    c.counting_mode,
+    c.mean_confidence,
+    c.track_churn_per_min,
+    c.detector_saturation
+FROM cameras c
+""".strip()))
+
+    views.append(("v_zone_config", f"""
+CREATE VIEW v_zone_config AS
+SELECT
+    z.camera_id,
+    z.zone_id,                      -- unique only WITHIN a camera
+    z.zone_name,
+    z.zone_type,
+    {_bool(dialect, 'z.restricted = 1')} AS restricted,
+    {_bool(dialect, 'z.enabled <> 0')}   AS enabled,
+    z.capacity_max,
+    z.area_sqm,
+    z.warning_density,
+    z.critical_density,
+    z.loitering_threshold_sec,
+    -- The real room this polygon looks at. NULL means a single-camera zone.
+    z.physical_area_id,
+    a.name          AS area_name,
+    z.updated_at,
+    {ts('z.updated_at')} AS updated_utc
+FROM zones z
+LEFT JOIN physical_areas a ON a.area_id = z.physical_area_id
+""".strip()))
+
     # ------------------------------------------------------------- timeline --
     # The single view the chatbot points at. UNION ALL, not a join: this is the
     # SUM of the three tables (3.3M rows), where joining them is the PRODUCT
@@ -369,6 +620,50 @@ SAFE_COLUMNS = {
         "detail", "occupancy", "density", "capacity_pct", "event_type",
         "rule_id", "severity", "message",
     ),
+    # -- the facility layer. Without these a read-only role could not answer
+    # "how many people are in the building", because the roster and the
+    # crossings live only in base tables and no table is ever granted.
+    "v_facility_current": (
+        "observed_inside", "baseline", "people_inside", "admitted_total",
+        "discharged_total", "unmatched_exits", "ambiguous_crossings",
+        "unseen_over_1h", "as_of_ts",
+    ),
+    "v_facility_roster": (
+        "ref", "admitted_at", "admitted_utc", "last_seen", "last_seen_utc",
+        "minutes_inside", "minutes_unseen", "entry_zone", "last_zone",
+        "sightings", "possibly_stale",
+    ),
+    "v_facility_crossings": (
+        "event_id", "event_type", "camera_id", "site_id", "door_zone_id",
+        "occupancy_after", "event_ts", "event_utc",
+    ),
+    "v_facility_doors": ("door_zone_id", "entries", "exits", "net"),
+    "v_area_current": (
+        "area_id", "area_name", "area_type", "site_id", "capacity_max",
+        "area_sqm", "occupancy", "capacity_pct", "density", "camera_count",
+        "summed_observations", "duplicates_removed", "reading_ts", "reading_utc",
+    ),
+    "v_area_intervals": (
+        "area_id", "area_name", "capacity_max", "area_sqm", "valid_from",
+        "valid_from_utc", "valid_to", "valid_to_utc", "duration_seconds",
+        "occupancy", "density", "capacity_pct", "camera_count",
+        "summed_observations", "is_stale", "is_open",
+    ),
+    # Deliberately omits source and stream_url — RTSP URLs with passwords.
+    "v_camera_status": (
+        "camera_id", "name", "site_id", "reported_state", "effective_state",
+        "is_online", "last_seen", "last_seen_utc", "seconds_since_seen",
+        "input_fps", "resolution", "dropped_frames", "reconnects",
+        "people_in_view", "people_in_zones", "tracking_quality",
+        "counts_reliable", "counting_mode", "mean_confidence",
+        "track_churn_per_min", "detector_saturation",
+    ),
+    "v_zone_config": (
+        "camera_id", "zone_id", "zone_name", "zone_type", "restricted",
+        "enabled", "capacity_max", "area_sqm", "warning_density",
+        "critical_density", "loitering_threshold_sec", "physical_area_id",
+        "area_name", "updated_at", "updated_utc",
+    ),
 }
 
 
@@ -399,6 +694,30 @@ _VIEW_COMMENTS = {
     "v_alerts": (
         "Alerts with lifecycle resolved. status is NULL on an untouched alert, "
         "so filter is_active rather than status='OPEN'."),
+    "v_facility_current": (
+        "THE building count. observed_inside + baseline = people_inside. This is "
+        "the authoritative site occupancy; never SUM zone occupancy for it."),
+    "v_facility_roster": (
+        "One row per person currently inside. ref is an anonymous session hash — "
+        "the system cannot answer WHO. possibly_stale flags a likely missed exit."),
+    "v_facility_crossings": (
+        "Entering and leaving the BUILDING. Distinct from ZONE_ENTRY/ZONE_EXIT, "
+        "which describe a polygon. occupancy_after rebuilds the occupancy curve."),
+    "v_facility_doors": (
+        "Cumulative traffic per doorway. NOT occupancy — other doors exist and "
+        "the roster is the authority."),
+    "v_area_current": (
+        "Room-level occupancy, already de-duplicated across cameras. "
+        "duplicates_removed is what a naive per-camera sum would have added."),
+    "v_area_intervals": (
+        "Room occupancy history. Weight averages by duration_seconds, same rule "
+        "as v_zone_intervals. Exclude is_stale."),
+    "v_camera_status": (
+        "Camera health with online/offline DERIVED (30s silence). Contains no "
+        "credentials. people_in_view is detections, not people."),
+    "v_zone_config": (
+        "Zone definitions and their thresholds. zone_id is unique only within a "
+        "camera — always pair it with camera_id."),
     "v_timeline": (
         "Every record on one time axis: a UNION, not a join. Joining the fact "
         "tables instead would produce 5.66 trillion rows from a 1.15GB source. "
@@ -430,6 +749,21 @@ _COLUMN_COMMENTS = {
         "a dead camera worker. Treat as unobserved, not as a quiet period."),
     ("v_zone_current", "occupancy"): (
         "People in THIS camera's polygon. Not additive across cameras."),
+    ("v_facility_current", "people_inside"): (
+        "The building count: observed_inside plus any declared baseline. Use "
+        "this for 'how many people are on site', never a sum of zone occupancy."),
+    ("v_facility_current", "unmatched_exits"): (
+        "Somebody left who was never seen to arrive. Bulk after a cold start is "
+        "normal; a standing rate means entrances are being missed."),
+    ("v_area_current", "occupancy"): (
+        "DISTINCT people across every camera watching this room. Already "
+        "de-duplicated; do not add camera figures to it."),
+    ("v_camera_status", "people_in_view"): (
+        "Detections in frame, not people. The same human on two cameras appears "
+        "in both. Never SUM across cameras."),
+    ("v_camera_status", "counts_reliable"): (
+        "TRI-STATE. NULL means the worker reported nothing, which is not the "
+        "same as reliable."),
     ("v_alerts", "is_active"): (
         "True for OPEN and ACK. Use this rather than status, which is NULL "
         "until somebody touches the alert."),
@@ -463,12 +797,14 @@ def drop_sql(dialect: str = SQLITE) -> List[str]:
 
 
 def create_all(conn, dialect: str = SQLITE, max_hold: float = DEFAULT_MAX_HOLD,
+               offline_after: float = DEFAULT_OFFLINE_AFTER,
                temp: bool = False) -> List[str]:
     """(Re)create every view on an open DB-API connection. Returns the names."""
     names = []
     for stmt in drop_sql(dialect):
         conn.execute(stmt)
-    for name, sql in view_definitions(dialect, max_hold=max_hold, temp=temp):
+    for name, sql in view_definitions(dialect, max_hold=max_hold,
+                                  offline_after=offline_after, temp=temp):
         conn.execute(sql)
         names.append(name)
     return names

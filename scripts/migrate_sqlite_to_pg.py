@@ -52,6 +52,12 @@ TELEMETRY_TABLES = ["events", "zone_state_ts", "zone_live", "area_state_ts",
                     "facility_meta", "forwarder_cursors"]
 
 # Primary keys, for ON CONFLICT. Tables absent here are append-only.
+#
+# `zones` is deliberately NOT here even though it has a composite key — see
+# REPLACE_BY_CAMERA below. Omitting it produced a plain INSERT that died on
+# "duplicate key value violates unique constraint zones_pkey" the moment a
+# destination already held that camera's zones, which is the normal case when
+# migrating onto a running deployment rather than an empty one.
 CONFLICT_KEY = {
     "cameras": "camera_id",
     "physical_areas": "area_id",
@@ -62,6 +68,15 @@ CONFLICT_KEY = {
     "facility_meta": "key",
     "forwarder_cursors": "name",
 }
+
+# Tables where a camera's rows are a SET that must be replaced wholesale, not
+# merged row by row. An upsert keyed on (camera_id, zone_id) would leave behind
+# any zone the destination has and the source does not — so a zone deleted or
+# renamed since the destination last saw it would come back from the dead and
+# sit there being counted. Observed live: CAM-02 carried 1F-01 in Postgres and
+# ZONE-02-If in SQLite after a redraw, and an upsert would have produced both.
+# This mirrors SQLiteStore.save_zones, which deletes the camera's set first.
+REPLACE_BY_CAMERA = {"zones": "camera_id"}
 
 BATCH = 5000
 
@@ -104,6 +119,20 @@ def copy_table(sq, pg, table, truncate=False, echo=print):
     with pg.cursor() as cur:
         if truncate:
             cur.execute(f"TRUNCATE TABLE {table}")
+
+        owner = REPLACE_BY_CAMERA.get(table)
+        if owner and not truncate:
+            # Clear the destination's rows for every owner present in the
+            # source, so the source's set replaces it rather than merging into
+            # it. Owners absent from the source are left alone: this migration
+            # is not a mandate to delete a camera the source has never heard of.
+            owners = [r[0] for r in sq.execute(
+                f"SELECT DISTINCT {owner} FROM {table}") if r[0] is not None]
+            if owners:
+                cur.execute(f"DELETE FROM {table} WHERE {owner} = ANY(%s)",
+                            (owners,))
+                echo(f"  {table:<20} replacing sets for {len(owners)} "
+                     f"{owner.replace('_id', '')}(s)")
 
         collist = ",".join(cols)
         holders = ",".join(["%s"] * len(cols))

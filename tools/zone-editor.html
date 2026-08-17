@@ -134,6 +134,16 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
     <div><label class="lbl" for="loiter">Loiter s</label><input type="number" id="loiter" value="30" min="0"></div>
     <div><label class="lbl" for="colour">Colour</label><input type="color" id="colour" value="#4fdce0"></div>
   </div>
+  <!-- Physical area: the real room this polygon looks at. Two cameras
+       covering one office point their zones at the same area, and its
+       occupancy is then counted as distinct people rather than the sum of
+       both cameras — otherwise anyone visible to both is counted twice. -->
+  <label class="lbl" for="parea">Physical area</label>
+  <input type="text" id="parea" list="area-list" placeholder="none — single-camera zone">
+  <datalist id="area-list"></datalist>
+  <p class="hint" id="area-hint">Leave empty unless another camera also sees this
+    place. Type a new id to create an area, or pick an existing one to join it.</p>
+
   <label class="lbl" for="adj">Adjacent zone IDs (comma-separated)</label>
   <input type="text" id="adj" placeholder="ZONE-02, ZONE-03">
 
@@ -262,13 +272,6 @@ $('btn-copy').onclick=()=>navigator.clipboard.writeText(yaml());
 $('btn-save').onclick=saveServer;
 $('btn-load').onclick=loadServer;
 
-// The physical-area mapping is no longer editable here, but it is still a real
-// column on the zone and something may already be using it. editZone() lifts a
-// zone out of the list and closeZone() pushes a fresh object back, so without
-// carrying the id across that round trip, editing a polygon would silently
-// unmap the zone. Held here rather than shown.
-let carryAreaId=null;
-
 function closeZone(){
   if(pts.length<3){ $('coord').innerHTML=`<b style="color:${C.draft}">Needs at least 3 points</b>`; return; }
   const ztype=v('ztype');
@@ -276,14 +279,13 @@ function closeZone(){
   zones.push({
     zone_id:v('zid'), zone_name:v('zname'), zone_type:ztype,
     restricted: ztype==='RESTRICTED',
-    physical_area_id: carryAreaId,
+    physical_area_id: v('parea').trim() || null,
     capacity_max:+v('cap'), area_sqm:+v('area'),
     warning_density:+v('warn'), critical_density:+v('crit'),
     loitering_threshold_sec:+v('loiter'), colour:v('colour'),
     adjacency_list: v('adj').split(',').map(s=>s.trim()).filter(Boolean),
     polygon:polyPx, norm:polyPx.map(norm),
   });
-  carryAreaId=null;          // consumed; the next zone drawn is unmapped
   pts=[]; draw(); render();
 }
 
@@ -302,7 +304,14 @@ function render(){
         `<button class="edit" title="Edit shape" data-i="${i}">Edit shape</button>`+
         `<button class="rm" title="Remove" data-i="${i}">✕</button>`+
         `<div class="id">${z.zone_id}<span class="pill ${z.restricted?'nogo':'mon'}">${z.zone_type}</span></div>`+
-        `<div class="meta">${z.zone_name} · ${z.polygon.length} pts</div>`+
+        `<div class="meta">${z.zone_name} · ${z.polygon.length} pts`+
+          (z.physical_area_id?` · <b>${z.physical_area_id}</b>`:'')+`</div>`+
+        // Text, not a number — kept out of .props because that handler
+        // coerces every value with +inp.value, which would turn an area id
+        // into NaN.
+        `<label class="p ap"><span>Physical area</span>`+
+        `<input type="text" list="area-list" data-i="${i}" `+
+        `value="${z.physical_area_id||''}" placeholder="none"></label>`+
         `<div class="props">`+
           prop(i,'capacity_max','Capacity',z.capacity_max,1)+
           prop(i,'area_sqm','Area m²',z.area_sqm,0.1)+
@@ -320,6 +329,20 @@ function render(){
                    : `deleted ${zid} locally but SAVE FAILED — cannot reach the API`);
     });
     box.querySelectorAll('.edit').forEach(b=> b.onclick=()=>editZone(+b.dataset.i));
+    // Map/unmap a zone to a physical area straight from its card.
+    box.querySelectorAll('.ap input').forEach(inp=> inp.onchange=async()=>{
+      const z=zones[+inp.dataset.i];
+      if(!z) return;
+      z.physical_area_id = inp.value.trim() || null;
+      const ok=await persistZones();
+      if(ok && z.physical_area_id) await ensureArea(z.physical_area_id);
+      setStatus(ok ? (z.physical_area_id
+                        ? `${z.zone_id} → ${z.physical_area_id} — saved`
+                        : `${z.zone_id} detached from its area — saved`)
+                   : `update FAILED — is the API on :8000?`);
+      render();
+      loadAreas();
+    });
     // Edit a zone's numbers right on the card -> update + auto-save (applies live).
     box.querySelectorAll('.props input').forEach(inp=> inp.onchange=async()=>{
       const i=+inp.dataset.i, k=inp.dataset.k, z=zones[i];
@@ -338,10 +361,10 @@ function render(){
 // removed from the list and re-added (with any changes) when you Close zone.
 function editZone(i){
   const z=zones[i];
-  carryAreaId = z.physical_area_id || null;   // preserved across the round trip
   pts = (z.polygon||[]).map(p=>p.slice());
   $('zid').value=z.zone_id; $('zname').value=z.zone_name; $('ztype').value=z.zone_type||'MONITORED';
   $('cap').value=z.capacity_max; $('area').value=z.area_sqm;
+  $('parea').value=z.physical_area_id||'';
   $('warn').value=z.warning_density; $('crit').value=z.critical_density;
   $('loiter').value=z.loitering_threshold_sec; $('colour').value=z.colour||'#4fdce0';
   $('adj').value=(z.adjacency_list||[]).join(', ');
@@ -376,6 +399,34 @@ function zonesPayload(cam){
   }))};
 }
 
+// Physical areas ----------------------------------------------------------
+// The datalist is the whole point of the mapping UI: to put a second camera
+// on an existing room the operator must be able to SEE that room's id and
+// pick it. Typing a near-miss ("OFFICE-1" for "OFFICE-01") would silently
+// create a second area and the double-counting would remain.
+async function loadAreas(){
+  const api=v('api').replace(/\/$/,'');
+  try{
+    const {areas}=await fetch(`${api}/api/v1/areas`).then(r=>r.json());
+    const dl=$('area-list');
+    dl.innerHTML=(areas||[]).map(a=>
+      `<option value="${a.area_id}">${a.name||a.area_id}${
+        a.multi_camera?' — '+a.zones.length+' cameras':''}</option>`).join('');
+  }catch(e){ /* editor still works offline; the field is free text */ }
+}
+
+// Create the area row if this id is new, so it gets a name and capacity
+// rather than existing only as a foreign key on some zone.
+async function ensureArea(areaId){
+  const api=v('api').replace(/\/$/,'');
+  try{
+    const r=await fetch(`${api}/api/v1/areas/${encodeURIComponent(areaId)}`);
+    if(r.ok) return;
+    await fetch(`${api}/api/v1/areas`, {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({area_id:areaId, name:areaId, area_type:'ROOM'})});
+  }catch(e){ /* non-fatal: the zone mapping is already saved */ }
+}
 
 // Persist the current zone set (replace-all) to the server. Returns ok boolean.
 // Used by both Save and Delete so a deletion actually sticks server-side.
@@ -441,6 +492,7 @@ async function initCameras(){
     if(pick) $('camera').value=pick;
   }catch(e){}
   loadServer();
+  loadAreas();
   tryLoadFrame();
 }
 

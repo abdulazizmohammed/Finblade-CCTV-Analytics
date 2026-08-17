@@ -75,11 +75,18 @@ overlapping_pairs:
   # Not overlapping, and deliberately absent: CAM-ST1-03 (Room1) is the only
   # camera on its area, so it has no partner to share floor with.
   #
-  # The CAM-03/CAM-04 entry above is kept as the operator left it. Note both
-  # cameras have since been deleted — only their zones remain — and that the
-  # area mapping now pairs CAM-04 with CAM-05 (both OFFICE-01) while CAM-03's
-  # zone has no area at all. If those cameras come back, that pairing wants
-  # rechecking. Left alone rather than silently corrected.
+  # CORRECTION 2026-08-17. An earlier revision of this comment claimed CAM-03
+  # and CAM-04 had been deleted and that their pairing wanted rechecking. That
+  # was read off the DEV box, where those ids are indeed gone, and it is wrong
+  # about the deployment this entry was written for. On the test site both
+  # cameras are live and are exactly what the note above says: CAM-03 is the
+  # ENT-01 entrance, CAM-04 is Recp-01 reception. The pairing stands.
+  #
+  # The lesson is in the ids. CAM-01..CAM-06 on the test site and CAM-ST1-*
+  # on the dev box are different buildings sharing one topology file, and a
+  # bare number is not a name. Entries for absent cameras are simply never
+  # consulted, so both sets can live here — but check which site an id belongs
+  # to before concluding anything from its absence.
 
 # Pairs separated by a walk. min_seconds is the fastest a person could
 # physically cover it; max_seconds is the longest gap still worth treating as

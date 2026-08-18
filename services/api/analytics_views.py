@@ -82,6 +82,19 @@ DEFAULT_MAX_HOLD = 600.0
 # re-implement the rule and must not disagree with them.
 DEFAULT_OFFLINE_AFTER = 30.0
 
+# How long a person can go unseen on ONE camera before their next appearance is
+# a new fragment rather than a continuation.
+#
+# This exists because a global_ref survives 300s of absence (FINBLADE_REID_TTL),
+# so somebody who leaves a camera and comes back four minutes later keeps the
+# same ref and would otherwise collapse into a single fragment spanning a gap
+# they were not there for. That fragment would claim an exit zone from before
+# the gap and an arrival after it, and every link built on it would be wrong.
+#
+# 60s is well above a normal tracking dropout (occlusion, a missed frame or two)
+# and well below the ReID TTL, so it splits on real absences and not on noise.
+DEFAULT_FRAGMENT_GAP = 60.0
+
 
 def _utc(column: str) -> str:
     """Epoch seconds -> a real timestamp, for humans and BI tools.
@@ -118,6 +131,7 @@ def _json_text(column: str, key: str) -> str:
 
 def view_definitions(max_hold: float = DEFAULT_MAX_HOLD,
                      offline_after: float = DEFAULT_OFFLINE_AFTER,
+                     fragment_gap: float = DEFAULT_FRAGMENT_GAP,
                      temp: bool = False) -> List[Tuple[str, str]]:
     """[(view_name, CREATE VIEW sql)], in dependency order.
 
@@ -555,6 +569,247 @@ SELECT 'alert',
 FROM alerts a
 """.strip()))
 
+    # ------------------------------------------------------------- journeys --
+    # Reconstructing where a person went WITHOUT trusting cross-camera identity.
+    #
+    # ReID splits: one person picks up several global_refs over a walk through
+    # the building, so "SELECT ... WHERE global_ref = ?" returns a third of the
+    # journey and gives no sign that the rest exists. These three views rebuild
+    # the path from time and physics instead, and they have two advantages the
+    # live matcher structurally cannot have:
+    #
+    #   1. They see the future. The matcher must decide the instant a track
+    #      appears, not knowing whether a better candidate walks in two seconds
+    #      later. Running over history, every candidate is already present.
+    #   2. They can decline. The matcher must return something. These link two
+    #      fragments only when nothing else competes, and leave a gap otherwise.
+    #
+    # The result is partial traces you can trust plus honest holes, rather than
+    # a complete trace you cannot check. Confidence is not a tuned parameter
+    # here: it is how many other people could have been that hop, which is a
+    # count, and it comes out of the data.
+    #
+    # These read history and are not on any live path. Nothing about ingest,
+    # occupancy, alerts or the dashboard depends on them.
+    views.append(("v_journey_fragments", f"""
+CREATE VIEW v_journey_fragments AS
+WITH ev AS (
+    SELECT
+        {person_key} AS person_key,
+        e.global_ref,
+        e.camera_id,
+        e.site_id,
+        {zone_ref} AS zone_ref,
+        e.ts
+    FROM events e
+    WHERE (e.person_ref IS NOT NULL OR e.global_ref IS NOT NULL)
+      -- Person-bearing events only. A DENSITY_UPDATE or CAMERA_HEARTBEAT has
+      -- no one in it, and including them would extend a fragment past the
+      -- point the person was last actually seen.
+      AND e.event_type IN ('ZONE_ENTRY', 'ZONE_EXIT', 'ZONE_TRANSITION')
+),
+gapped AS (
+    SELECT ev.*,
+           ev.ts - LAG(ev.ts) OVER (PARTITION BY person_key, camera_id
+                                    ORDER BY ts) AS gap
+    FROM ev
+),
+marked AS (
+    SELECT gapped.*,
+           -- Running count of gaps: increments on the first row and on every
+           -- absence longer than the threshold, so it numbers the fragments.
+           SUM(CASE WHEN gap IS NULL OR gap > {fragment_gap} THEN 1 ELSE 0 END)
+               OVER (PARTITION BY person_key, camera_id ORDER BY ts
+                     ROWS UNBOUNDED PRECEDING) AS fragment_no
+    FROM gapped
+)
+SELECT
+    camera_id || '#' || person_key || '#' || fragment_no  AS fragment_id,
+    person_key,
+    camera_id,
+    MIN(site_id)                                         AS site_id,
+    MIN(ts)                                              AS appeared,
+    {ts('MIN(ts)')}                                      AS appeared_utc,
+    MAX(ts)                                              AS vanished,
+    {ts('MAX(ts)')}                                      AS vanished_utc,
+    MAX(ts) - MIN(ts)                                    AS duration_seconds,
+    COUNT(*)                                             AS event_count,
+    -- Where they came in and where they left from. These are what the next
+    -- fragment has to be reachable from.
+    (array_agg(zone_ref ORDER BY ts)
+        FILTER (WHERE zone_ref IS NOT NULL))[1]          AS entry_zone,
+    (array_agg(zone_ref ORDER BY ts DESC)
+        FILTER (WHERE zone_ref IS NOT NULL))[1]          AS exit_zone,
+    COUNT(DISTINCT zone_ref)                             AS zones_touched,
+    BOOL_OR(global_ref IS NOT NULL)                      AS identity_resolved
+FROM marked
+GROUP BY camera_id, person_key, fragment_no
+""".strip()))
+
+    # Every hop a fragment COULD be followed by, with the competition counted.
+    #
+    # successor_options / predecessor_options are the honest confidence: how
+    # many fragments contend for this link in each direction. One in both means
+    # nothing else is possible and the hop is certain on physics alone. Five
+    # means it is a guess, and the view says so rather than picking.
+    #
+    # This makes trace quality a function of HOW BUSY THE BUILDING WAS, not of
+    # how good the crops were - which is why it works best after hours and on
+    # near-empty floors, exactly when tracing matters most.
+    #
+    # OVERLAPPING PAIRS ARE EXCLUDED. Two cameras watching the same floor see
+    # one person at the same instant; that is one place, not a hop, and adding
+    # it would insert a phantom step into every trace crossing the overlap.
+    # Worse, it is feasible in BOTH directions, so a pair of co-present
+    # fragments would each be the other's unique neighbour, forming a two-cycle
+    # that v_journey_traces then drops entirely - a silent hole rather than a
+    # visible one. Deduplicating an overlap is a different question from
+    # tracing a path, and mixing them serves neither.
+    views.append(("v_journey_links", """
+CREATE VIEW v_journey_links AS
+WITH candidate AS (
+    SELECT
+        a.fragment_id               AS from_fragment,
+        b.fragment_id               AS to_fragment,
+        a.person_key                AS from_person_key,
+        b.person_key                AS to_person_key,
+        a.camera_id                 AS from_camera,
+        b.camera_id                 AS to_camera,
+        a.exit_zone                 AS from_zone,
+        b.entry_zone                AS to_zone,
+        a.vanished                  AS left_at,
+        b.appeared                  AS arrived_at,
+        b.appeared - a.vanished     AS gap_seconds,
+        t.min_seconds,
+        t.max_seconds,
+        t.pair_kind
+    FROM v_journey_fragments a
+    JOIN camera_transits t
+      ON t.from_camera = a.camera_id
+    JOIN v_journey_fragments b
+      ON b.camera_id = t.to_camera
+    WHERE b.fragment_id <> a.fragment_id
+      AND t.pair_kind <> 'overlapping'
+      -- The physics gate, and the only filter that matters. An absent row in
+      -- camera_transits already means "no route", so this join does the work
+      -- of finblade/topology.py feasible() without re-stating its rules.
+      AND (b.appeared - a.vanished) BETWEEN t.min_seconds AND t.max_seconds
+),
+reduced AS (
+    -- Transitive reduction, and without it this view does not work on a real
+    -- site. Surveyed windows are wide — CAM-01 to CAM-05 is anything from 17
+    -- to 240 seconds — so on a three-hop walk the direct first-to-last hop is
+    -- ALSO feasible. That shortcut gives the first fragment two successors,
+    -- uniqueness collapses, and a journey that is plainly one path chains into
+    -- nothing. Wide windows are correct; the shortcut is the artefact.
+    --
+    -- So: drop A->C when some B exists with A->B and B->C. The person was
+    -- SEEN at B in between, and the physics gate already said both halves are
+    -- walkable, so the path went through B. Keeping the shortcut would mean
+    -- claiming they skipped a camera that observed them.
+    --
+    -- BOTH LEGS MUST BE ACTUAL MOVEMENT. Without that condition the reduction
+    -- is not just imprecise, it manufactures merges. Two strangers pass CAM-01
+    -- two seconds apart, which is a legitimate same-camera re-acquisition
+    -- candidate (A->B); the reduction then reads A->B->C as explaining A->C,
+    -- drops the true link, and chains two people into one journey. A
+    -- re-acquisition is not a detour through anywhere, so it cannot license
+    -- dropping a real hop. Only a genuine change of camera can.
+    --
+    -- THE REMAINING ASSUMPTION, stated plainly: that the intermediate sighting
+    -- is the same person. If B is a stranger, this stitches them into the path.
+    -- It is self-limiting — a stranger at B usually has candidates of their
+    -- own, which makes B ambiguous and breaks the chain there instead — but in
+    -- a quiet building with two people it can be wrong. The mitigations are the
+    -- ones used everywhere here: predecessor_options says how much competition
+    -- there was, and identity_agrees says whether ReID concurred.
+    SELECT c.*
+    FROM candidate c
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM candidate m
+        JOIN candidate n ON n.from_fragment = m.to_fragment
+        WHERE m.from_fragment = c.from_fragment
+          AND n.to_fragment   = c.to_fragment
+          AND m.from_camera <> m.to_camera
+          AND n.from_camera <> n.to_camera
+    )
+)
+SELECT
+    c.*,
+    COUNT(*) OVER (PARTITION BY c.from_fragment)  AS successor_options,
+    COUNT(*) OVER (PARTITION BY c.to_fragment)    AS predecessor_options,
+    (COUNT(*) OVER (PARTITION BY c.from_fragment) = 1
+     AND COUNT(*) OVER (PARTITION BY c.to_fragment) = 1) AS is_unique,
+    -- Did cross-camera ReID independently reach the same conclusion? Useful
+    -- both ways: agreement corroborates the hop, and a unique link that ReID
+    -- missed is a concrete example of a split worth investigating.
+    (c.from_person_key = c.to_person_key)         AS identity_agrees
+FROM reduced c
+""".strip()))
+
+    # The traces themselves: chains of mutually unique links.
+    #
+    # A journey starts at a fragment nothing uniquely leads to, and extends for
+    # as long as each step has exactly one possible continuation. Ambiguity ends
+    # the chain rather than guessing through it, so a busy period yields many
+    # short journeys and a quiet one yields few long ones. That is the correct
+    # behaviour, not a limitation.
+    #
+    # journey_id is the first fragment's id, so it is stable as long as history
+    # is - but it is DERIVED, not stored: adding events in the middle of a
+    # window can merge or split journeys retroactively. Cite it in a report with
+    # the time range, never as a durable identifier for a person.
+    views.append(("v_journey_traces", """
+CREATE VIEW v_journey_traces AS
+WITH RECURSIVE uniq AS (
+    SELECT from_fragment, to_fragment
+    FROM v_journey_links
+    WHERE is_unique
+),
+roots AS (
+    -- Nothing uniquely arrives here, so this is where a chain begins. A
+    -- fragment with no links at all is its own single-hop journey, which is
+    -- honest: it happened, and we cannot say what came before or after.
+    SELECT f.fragment_id
+    FROM v_journey_fragments f
+    LEFT JOIN uniq u ON u.to_fragment = f.fragment_id
+    WHERE u.to_fragment IS NULL
+),
+walk AS (
+    SELECT fragment_id AS journey_id, fragment_id, 0 AS hop_no
+    FROM roots
+    UNION ALL
+    SELECT w.journey_id, u.to_fragment, w.hop_no + 1
+    FROM walk w
+    JOIN uniq u ON u.from_fragment = w.fragment_id
+    -- Belt and braces. A cycle cannot be entered (every member of one has a
+    -- unique predecessor, so none is a root), but a recursive CTE that is
+    -- wrong about that does not error - it hangs.
+    WHERE w.hop_no < 50
+)
+SELECT
+    w.journey_id,
+    w.hop_no,
+    f.fragment_id,
+    f.person_key,
+    f.camera_id,
+    f.site_id,
+    f.entry_zone,
+    f.exit_zone,
+    f.appeared,
+    f.appeared_utc,
+    f.vanished,
+    f.vanished_utc,
+    f.duration_seconds,
+    f.identity_resolved,
+    COUNT(*)        OVER (PARTITION BY w.journey_id) AS journey_hops,
+    MIN(f.appeared) OVER (PARTITION BY w.journey_id) AS journey_start,
+    MAX(f.vanished) OVER (PARTITION BY w.journey_id) AS journey_end
+FROM walk w
+JOIN v_journey_fragments f ON f.fragment_id = w.fragment_id
+""".strip()))
+
     if temp:
         views = [(name, sql.replace("CREATE VIEW ", "CREATE TEMP VIEW ", 1))
                  for name, sql in views]
@@ -662,6 +917,31 @@ SAFE_COLUMNS = {
         "critical_density", "loitering_threshold_sec", "physical_area_id",
         "area_name", "updated_at", "updated_utc",
     ),
+    # Journey reconstruction. person_key appears here for the same reason it
+    # does above — it is the column that can be counted correctly — and
+    # person_ref does not appear at all. fragment_id embeds person_key, so it
+    # inherits exactly the same exposure and no more.
+    "v_journey_fragments": (
+        "fragment_id", "person_key", "camera_id", "site_id",
+        "appeared", "appeared_utc", "vanished", "vanished_utc",
+        "duration_seconds", "event_count", "entry_zone", "exit_zone",
+        "zones_touched", "identity_resolved",
+    ),
+    "v_journey_links": (
+        "from_fragment", "to_fragment", "from_person_key", "to_person_key",
+        "from_camera", "to_camera", "from_zone", "to_zone",
+        "left_at", "arrived_at", "gap_seconds",
+        "min_seconds", "max_seconds", "pair_kind",
+        "successor_options", "predecessor_options", "is_unique",
+        "identity_agrees",
+    ),
+    "v_journey_traces": (
+        "journey_id", "hop_no", "fragment_id", "person_key", "camera_id",
+        "site_id", "entry_zone", "exit_zone",
+        "appeared", "appeared_utc", "vanished", "vanished_utc",
+        "duration_seconds", "identity_resolved",
+        "journey_hops", "journey_start", "journey_end",
+    ),
 }
 
 
@@ -721,6 +1001,22 @@ _VIEW_COMMENTS = {
         "tables instead would produce 5.66 trillion rows from a 1.15GB source. "
         "zone_id is the raw column, so movement events contribute NULL — use "
         "v_zone_events when the zone matters."),
+    "v_journey_fragments": (
+        "One unbroken appearance of one person on one camera. The reliable unit "
+        "— tracking within a camera is solid; it is the seams between cameras "
+        "that break. Fragments are what the journey views stitch."),
+    "v_journey_links": (
+        "Every hop a fragment could be followed by, gated on surveyed walk "
+        "times. successor_options/predecessor_options count the competition: "
+        "1 and 1 means nothing else was possible. Filter is_unique for hops "
+        "that need no guessing. Excludes overlapping camera pairs — those are "
+        "one place, not a hop."),
+    "v_journey_traces": (
+        "Reconstructed paths, built from time and building physics rather than "
+        "appearance — so they survive the ReID splits that break global_ref. "
+        "A chain stops where it becomes ambiguous instead of guessing, so gaps "
+        "are honest. journey_id is derived from the queried history and is NOT "
+        "a durable id for a person."),
 }
 
 _COLUMN_COMMENTS = {
@@ -765,6 +1061,34 @@ _COLUMN_COMMENTS = {
     ("v_alerts", "is_active"): (
         "True for OPEN and ACK. Use this rather than status, which is NULL "
         "until somebody touches the alert."),
+    ("v_journey_links", "is_unique"): (
+        "Nothing else could have been this hop, in either direction. These need "
+        "no appearance matching and no threshold — filter on this for links you "
+        "can state as fact."),
+    ("v_journey_links", "predecessor_options"): (
+        "How many fragments could have arrived here. THIS IS THE CONFIDENCE: 1 "
+        "is certain, 5 means one in five. It reflects how busy the building "
+        "was, not how good the camera was."),
+    ("v_journey_links", "gap_seconds"): (
+        "Unseen time between the two fragments. Negative is impossible here — "
+        "overlapping camera pairs are excluded from this view."),
+    ("v_journey_links", "pair_kind"): (
+        "'surveyed' means the window came from paced walk times; 'default' "
+        "means nobody has surveyed that pair and the window is a guess. Weight "
+        "a hop accordingly."),
+    ("v_journey_links", "identity_agrees"): (
+        "ReID independently reached the same conclusion. A unique link where "
+        "this is false is a concrete example of a cross-camera identity split."),
+    ("v_journey_traces", "journey_id"): (
+        "The first fragment of the chain. Derived from whatever history is "
+        "present — adding events can merge or split journeys retroactively. "
+        "Always cite it with a time range; it is not a person's id."),
+    ("v_journey_traces", "hop_no"): (
+        "0 is where the chain starts, which is where evidence starts and not "
+        "necessarily where the person entered the building."),
+    ("v_journey_traces", "journey_hops"): (
+        "Fragments in this chain. 1 means an isolated appearance nothing could "
+        "be linked to — real, but it tells you nothing about a path."),
 }
 
 
@@ -791,6 +1115,7 @@ def drop_sql() -> List[str]:
 
 def create_all(conn, max_hold: float = DEFAULT_MAX_HOLD,
                offline_after: float = DEFAULT_OFFLINE_AFTER,
+               fragment_gap: float = DEFAULT_FRAGMENT_GAP,
                temp: bool = False) -> List[str]:
     """(Re)create every view on an open DB-API connection. Returns the names."""
     names = []
@@ -798,6 +1123,7 @@ def create_all(conn, max_hold: float = DEFAULT_MAX_HOLD,
         conn.execute(stmt)
     for name, sql in view_definitions(max_hold=max_hold,
                                       offline_after=offline_after,
+                                      fragment_gap=fragment_gap,
                                       temp=temp):
         conn.execute(sql)
         names.append(name)

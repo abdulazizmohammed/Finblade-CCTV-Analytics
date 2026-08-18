@@ -54,6 +54,40 @@ CREATE TABLE IF NOT EXISTS area_state_ts (
     site_id                TEXT
 );
 
+-- The topology, resolved into rows SQL can join against.
+--
+-- config/topology.yaml is the authority and this is a projection of it, written
+-- by scripts/sync_topology.py. It exists because the journey views need to ask
+-- "could a person have walked from here to there in this long?" and the answer
+-- lives in a YAML file the database cannot read.
+--
+-- DIRECTED, and both directions are stored even though the YAML pair is
+-- undirected. A join does not want to normalise (a,b) vs (b,a).
+--
+-- min_seconds IS NEGATIVE FOR OVERLAPPING PAIRS, deliberately. Two cameras
+-- watching the same floor see one person at the same instant, and independent
+-- camera processes disagree about the clock by a second or two, so the window
+-- opens slightly before zero. Baking the tolerance into the bound means every
+-- consumer is one BETWEEN with no special cases -- which is the whole point of
+-- materialising this. See finblade/topology.py, which branches instead because
+-- it answers a different question one pair at a time.
+--
+-- AN ABSENT ROW MEANS INFEASIBLE. With allow_unknown_pairs: false the sync
+-- writes nothing for unsurveyed pairs, and a missing row drops the link on the
+-- join. Nothing else needs to know the rule.
+CREATE TABLE IF NOT EXISTS camera_transits (
+    from_camera            TEXT NOT NULL,
+    to_camera              TEXT NOT NULL,
+    min_seconds            DOUBLE PRECISION NOT NULL,
+    max_seconds            DOUBLE PRECISION NOT NULL,
+    -- 'surveyed' | 'overlapping' | 'default' | 'same_camera'. Carried through
+    -- to v_journey_links so a trace can say which hops rest on paced times and
+    -- which rest on a fallback window.
+    pair_kind              TEXT NOT NULL DEFAULT 'default',
+    updated_at             DOUBLE PRECISION,
+    PRIMARY KEY (from_camera, to_camera)
+);
+
 CREATE TABLE IF NOT EXISTS cameras (
     camera_id              TEXT PRIMARY KEY,
     site_id                TEXT,
@@ -230,6 +264,10 @@ ALTER TABLE area_state_ts ADD COLUMN IF NOT EXISTS ts DOUBLE PRECISION;
 ALTER TABLE area_state_ts ADD COLUMN IF NOT EXISTS capacity_pct DOUBLE PRECISION;
 ALTER TABLE area_state_ts ADD COLUMN IF NOT EXISTS density DOUBLE PRECISION;
 ALTER TABLE area_state_ts ADD COLUMN IF NOT EXISTS site_id TEXT;
+ALTER TABLE camera_transits ADD COLUMN IF NOT EXISTS min_seconds DOUBLE PRECISION;
+ALTER TABLE camera_transits ADD COLUMN IF NOT EXISTS max_seconds DOUBLE PRECISION;
+ALTER TABLE camera_transits ADD COLUMN IF NOT EXISTS pair_kind TEXT DEFAULT 'default';
+ALTER TABLE camera_transits ADD COLUMN IF NOT EXISTS updated_at DOUBLE PRECISION;
 ALTER TABLE cameras ADD COLUMN IF NOT EXISTS site_id TEXT;
 ALTER TABLE cameras ADD COLUMN IF NOT EXISTS last_seen DOUBLE PRECISION;
 ALTER TABLE cameras ADD COLUMN IF NOT EXISTS name TEXT;

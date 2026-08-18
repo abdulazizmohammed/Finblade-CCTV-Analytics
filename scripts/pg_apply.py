@@ -1,8 +1,8 @@
-"""Apply the generated schema and the analytics views to a real Postgres.
+"""Apply the schema and the analytics views to a real Postgres.
 
 Proves three things that only a live server can:
-  * the generated DDL parses and creates every table SQLite has;
-  * the view SQL is genuinely portable — same definitions, Postgres dialect;
+  * ddl_pg.sql parses and creates every table the application needs;
+  * all 14 views create against it, in order;
   * the chatbot's queries run there.
 
 Usage:
@@ -39,7 +39,7 @@ def check(label, condition, detail=""):
 with pg_conn.connect(dsn) as conn:
     print("connected:", conn.execute("SELECT version()").fetchone()[0][:60])
 
-    print("\n== applying generated DDL")
+    print("\n== applying ddl_pg.sql")
     try:
         conn.execute(open(ddl_path).read())
         check("ddl_pg.sql parses and applies", True)
@@ -53,10 +53,10 @@ with pg_conn.connect(dsn) as conn:
     print("  tables:", ", ".join(tables))
     expected = {"alerts", "cameras", "events", "forwarder_cursors", "reports",
                 "zone_live", "zone_state_ts", "zones"}
-    check("every SQLite table exists in Postgres", expected <= set(tables),
+    check("every table the application needs exists", expected <= set(tables),
           f"missing {sorted(expected - set(tables))}")
 
-    print("\n== creating the analytics views (postgres dialect)")
+    print("\n== creating the analytics views")
     for stmt in drop_sql():
         conn.execute(stmt)
     created = []
@@ -72,7 +72,7 @@ with pg_conn.connect(dsn) as conn:
     # failure. A hardcoded count in a checker is a second source of truth for
     # something the module already knows.
     expected = [n for n, _ in view_definitions()]
-    check(f"all {len(expected)} views created on Postgres",
+    check(f"all {len(expected)} views created",
           created == expected,
           f"created {len(created)} of {len(expected)}: "
           f"missing {[n for n in expected if n not in created]}")
@@ -85,7 +85,7 @@ with pg_conn.connect(dsn) as conn:
         except Exception as exc:                    # noqa: BLE001
             check(f"select from {name}", False, str(exc)[:200])
 
-    print("\n== a chatbot query shape runs on Postgres")
+    print("\n== a chatbot query shape runs")
     try:
         conn.execute("""
             SELECT zone_name, camera_id,

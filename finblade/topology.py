@@ -87,6 +87,36 @@ class CameraTopology:
     def transit_window(self, a: str, b: str) -> Tuple[float, float]:
         return self.transits.get(_key(a, b), self.default_transit)
 
+    def longest_transit_from(self, camera: str) -> float:
+        """The slowest journey that could still start at ``camera``.
+
+        How long a person may legitimately be invisible after their last
+        sighting here: into a lift on the ground floor, out on the second, with
+        nothing watching in between. A registry that forgets them sooner than
+        this cannot ever match them on arrival, because the record is deleted
+        before the arrival is scored.
+
+        Includes the permissive default when unknown pairs are allowed, since
+        those are journeys the gate will accept and must therefore outlive.
+        """
+        longest = 0.0
+        for (a, b), (_lo, hi) in self.transits.items():
+            if camera in (a, b):
+                longest = max(longest, hi)
+        for (a, b) in self.overlapping:
+            if camera in (a, b):
+                longest = max(longest, self.transit_window(a, b)[1])
+        if self.allow_unknown_pairs:
+            longest = max(longest, self.default_transit[1])
+        return longest
+
+    def longest_transit(self) -> float:
+        """The slowest journey anywhere on site."""
+        longest = self.default_transit[1] if self.allow_unknown_pairs else 0.0
+        for (_lo, hi) in self.transits.values():
+            longest = max(longest, hi)
+        return longest
+
     # ---- the gate ---------------------------------------------------------
     def feasible(self, from_cam: str, to_cam: str, dt: float) -> Tuple[bool, str]:
         """Could one person be seen on ``from_cam`` then ``to_cam`` after ``dt``?

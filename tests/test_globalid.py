@@ -219,7 +219,12 @@ class TestSameCameraConflict(unittest.TestCase):
 
 class TestExpiryAndEviction(unittest.TestCase):
     def test_ttl_expiry_removes_identity_and_clears_vectors(self):
-        r = GlobalIdentityRegistry(topology=CameraTopology(), ttl_seconds=60.0)
+        # allow_unknown_pairs=False so the topology contributes no transit
+        # window. Retention is max(ttl, longest journey from here) now, and a
+        # permissive topology would legitimately hold this record for 180s -
+        # see test_someone_in_a_lift_outlives_the_flat_ttl.
+        r = GlobalIdentityRegistry(
+            topology=CameraTopology(allow_unknown_pairs=False), ttl_seconds=60.0)
         ref = r.resolve("CAM-A", 1, bank(PERSON_A), now=100.0).global_ref
         ident = r.get(ref)
         r.release("CAM-A", 1)

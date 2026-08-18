@@ -120,6 +120,17 @@ class GlobalIdentityRegistry:
         threshold: float = 0.70,
         margin: float = 0.06,
         ttl_seconds: float = 300.0,
+        # Multiplier on the slowest journey that could start where somebody was
+        # last seen. A surveyed maximum is the longest walk anyone PACED, not a
+        # ceiling on reality: a lift can be slower on the day. 1.5 keeps the
+        # record alive for a journey half again as slow as the survey.
+        transit_grace: float = 1.5,
+        # HARD CEILING on how long any template may be held, whatever the
+        # topology says. Retention is derived from transit windows now, and a
+        # mistyped max_seconds in a YAML file must not be able to quietly turn
+        # a five-minute privacy bound into an all-day one. ttl_seconds is the
+        # floor, this is the ceiling, and the topology moves within them.
+        max_retention_seconds: float = 1800.0,
         max_identities: int = 2000,
         bank_capacity: int = 5,
         session_salt: Optional[str] = None,
@@ -132,6 +143,9 @@ class GlobalIdentityRegistry:
         self.threshold = threshold
         self.margin = margin
         self.ttl_seconds = ttl_seconds
+        self.transit_grace = max(1.0, float(transit_grace))
+        self.max_retention_seconds = max(float(ttl_seconds),
+                                         float(max_retention_seconds))
         self.max_identities = max_identities
         self.bank_capacity = bank_capacity
         self.session_salt = session_salt or secrets.token_hex(16)
@@ -155,6 +169,10 @@ class GlobalIdentityRegistry:
         self._seq = 0
         self.stats = {"created": 0, "matched": 0, "rejected_margin": 0,
                       "rejected_topology": 0, "expired": 0,
+                      # Candidates that were live on another, non-overlapping
+                      # camera at that moment. One body, two places: refused
+                      # regardless of how well the appearance scored.
+                      "rejected_simultaneous": 0,
                       # Candidates that passed the physics gate but scored
                       # under `threshold`, plus the highest such score seen.
                       # Together they say whether the threshold is set right
@@ -183,14 +201,65 @@ class GlobalIdentityRegistry:
         return "gp_" + digest.hexdigest()[:16]
 
     # ---- lifecycle --------------------------------------------------------
+    def retention_for(self, camera_id: str) -> float:
+        """How long to keep someone last seen on ``camera_id``.
+
+        THE TTL ALONE WAS TOO SHORT, and in the one case that matters most.
+        The longest surveyed transit on this site is 270s (ground floor to the
+        second by lift); the TTL was a flat 300s. Thirty seconds of headroom for
+        a journey whose duration is dominated by how long a lift takes to
+        arrive. Beyond that the record was deleted, so the person could not be
+        matched on arrival — not rejected, not scored, simply absent — and they
+        surfaced on the far camera as a brand new visitor.
+
+        Retention is therefore the TTL or the slowest journey that could start
+        where they were last seen, whichever is longer, plus a grace margin.
+        Someone standing at a lift door is kept longer than someone last seen
+        mid-corridor, because for them a long silence is expected rather than
+        evidence they have gone.
+
+        Bounded on BOTH sides. ttl_seconds is the floor and
+        max_retention_seconds the ceiling, so a mistyped transit window cannot
+        silently stretch how long a biometric template survives in memory.
+        """
+        return min(self.max_retention_seconds,
+                   max(self.ttl_seconds,
+                       self.topology.longest_transit_from(camera_id)
+                       * self.transit_grace))
+
+    def in_transit(self, now: float) -> List[str]:
+        """Refs currently UNOBSERVED: held, but on no camera right now.
+
+        Someone in a lift, on a stairwell, or in a corridor no camera watches.
+        They are neither active nor forgotten, and without a name for that
+        state it is indistinguishable from an idle record about to be dropped.
+        """
+        return sorted(ref for ref, i in self._identities.items()
+                      if not i.active and (now - i.last_seen) <= self.retention_for(i.last_camera))
+
+    def state_of(self, ref: str, now: float) -> str:
+        """TRACKED (on a camera now) / UNOBSERVED (held, between cameras) /
+        UNKNOWN (never seen, or already released)."""
+        ident = self._identities.get(ref)
+        if ident is None:
+            return "UNKNOWN"
+        if ident.active:
+            return "TRACKED"
+        if (now - ident.last_seen) <= self.retention_for(ident.last_camera):
+            return "UNOBSERVED"
+        return "UNKNOWN"
+
     def expire(self, now: float) -> List[str]:
-        """Drop identities unseen within the TTL. Returns the refs removed.
+        """Drop identities held longer than their retention. Returns refs removed.
 
         This is also the privacy control: it is what bounds how long a
-        biometric template exists in memory.
+        biometric template exists in memory. Retention is now per-identity
+        rather than one constant — see retention_for() — so this stays a bound,
+        just a differently-shaped one.
         """
         stale = [ref for ref, ident in self._identities.items()
-                 if (now - ident.last_seen) > self.ttl_seconds and not ident.active]
+                 if (now - ident.last_seen) > self.retention_for(ident.last_camera)
+                 and not ident.active]
         for ref in stale:
             self._forget(ref)
         self.stats["expired"] += len(stale)
@@ -266,6 +335,25 @@ class GlobalIdentityRegistry:
         for ref, ident in self._identities.items():
             # Gate 1: one person cannot be two live tracks on the same camera.
             if any(c == camera_id and t != binding[1] for c, t in ident.active):
+                continue
+            # Gate 1b: nor two live tracks on cameras that do not overlap.
+            #
+            # This was previously only implicit, and the implication does not
+            # always hold. A candidate visible RIGHT NOW on another camera has
+            # dt near zero, which the physics gate rejects as "too_fast" —
+            # but only while that pair has a non-zero minimum. With
+            # allow_unknown_pairs the fallback minimum is ZERO, so any camera
+            # missing from the topology (one added from the UI, say) silently
+            # loses the exclusion, and a person plainly standing in front of
+            # CAM-01 could be handed to a lookalike on the new camera.
+            #
+            # Being ACTIVELY BOUND elsewhere is stronger evidence than a stale
+            # last_seen, and it does not depend on the survey being complete:
+            # if the two views share no floor area, the same body cannot be in
+            # both, whatever the crops score.
+            if any(c != camera_id and not self.topology.is_overlapping(c, camera_id)
+                   for c, _t in ident.active):
+                self.stats["rejected_simultaneous"] += 1
                 continue
             # Gate 2: physics.
             ok, reason = self.topology.feasible(

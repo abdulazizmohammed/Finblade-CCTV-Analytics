@@ -173,7 +173,11 @@ def test_unrelated_cameras_are_not_compared_however_alike_they_look():
     b = gid.resolve("CAM-99", 7, bank(vec(1.0, 0.0), vec(1.0, 0.0)), now=100.1)
 
     assert a.global_ref != b.global_ref
-    assert gid.stats["rejected_topology"] >= 1
+    # Physical grounds, either counter. A candidate still LIVE on the other
+    # camera is now rejected as simultaneous presence before the transit
+    # window is consulted — a stronger reason, and one that survives an
+    # incomplete topology. Assert the rejection, not which gate caught it.
+    assert gid.stats["rejected_topology"] + gid.stats["rejected_simultaneous"] >= 1
 
 
 def test_overlapping_pair_must_be_declared_for_simultaneous_matching():
@@ -197,7 +201,7 @@ def test_overlapping_pair_must_be_declared_for_simultaneous_matching():
     d = bad.resolve("CAM-05", 7, same[1], now=100.1)
     assert c.global_ref != d.global_ref
     assert bad.site_occupancy() == 2       # the double count, restored
-    assert bad.stats["rejected_topology"] >= 1
+    assert bad.stats["rejected_topology"] + bad.stats["rejected_simultaneous"] >= 1
 
 
 # -- viewpoint diversity in the feature bank -------------------------------

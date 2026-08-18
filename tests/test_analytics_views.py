@@ -1,80 +1,65 @@
 """The SQL views FinBlade's chatbot queries.
 
-Executed against SQLite here because that runs everywhere. The Postgres dialect
-is checked by text, and exercised for real by scripts/pg_verify_views.py
-against a live server — these tests cannot start one.
+Run against a real Postgres, because Postgres is the only backend. These used to
+execute on in-memory SQLite, which needed no server and ran anywhere — the cost
+of removing the second dialect is that they now skip without one.
 
-The interesting assertions are about semantics, not syntax: that the timeline
-is a union rather than a join, that a reading knows how long it stood, and that
-no view can reach a credential.
+Each test gets its own SCHEMA with the real services/api/ddl_pg.sql applied, so
+the views are exercised against the shipping schema rather than a hand-copied
+approximation of it that could drift from it.
+
+The interesting assertions are about semantics, not syntax: that the timeline is
+a union rather than a join, that a reading knows how long it stood, and that no
+view can reach a credential.
 """
 
-import sqlite3
+import os
+import sys
 import unittest
 
-from services.api.analytics_views import (DIALECTS, POSTGRES, SQLITE,
-                                          create_all, drop_sql,
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tests import pgfixture
+
+from services.api.analytics_views import (create_all, drop_sql,
                                           view_definitions, view_names)
 
-SCHEMA = """
-CREATE TABLE zone_state_ts(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT, camera_id TEXT,
-  zone_name TEXT, zone_type TEXT, restricted INTEGER, ts REAL,
-  occupancy INTEGER, density REAL, capacity_pct REAL, peak_occupancy INTEGER,
-  avg_occupancy REAL, trend TEXT, extra TEXT, inflow REAL, outflow REAL,
-  status TEXT, site_id TEXT);
-CREATE TABLE zone_live(
-  camera_id TEXT, zone_id TEXT, site_id TEXT, zone_name TEXT, zone_type TEXT,
-  restricted INTEGER, ts REAL, occupancy INTEGER, density REAL,
-  capacity_pct REAL, peak_occupancy INTEGER, avg_occupancy REAL, trend TEXT,
-  extra TEXT, inflow REAL, outflow REAL, status TEXT,
-  PRIMARY KEY (camera_id, zone_id));
-CREATE TABLE events(
-  event_id TEXT PRIMARY KEY, event_type TEXT, camera_id TEXT, site_id TEXT,
-  zone_id TEXT, zone_from TEXT, zone_to TEXT, person_ref TEXT,
-  global_ref TEXT, ts REAL, frame TEXT, payload TEXT);
-CREATE TABLE alerts(
-  alert_id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id TEXT, severity TEXT,
-  message TEXT, zone_id TEXT, camera_id TEXT, person_ref TEXT, ts REAL,
-  frame TEXT, kind TEXT, acknowledged_by TEXT, acknowledged_at REAL,
-  status TEXT DEFAULT 'OPEN', note TEXT, resolved_by TEXT, resolved_at REAL,
-  site_id TEXT);
-CREATE TABLE zones(
-  camera_id TEXT, zone_id TEXT, zone_name TEXT, zone_type TEXT,
-  restricted INTEGER, capacity_max INTEGER, area_sqm REAL,
-  warning_density REAL, critical_density REAL, loitering_threshold_sec REAL,
-  colour TEXT, enabled INTEGER, normalized_polygon TEXT, polygon TEXT,
-  adjacency_list TEXT, updated_at REAL, physical_area_id TEXT);
-CREATE TABLE cameras(
-  camera_id TEXT PRIMARY KEY, site_id TEXT, last_seen REAL, name TEXT,
-  state TEXT, source TEXT, stream_url TEXT, health_ts REAL, enabled INTEGER,
-  input_fps REAL, resolution TEXT, dropped_frames INTEGER, reconnects INTEGER,
-  people_in_view INTEGER, people_in_zones INTEGER, tracking_quality TEXT,
-  counts_reliable INTEGER, counting_mode TEXT, mean_confidence REAL,
-  track_churn_per_min REAL, detector_saturation REAL);
-CREATE TABLE physical_areas(
-  area_id TEXT PRIMARY KEY, name TEXT, area_type TEXT, capacity_max INTEGER,
-  area_sqm REAL, site_id TEXT, updated_at REAL);
-CREATE TABLE area_state_ts(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, area_id TEXT, ts REAL,
-  occupancy INTEGER, capacity_pct REAL, density REAL,
-  summed_observations INTEGER, camera_count INTEGER, site_id TEXT);
-CREATE TABLE facility_presence(
-  ref TEXT PRIMARY KEY, admitted_at REAL, last_seen REAL, entry_zone TEXT,
-  last_zone TEXT, sightings INTEGER);
-CREATE TABLE facility_doors(
-  door_zone_id TEXT PRIMARY KEY, entries INTEGER, exits INTEGER);
-CREATE TABLE facility_meta(key TEXT PRIMARY KEY, value REAL);
-"""
+# Schema comes from services/api/ddl_pg.sql via pgfixture - see the docstring.
 
 T0 = 1_700_000_000.0
 
 
+class _Conn:
+    """DB-API-ish shim so the tests below read as they always did.
+
+    Two differences between the engines, both mechanical: SQLite takes ? and
+    Postgres takes %s, and psycopg only interpolates when parameters are
+    actually supplied — passing an empty tuple would make it try to expand a
+    literal % in the view SQL.
+    """
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def execute(self, sql, params=None):
+        sql = sql.replace("?", "%s")
+        return self._raw.execute(sql, params) if params else self._raw.execute(sql)
+
+    def executescript(self, sql):
+        return self._raw.execute(sql)
+
+
+@pgfixture.skip_without_pg
 class Base(unittest.TestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
-        self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
+        import psycopg
+        from psycopg.rows import dict_row
+
+        self._store, self._teardown = pgfixture.make_store("views")
+        self._raw = psycopg.connect(self._store.dsn, autocommit=True,
+                                    row_factory=dict_row)
+        self.conn = _Conn(self._raw)
+
         self.conn.execute(
             "INSERT INTO zones(camera_id, zone_id, zone_name, zone_type, "
             "restricted, capacity_max, area_sqm) "
@@ -83,6 +68,12 @@ class Base(unittest.TestCase):
             "INSERT INTO cameras(camera_id, site_id, source, stream_url) VALUES "
             "('CAM-01','SITE-01','rtsp://admin:hunter2@10.0.0.5:554/s1',"
             "'rtsp://admin:hunter2@10.0.0.5:554/s1')")
+
+    def tearDown(self):
+        try:
+            self._raw.close()
+        finally:
+            self._teardown()
 
     def state(self, ts, occupancy, status="NORMAL", zone="ZONE-01", cam="CAM-01"):
         self.conn.execute(
@@ -93,7 +84,9 @@ class Base(unittest.TestCase):
              occupancy * 2.5, status, "SITE-01"))
 
     def build(self, **kw):
-        return create_all(self.conn, temp=True, **kw)
+        # Real views in the scratch schema rather than TEMP ones: the schema is
+        # already private to this test and is dropped in tearDown.
+        return create_all(self.conn, **kw)
 
     def rows(self, sql, params=()):
         return self.conn.execute(sql, params).fetchall()
@@ -412,7 +405,10 @@ class TestNoCredentialsAnywhere(Base):
         self.state(T0, 1)
         names = self.build()
         for name in names:
-            cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({name})")]
+            cols = [r["column_name"] for r in self.conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = ?", (name,))]
+            self.assertTrue(cols, f"{name} has no columns - did it get created?")
             for banned in ("source", "stream_url", "rtsp_url"):
                 self.assertNotIn(banned, cols, f"{name} exposes {banned}")
 
@@ -420,7 +416,7 @@ class TestNoCredentialsAnywhere(Base):
         self.state(T0, 1)
         for name in self.build():
             for row in self.conn.execute(f"SELECT * FROM {name}"):
-                for value in tuple(row):
+                for value in row.values():
                     if isinstance(value, str):
                         self.assertNotIn("hunter2", value, f"{name} leaked a password")
 
@@ -441,7 +437,7 @@ class TestNoCredentialsAnywhere(Base):
         here.
         """
         allowed = {"v_camera_status"}
-        for name, sql in view_definitions(SQLITE):
+        for name, sql in view_definitions():
             code = "\n".join(line.split("--")[0] for line in sql.splitlines())
             if name in allowed:
                 continue
@@ -450,7 +446,7 @@ class TestNoCredentialsAnywhere(Base):
 
     def test_the_camera_status_view_selects_no_credential(self):
         """The exception above is only safe because of this."""
-        sql = dict(view_definitions(SQLITE))["v_camera_status"]
+        sql = dict(view_definitions())["v_camera_status"]
         code = "\n".join(line.split("--")[0] for line in sql.splitlines())
         for banned in ("source", "stream_url"):
             self.assertNotIn(banned, code,
@@ -466,7 +462,7 @@ class TestNoCredentialsAnywhere(Base):
         real protection: they inspect the columns each view actually exposes and
         the values it actually returns.
         """
-        for name, sql in view_definitions(SQLITE):
+        for name, sql in view_definitions():
             code = "\n".join(line.split("--")[0] for line in sql.splitlines())
             for banned in ("source", "stream_url"):
                 self.assertNotIn(banned, code, f"{name} names {banned}")
@@ -480,40 +476,42 @@ class TestNoCredentialsAnywhere(Base):
         self.assertIn("source", code)
 
 
-class TestDialects(unittest.TestCase):
-    def test_both_dialects_define_the_same_views(self):
-        self.assertEqual(view_names(SQLITE), view_names(POSTGRES))
+class TestGeneratedSQL(unittest.TestCase):
+    """These read the SQL as text, so they need no server.
 
-    def test_postgres_uses_to_timestamp_and_sqlite_uses_unixepoch(self):
-        pg = dict(view_definitions(POSTGRES))["v_zone_intervals"]
-        lite = dict(view_definitions(SQLITE))["v_zone_intervals"]
-        self.assertIn("to_timestamp(", pg)
-        self.assertNotIn("unixepoch", pg)
-        self.assertIn("unixepoch", lite)
+    This class used to compare two dialects against each other. There is one
+    now, and what is worth asserting is that nothing of the other survived -
+    a stray unixepoch() would not fail until Postgres saw it.
+    """
 
-    def test_postgres_emits_real_booleans_sqlite_emits_integers(self):
-        pg = dict(view_definitions(POSTGRES))["v_zone_intervals"]
-        lite = dict(view_definitions(SQLITE))["v_zone_intervals"]
-        self.assertNotIn("CASE WHEN", pg.split("is_stale")[0][-120:])
-        self.assertIn("CASE WHEN", lite)
+    def test_no_sqlite_syntax_survives(self):
+        leaked = ("unixepoch", "strftime(", "AUTOINCREMENT", "julianday",
+                  "group_concat(")
+        for name, sql in view_definitions():
+            for token in leaked:
+                self.assertNotIn(token, sql, f"{name} still speaks SQLite")
 
-    def test_an_unknown_dialect_is_refused(self):
-        with self.assertRaises(ValueError):
-            view_definitions("mysql")
+    def test_epoch_columns_become_real_timestamps(self):
+        sql = dict(view_definitions())["v_zone_intervals"]
+        self.assertIn("to_timestamp(", sql)
+
+    def test_booleans_are_real_booleans_not_integers(self):
+        """Postgres has a boolean type, so is_stale is one. Under SQLite these
+        were CASE WHEN ... THEN 1 ELSE 0 END, which also had the side effect of
+        turning a NULL into a 0 - see the COALESCE on is_stale."""
+        sql = dict(view_definitions())["v_zone_intervals"]
+        self.assertNotIn("CASE WHEN", sql.split("AS is_stale")[0][-200:])
 
     def test_drop_statements_are_idempotent_and_reversed(self):
-        drops = drop_sql(SQLITE)
+        drops = drop_sql()
         self.assertTrue(all(d.startswith("DROP VIEW IF EXISTS") for d in drops))
-        self.assertEqual(list(reversed(view_names(SQLITE))),
+        self.assertEqual(list(reversed(view_names())),
                          [d.rsplit(" ", 1)[1] for d in drops])
 
     def test_temp_views_are_marked_temp(self):
         """How these get tested against production without writing to it."""
-        for _n, sql in view_definitions(SQLITE, temp=True):
+        for _n, sql in view_definitions(temp=True):
             self.assertTrue(sql.startswith("CREATE TEMP VIEW"))
-
-    def test_the_dialect_list_is_what_it_claims(self):
-        self.assertEqual(("sqlite", "postgres"), DIALECTS)
 
 
 class TestRebuildIsIdempotent(Base):

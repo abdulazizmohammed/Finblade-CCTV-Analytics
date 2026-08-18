@@ -23,7 +23,7 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pg_conn                                                     # noqa: E402
 
-from services.api.analytics_views import (POSTGRES, drop_sql,      # noqa: E402
+from services.api.analytics_views import (drop_sql,               # noqa: E402
                                           view_definitions, view_names)
 
 RO_ROLE = "finblade_ro"
@@ -47,11 +47,11 @@ def timed(conn, sql, params=()):
 dsn = pg_conn.dsn()
 with pg_conn.connect(dsn) as conn:
     print("== rebuilding views against the migrated data")
-    for stmt in drop_sql(POSTGRES):
+    for stmt in drop_sql():
         conn.execute(stmt)
-    for _name, sql in view_definitions(POSTGRES):
+    for _name, sql in view_definitions():
         conn.execute(sql)
-    print("  ", ", ".join(view_names(POSTGRES)))
+    print("  ", ", ".join(view_names()))
 
     print("\n== v_timeline is the sum, not a product")
     rows, secs = timed(conn, "SELECT record_type, COUNT(*) FROM v_timeline "
@@ -126,7 +126,7 @@ with pg_conn.connect(dsn) as conn:
         sql.Identifier(db), role))
     conn.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(role))
     # Deliberately NOT "GRANT SELECT ON ALL TABLES". Only the views.
-    for name in view_names(POSTGRES):
+    for name in view_names():
         conn.execute(sql.SQL("GRANT SELECT ON {} TO {}").format(
             sql.Identifier(name), role))
     # A table added later must not become readable by accident.
@@ -134,7 +134,7 @@ with pg_conn.connect(dsn) as conn:
         "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
         "REVOKE ALL ON TABLES FROM {}").format(role))
     print(f"  created {RO_ROLE}, granted SELECT on "
-          f"{len(view_names(POSTGRES))} views only")
+          f"{len(view_names())} views only")
 
 ro_dsn = dsn.split("?")[0].replace("postgresql://postgres:@",
                                    f"postgresql://{RO_ROLE}:{RO_PASSWORD}@")

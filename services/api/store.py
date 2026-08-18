@@ -1,16 +1,22 @@
 """Persistence layer.
 
-Three backends behind one interface:
-  * InMemoryStore  — dependency-free, used by unit tests and as a dev fallback.
-  * SQLiteStore    — sqlite_store.py. The default; a file, zero setup.
-  * PostgresStore  — postgres_store.py. Selected by DATABASE_URL.
+Two backends behind one interface:
+  * PostgresStore  — postgres_store.py. Selected by DATABASE_URL. The only
+                     durable one, and the only one any deployment uses.
+  * InMemoryStore  — dependency-free; unit tests and throwaway runs. It keeps
+                     nothing across a restart, so it is never a deployment.
+
+There was a third, SQLiteStore, and it was the default. Two stores that were
+both real meant the schema had two authorities and the dev box could disagree
+with the test server about what had happened. Postgres won because it is what
+deploys; see the note at the top of app.py.
 
 The API talks only to the Store interface, so the ingest/ack logic is fully
 tested without a database.
 
 Because the backend is chosen by an environment variable, a behaviour that
 differs between them is a bug visible in one deployment only.
-tests/test_store_conformance.py runs one suite against all three for exactly
+tests/test_store_conformance.py runs one suite against both for exactly
 that reason, and it has already caught four divergences in this file: events
 not deduplicating on event_id, forwarder cursors silently discarded, a
 resolution tuple never flattened to "1920x1080", and the people counts not

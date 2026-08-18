@@ -41,7 +41,7 @@ import sys
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, REPO)
 
-from services.api.analytics_views import (POSTGRES, SAFE_COLUMNS,  # noqa: E402
+from services.api.analytics_views import (SAFE_COLUMNS,           # noqa: E402
                                           comment_sql, view_names)
 
 
@@ -57,7 +57,7 @@ def statements(role: str, schema: str = "public", database: str = None):
     # remove a seventh grant somebody added last month.
     out.append(f"REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM \"{role}\"")
 
-    for view in view_names(POSTGRES):
+    for view in view_names():
         cols = SAFE_COLUMNS.get(view)
         if not cols:
             # A view with no allowlist is not granted at all. Failing closed is
@@ -119,7 +119,7 @@ def main() -> int:
     import psycopg
 
     sql = statements(args.role, args.schema)
-    comments = [] if args.skip_comments else comment_sql(POSTGRES)
+    comments = [] if args.skip_comments else comment_sql()
 
     if args.dry_run:
         print(f"-- would run against {args.dsn.split('@')[-1]}")

@@ -119,6 +119,6 @@ print("post-ack row:", {k: row[k] for k in
                         ("alert_id", "status", "acknowledged_by", "acknowledged_at")})
 print("separate immutable audit trail table:",
       "audit" in open(os.path.join(os.path.dirname(__file__), "..", "services",
-                                   "api", "sqlite_store.py")).read().lower())
+                                   "api", "ddl_pg.sql")).read().lower())
 r = c.post(f"/api/v1/alerts/{aid}/ack", headers=SCOPED, json={"acknowledged_by": ""})
 print("ack with empty acknowledged_by ->", r.status_code, r.json())

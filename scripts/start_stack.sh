@@ -18,7 +18,8 @@
 # /web/cameras.html.
 #
 # Persists to whichever backend .env selects - Postgres when DATABASE_URL is
-# set, SQLite otherwise. Either way NOT in-memory, so history survives.
+# set, and nothing otherwise - the API refuses to start. Never in-memory here,
+# so history survives a restart.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -90,7 +91,13 @@ fi
 if [ -n "${DATABASE_URL:-}" ]; then
   BACKEND="Postgres ${DATABASE_URL##*@}"
 else
-  BACKEND="SQLite data/finblade.db"
+  # Not a fallback any more: the API refuses to start without one. Say so here
+  # rather than letting it fail thirty lines later inside uvicorn's log.
+  echo "== DATABASE_URL is not set. =="
+  echo "   Postgres is the only durable backend. Start one and point .env at it:"
+  echo "     bash scripts/pg_dev.sh start"
+  echo "     echo 'DATABASE_URL=postgresql://postgres@127.0.0.1:5432/finblade' >> .env"
+  exit 1
 fi
 echo "== starting API on :8000 ($BACKEND, topology=$TOPO) =="
 FINBLADE_TOPOLOGY="$TOPO" nohup $PY -m uvicorn services.api.app:app \

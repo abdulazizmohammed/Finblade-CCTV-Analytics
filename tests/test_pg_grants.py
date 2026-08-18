@@ -5,9 +5,9 @@ plausible wrong number back — person_ref is a hash of the tracker id, so it
 counts track fragments rather than people. Prompting a model not to do that is
 advice; not granting the column is a rule. These tests pin the rule.
 
-The allowlist checks run everywhere. The privilege checks need a real server and
-skip cleanly without one, because column-level GRANT has no SQLite equivalent
-and asserting it in the abstract would prove nothing.
+The checks that only read SAFE_COLUMNS run anywhere. Anything that has to see a
+real view or a real privilege needs a server and skips cleanly without one:
+column-level GRANT cannot be asserted in the abstract.
 """
 
 import os
@@ -17,8 +17,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from services.api.analytics_views import (POSTGRES, SAFE_COLUMNS,  # noqa: E402
-                                          comment_sql, create_all, SQLITE,
+from services.api.analytics_views import (SAFE_COLUMNS,           # noqa: E402
+                                          comment_sql, create_all,
                                           view_definitions, view_names)
 from scripts.pg_grants import statements, verify                    # noqa: E402
 
@@ -49,7 +49,7 @@ class TestTheAllowlistItself(unittest.TestCase):
     def test_every_view_has_an_allowlist(self):
         # A view with no entry is not granted at all, which fails closed — but
         # silently. Forgetting one should break a test, not a chatbot.
-        self.assertEqual(set(view_names(POSTGRES)), set(SAFE_COLUMNS),
+        self.assertEqual(set(view_names()), set(SAFE_COLUMNS),
                          "a view was added without deciding what may be read")
 
     def test_person_ref_is_granted_nowhere(self):
@@ -67,16 +67,32 @@ class TestTheAllowlistItself(unittest.TestCase):
             for banned in ("source", "stream_url", "rtsp_url", "payload"):
                 self.assertNotIn(banned, cols, f"{view} exposes {banned}")
 
+    @unittest.skipIf(PG_DSN is None, "no Postgres available")
     def test_every_listed_column_actually_exists(self):
-        """An allowlist naming a column the view lost is a grant that errors."""
-        import sqlite3
-        conn = sqlite3.connect(":memory:")
-        conn.executescript(_SCHEMA)
-        create_all(conn, dialect=SQLITE)
-        for view, cols in SAFE_COLUMNS.items():
-            real = {r[1] for r in conn.execute(f"PRAGMA table_info({view})")}
-            for c in cols:
-                self.assertIn(c, real, f"{view} has no column {c}")
+        """An allowlist naming a column the view lost is a grant that errors.
+
+        This used to build the views on in-memory SQLite against a hand-copied
+        schema, which was free to run but drifted from the real one. It now
+        builds them in a scratch schema from services/api/ddl_pg.sql, so a
+        column the allowlist names has to exist in the view as shipped.
+        """
+        from tests import pgfixture
+
+        import psycopg
+
+        store, teardown = pgfixture.make_store("grantcols")
+        try:
+            with psycopg.connect(store.dsn, autocommit=True) as conn:
+                create_all(conn)
+                for view, cols in SAFE_COLUMNS.items():
+                    real = {r[0] for r in conn.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = %s", (view,)).fetchall()}
+                    self.assertTrue(real, f"{view} was not created")
+                    for c in cols:
+                        self.assertIn(c, real, f"{view} has no column {c}")
+        finally:
+            teardown()
 
     def test_the_statements_never_grant_a_table(self):
         sql = " ".join(statements("somebot", database="finblade"))
@@ -101,21 +117,25 @@ class TestTheAllowlistItself(unittest.TestCase):
 
 
 class TestComments(unittest.TestCase):
-    def test_comments_are_postgres_only(self):
-        self.assertEqual([], comment_sql(SQLITE),
-                         "SQLite has no COMMENT ON; returning [] lets a caller "
-                         "apply comments unconditionally")
-        self.assertTrue(comment_sql(POSTGRES))
+    def test_every_statement_is_a_comment(self):
+        """This used to assert the SQLite dialect returned [] so a caller could
+        apply comments unconditionally. There is one dialect now and it has
+        COMMENT ON, so what is left worth pinning is that the list is non-empty
+        and contains nothing but comments."""
+        sql = comment_sql()
+        self.assertTrue(sql)
+        for s in sql:
+            self.assertTrue(s.startswith("COMMENT ON "), s[:60])
 
     def test_every_view_is_described(self):
-        sql = " ".join(comment_sql(POSTGRES))
-        for view in view_names(POSTGRES):
+        sql = " ".join(comment_sql())
+        for view in view_names():
             self.assertIn(f"COMMENT ON VIEW {view} IS", sql)
 
     def test_the_sharpest_traps_are_named_in_the_comments(self):
         """The comment has to say what NOT to do; 'use person_key' is
         forgettable, 'never COUNT(DISTINCT person_ref)' is not."""
-        sql = " ".join(comment_sql(POSTGRES)).lower()
+        sql = " ".join(comment_sql()).lower()
         for phrase in ("person_key", "person_ref", "time-weighted",
                        "avg(occupancy)", "never sum(occupancy)"):
             self.assertIn(phrase, sql, f"no comment warns about {phrase}")
@@ -147,7 +167,7 @@ class TestAgainstARealServer(unittest.TestCase):
             ddl = os.path.join(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__))), "services", "api", "ddl_pg.sql")
             c.execute(open(ddl).read())
-            create_all(c, dialect=POSTGRES)
+            create_all(c)
             c.execute("INSERT INTO cameras(camera_id, source) VALUES "
                       "('CAM-01','rtsp://admin:hunter2@10.0.0.5:554/s1')")
             c.execute("INSERT INTO zones(camera_id, zone_id, zone_name) "
@@ -157,7 +177,7 @@ class TestAgainstARealServer(unittest.TestCase):
                       "('e1','ZONE_ENTRY','CAM-01','Z1','pr_a','gp_1',1786900000)")
             for s in statements(cls.ROLE, cls.SCHEMA):
                 c.execute(s)
-            for s in comment_sql(POSTGRES):
+            for s in comment_sql():
                 c.execute(s)
 
         cls.bot_dsn = cls._with_schema(
@@ -281,7 +301,7 @@ class TestAgainstARealServer(unittest.TestCase):
         """
         import psycopg
         with psycopg.connect(self.owner_dsn, autocommit=True) as c:
-            create_all(c, dialect=POSTGRES)          # drop + recreate
+            create_all(c)          # drop + recreate
 
             _granted, problems = verify(c, self.ROLE, self.SCHEMA)
             self.assertTrue(problems, "grants unexpectedly survived a re-apply")
@@ -290,7 +310,7 @@ class TestAgainstARealServer(unittest.TestCase):
                           ).fetchone()[0],
                 "comments unexpectedly survived a re-apply")
 
-            for stmt in statements(self.ROLE, self.SCHEMA) + comment_sql(POSTGRES):
+            for stmt in statements(self.ROLE, self.SCHEMA) + comment_sql():
                 c.execute(stmt)
 
             _granted, problems = verify(c, self.ROLE, self.SCHEMA)
@@ -299,56 +319,8 @@ class TestAgainstARealServer(unittest.TestCase):
                 "SELECT obj_description('v_zone_entries'::regclass)").fetchone()[0])
 
 
-_SCHEMA = """
-CREATE TABLE zone_state_ts(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT, camera_id TEXT,
-  zone_name TEXT, zone_type TEXT, restricted INTEGER, ts REAL,
-  occupancy INTEGER, density REAL, capacity_pct REAL, peak_occupancy INTEGER,
-  avg_occupancy REAL, trend TEXT, extra TEXT, inflow REAL, outflow REAL,
-  status TEXT, site_id TEXT);
-CREATE TABLE zone_live(
-  camera_id TEXT, zone_id TEXT, site_id TEXT, zone_name TEXT, zone_type TEXT,
-  restricted INTEGER, ts REAL, occupancy INTEGER, density REAL,
-  capacity_pct REAL, peak_occupancy INTEGER, avg_occupancy REAL, trend TEXT,
-  extra TEXT, inflow REAL, outflow REAL, status TEXT,
-  PRIMARY KEY (camera_id, zone_id));
-CREATE TABLE events(
-  event_id TEXT PRIMARY KEY, event_type TEXT, camera_id TEXT, site_id TEXT,
-  zone_id TEXT, zone_from TEXT, zone_to TEXT, person_ref TEXT,
-  global_ref TEXT, ts REAL, frame TEXT, payload TEXT);
-CREATE TABLE alerts(
-  alert_id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id TEXT, severity TEXT,
-  message TEXT, zone_id TEXT, camera_id TEXT, person_ref TEXT, ts REAL,
-  frame TEXT, kind TEXT, acknowledged_by TEXT, acknowledged_at REAL,
-  status TEXT DEFAULT 'OPEN', note TEXT, resolved_by TEXT, resolved_at REAL,
-  site_id TEXT);
-CREATE TABLE zones(
-  camera_id TEXT, zone_id TEXT, zone_name TEXT, zone_type TEXT,
-  restricted INTEGER, capacity_max INTEGER, area_sqm REAL,
-  warning_density REAL, critical_density REAL, loitering_threshold_sec REAL,
-  colour TEXT, enabled INTEGER, normalized_polygon TEXT, polygon TEXT,
-  adjacency_list TEXT, updated_at REAL, physical_area_id TEXT);
-CREATE TABLE cameras(
-  camera_id TEXT PRIMARY KEY, site_id TEXT, last_seen REAL, name TEXT,
-  state TEXT, source TEXT, stream_url TEXT, health_ts REAL, enabled INTEGER,
-  input_fps REAL, resolution TEXT, dropped_frames INTEGER, reconnects INTEGER,
-  people_in_view INTEGER, people_in_zones INTEGER, tracking_quality TEXT,
-  counts_reliable INTEGER, counting_mode TEXT, mean_confidence REAL,
-  track_churn_per_min REAL, detector_saturation REAL);
-CREATE TABLE physical_areas(
-  area_id TEXT PRIMARY KEY, name TEXT, area_type TEXT, capacity_max INTEGER,
-  area_sqm REAL, site_id TEXT, updated_at REAL);
-CREATE TABLE area_state_ts(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, area_id TEXT, ts REAL,
-  occupancy INTEGER, capacity_pct REAL, density REAL,
-  summed_observations INTEGER, camera_count INTEGER, site_id TEXT);
-CREATE TABLE facility_presence(
-  ref TEXT PRIMARY KEY, admitted_at REAL, last_seen REAL, entry_zone TEXT,
-  last_zone TEXT, sightings INTEGER);
-CREATE TABLE facility_doors(
-  door_zone_id TEXT PRIMARY KEY, entries INTEGER, exits INTEGER);
-CREATE TABLE facility_meta(key TEXT PRIMARY KEY, value REAL);
-"""
+# The hand-written SQLite schema that used to live here went with the last
+# test that needed it; the views are built from services/api/ddl_pg.sql now.
 
 
 if __name__ == "__main__":

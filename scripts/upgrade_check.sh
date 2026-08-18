@@ -18,9 +18,16 @@ ls setup.py pyproject.toml Makefile package.json 2>/dev/null || \
 
 echo
 echo "== database migration needed? =="
-if git diff "$RANGE" -- services/api/sqlite_store.py | grep -q 'ADD COLUMN\|CREATE TABLE'; then
-  echo "  schema changed — applied automatically by _migrate() when the API starts"
-  git diff "$RANGE" -- services/api/sqlite_store.py | grep -E '^\+.*(ADD COLUMN|CREATE TABLE)' | head
+# Watches ddl_pg.sql, because that is where the schema lives. It used to watch
+# services/api/sqlite_store.py; when SQLite was removed this check went on
+# reporting "no schema change" for every range, which is the worst way for a
+# check to fail. Guard against that happening again.
+SCHEMA_FILE=services/api/ddl_pg.sql
+if [ ! -f "$SCHEMA_FILE" ]; then
+  echo "  *** $SCHEMA_FILE is gone — this check is watching nothing ***"
+elif git diff "$RANGE" -- "$SCHEMA_FILE" | grep -q 'ADD COLUMN\|CREATE TABLE'; then
+  echo "  schema changed — applied automatically by _apply_schema() when the API starts"
+  git diff "$RANGE" -- "$SCHEMA_FILE" | grep -E '^\+.*(ADD COLUMN|CREATE TABLE)' | head
 else
   echo "  no schema change"
 fi

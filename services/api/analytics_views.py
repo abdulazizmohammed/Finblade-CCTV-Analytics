@@ -1,9 +1,12 @@
 """SQL views FinBlade's chatbot queries directly.
 
 The ask: store the analytics in a real relational server and put a view on top
-that a bot can query. This module holds those view definitions in one place and
-emits them for either engine, so the SQL we test on SQLite is the SQL that runs
-on Postgres.
+that a bot can query. This module is the single definition of those views.
+
+It used to emit for two engines, so the SQL exercised on SQLite was the SQL that
+ran on Postgres. With SQLite removed the second dialect had no deployment behind
+it and was kept alive only by its own tests, so it is gone; these views are
+Postgres, and the tests run against a real server.
 
 WHY THERE IS A `v_timeline` AND NOT ONE WIDE JOIN
 
@@ -65,9 +68,9 @@ columns explicitly, and none of them selects that one.
 
 from typing import List, Tuple
 
-SQLITE = "sqlite"
-POSTGRES = "postgres"
-DIALECTS = (SQLITE, POSTGRES)
+# One backend. The dual-dialect emitter these views used to carry existed so the
+# SQL exercised on SQLite was the SQL that ran on Postgres; with SQLite removed
+# it was a second code path kept alive purely by its own tests.
 
 # Default: twice FINBLADE_STATE_KEEPALIVE (300s). A reading that stood longer
 # than this is more likely a dead worker than a quiet zone.
@@ -80,7 +83,7 @@ DEFAULT_MAX_HOLD = 600.0
 DEFAULT_OFFLINE_AFTER = 30.0
 
 
-def _utc(dialect: str, column: str) -> str:
+def _utc(column: str) -> str:
     """Epoch seconds -> a real timestamp, for humans and BI tools.
 
     Timestamps are stored as epoch doubles because that is what the API speaks
@@ -88,37 +91,32 @@ def _utc(dialect: str, column: str) -> str:
     conversion belongs in the view, where it costs nothing and gives a SQL
     client something it can put in a WHERE clause.
     """
-    if dialect == POSTGRES:
-        return f"to_timestamp({column})"
-    return f"datetime({column}, 'unixepoch')"
+    return f"to_timestamp({column})"
 
 
-def _bool(dialect: str, expr: str) -> str:
-    """SQLite has no boolean type; Postgres does."""
-    return expr if dialect == POSTGRES else f"CASE WHEN {expr} THEN 1 ELSE 0 END"
+def _bool(expr: str) -> str:
+    """Kept as a seam. Postgres has a real boolean, so this is the identity -
+    but every boolean column in these views goes through it, which is where a
+    future dialect or a CASE wrapper would land."""
+    return expr
 
 
-def _now(dialect: str) -> str:
+def _now() -> str:
     """Current time as epoch seconds, matching how the application stores it."""
-    if dialect == POSTGRES:
-        return "EXTRACT(EPOCH FROM now())"
-    return "CAST(strftime('%s','now') AS REAL)"
+    return "EXTRACT(EPOCH FROM now())"
 
 
-def _json_text(dialect: str, column: str, key: str) -> str:
+def _json_text(column: str, key: str) -> str:
     """Pull one key out of a JSON text column.
 
     `events.payload` is TEXT holding the whole event. Facility crossings keep
     the doorway and the resulting headcount in there and nowhere else, so a view
     that does not reach into it cannot answer "who crossed which door".
     """
-    if dialect == POSTGRES:
-        return f"(({column})::jsonb ->> '{key}')"
-    return f"json_extract({column}, '$.{key}')"
+    return f"(({column})::jsonb ->> '{key}')"
 
 
-def view_definitions(dialect: str = SQLITE,
-                     max_hold: float = DEFAULT_MAX_HOLD,
+def view_definitions(max_hold: float = DEFAULT_MAX_HOLD,
                      offline_after: float = DEFAULT_OFFLINE_AFTER,
                      temp: bool = False) -> List[Tuple[str, str]]:
     """[(view_name, CREATE VIEW sql)], in dependency order.
@@ -128,10 +126,7 @@ def view_definitions(dialect: str = SQLITE,
     temp schema while the real file stays open read-only. Unqualified table
     names still resolve to it, so the SQL under test is the SQL that ships.
     """
-    if dialect not in DIALECTS:
-        raise ValueError(f"dialect must be one of {DIALECTS}")
-
-    ts = lambda col: _utc(dialect, col)          # noqa: E731
+    ts = _utc
     views: List[Tuple[str, str]] = []
 
     # ---------------------------------------------------------------- zones --
@@ -160,13 +155,16 @@ SELECT
     s.outflow,
     z.capacity_max,
     z.area_sqm,
-    {_bool(dialect, 'COALESCE(z.restricted, s.restricted) = 1')} AS restricted,
+    {_bool('COALESCE(z.restricted, s.restricted) = 1')} AS restricted,
     -- A reading that stood for longer than one sample may speak for. The
     -- camera worker was almost certainly not running; treat the span as
     -- unobserved rather than as a long quiet period.
-    {_bool(dialect, f'LEAD(s.ts) OVER w - s.ts > {max_hold}')}   AS is_stale,
+    -- COALESCE because LEAD is NULL on the newest reading, and a NULL here is
+    -- worse than useless: `WHERE NOT is_stale` would then silently drop the
+    -- live row from every zone, which is the row most questions are about.
+    {_bool(f'COALESCE(LEAD(s.ts) OVER w - s.ts > {max_hold}, FALSE)')} AS is_stale,
     -- The newest reading per zone has no successor. It is current, not stale.
-    {_bool(dialect, 'LEAD(s.ts) OVER w IS NULL')}                AS is_open
+    {_bool('LEAD(s.ts) OVER w IS NULL')}                AS is_open
 FROM zone_state_ts s
 LEFT JOIN zones z
        ON z.zone_id = s.zone_id AND z.camera_id = s.camera_id
@@ -182,7 +180,7 @@ SELECT
     l.occupancy, l.density, l.capacity_pct, l.status, l.trend,
     l.peak_occupancy, l.inflow, l.outflow,
     z.capacity_max, z.area_sqm,
-    {_bool(dialect, 'COALESCE(z.restricted, l.restricted) = 1')} AS restricted,
+    {_bool('COALESCE(z.restricted, l.restricted) = 1')} AS restricted,
     l.ts                AS reading_ts,
     {ts('l.ts')}        AS reading_utc
 FROM zone_live l
@@ -231,7 +229,7 @@ SELECT
     {ts('e.ts')}    AS event_utc,
     COALESCE(z.zone_name, {zone_ref}) AS zone_name,
     z.zone_type,
-    {_bool(dialect, 'z.restricted = 1')} AS restricted
+    {_bool('z.restricted = 1')} AS restricted
 FROM events e
 LEFT JOIN zones z
        ON z.zone_id = {zone_ref} AND z.camera_id = e.camera_id
@@ -263,7 +261,7 @@ SELECT
     -- entries OVER-count rather than under-count, which is the same bias the
     -- rest of the system takes.
     {person_key} AS person_key,
-    {_bool(dialect, 'e.global_ref IS NOT NULL')} AS identity_resolved,
+    {_bool('e.global_ref IS NOT NULL')} AS identity_resolved,
     e.ts            AS event_ts,
     {ts('e.ts')}    AS event_utc
 FROM events e
@@ -284,7 +282,7 @@ SELECT
     a.resolved_by, a.resolved_at, a.note,
     a.ts            AS raised_ts,
     {ts('a.ts')}    AS raised_utc,
-    {_bool(dialect, "COALESCE(a.status,'OPEN') IN ('OPEN','ACK')")} AS is_active,
+    {_bool("COALESCE(a.status,'OPEN') IN ('OPEN','ACK')")} AS is_active,
     COALESCE(z.zone_name, a.zone_id) AS zone_name
 FROM alerts a
 LEFT JOIN zones z ON z.zone_id = a.zone_id AND z.camera_id = a.camera_id
@@ -299,7 +297,7 @@ LEFT JOIN zones z ON z.zone_id = a.zone_id AND z.camera_id = a.camera_id
     # base tables. A read-only role granted the analytics views could not answer
     # "how many people are in the building" at all — the single question the
     # system is most often asked.
-    now = _now(dialect)
+    now = _now()
 
     views.append(("v_facility_current", f"""
 CREATE VIEW v_facility_current AS
@@ -353,7 +351,7 @@ SELECT
     p.sightings,
     -- Discharge is strict: the roster only falls when a crossing out is
     -- observed. An entry nobody has seen for an hour is the drift signal.
-    {_bool(dialect, f'p.last_seen < {now} - 3600')} AS possibly_stale
+    {_bool(f'p.last_seen < {now} - 3600')} AS possibly_stale
 FROM facility_presence p
 """.strip()))
 
@@ -365,10 +363,10 @@ SELECT
     e.camera_id,
     e.site_id,
     -- Which boundary was crossed. Lives in the payload, not a column.
-    {_json_text(dialect, 'e.payload', 'door_zone_id')}   AS door_zone_id,
+    {_json_text('e.payload', 'door_zone_id')}   AS door_zone_id,
     -- The building headcount AFTER this crossing, so the occupancy curve is
     -- reconstructable from the event stream alone.
-    CAST({_json_text(dialect, 'e.payload', 'occupancy')} AS INTEGER)
+    CAST({_json_text('e.payload', 'occupancy')} AS INTEGER)
                                                          AS occupancy_after,
     -- Facility events carry person_ref only; the roster is keyed on the
     -- cross-camera identity internally but does not stamp it here, so these
@@ -439,8 +437,8 @@ SELECT
     s.camera_count,
     s.summed_observations,
     -- Same rule as v_zone_intervals: weight every average by duration_seconds.
-    {_bool(dialect, f'LEAD(s.ts) OVER w - s.ts > {max_hold}')} AS is_stale,
-    {_bool(dialect, 'LEAD(s.ts) OVER w IS NULL')}              AS is_open
+    {_bool(f'COALESCE(LEAD(s.ts) OVER w - s.ts > {max_hold}, FALSE)')} AS is_stale,
+    {_bool('LEAD(s.ts) OVER w IS NULL')}              AS is_open
 FROM area_state_ts s
 LEFT JOIN physical_areas a ON a.area_id = s.area_id
 WINDOW w AS (PARTITION BY s.area_id ORDER BY s.ts)
@@ -468,7 +466,7 @@ SELECT
            THEN 'OFFLINE'
       ELSE COALESCE(c.state, 'ONLINE')
     END                                         AS effective_state,
-    {_bool(dialect, f"c.enabled <> 0 AND COALESCE(c.health_ts, c.last_seen) >= {now} - {offline_after}")}
+    {_bool(f"c.enabled <> 0 AND COALESCE(c.health_ts, c.last_seen) >= {now} - {offline_after}")}
                                                 AS is_online,
     c.last_seen,
     {ts('c.last_seen')}                         AS last_seen_utc,
@@ -499,8 +497,8 @@ SELECT
     z.zone_id,                      -- unique only WITHIN a camera
     z.zone_name,
     z.zone_type,
-    {_bool(dialect, 'z.restricted = 1')} AS restricted,
-    {_bool(dialect, 'z.enabled <> 0')}   AS enabled,
+    {_bool('z.restricted = 1')} AS restricted,
+    {_bool('z.enabled <> 0')}   AS enabled,
     z.capacity_max,
     z.area_sqm,
     z.warning_density,
@@ -563,8 +561,8 @@ FROM alerts a
     return views
 
 
-def view_names(dialect: str = SQLITE) -> List[str]:
-    return [name for name, _ in view_definitions(dialect)]
+def view_names() -> List[str]:
+    return [name for name, _ in view_definitions()]
 
 
 # --------------------------------------------------------------------------
@@ -770,15 +768,10 @@ _COLUMN_COMMENTS = {
 }
 
 
-def comment_sql(dialect: str = POSTGRES) -> List[str]:
+def comment_sql() -> List[str]:
     """COMMENT ON statements for the views and their sharpest columns.
 
-    Postgres only — SQLite has no COMMENT ON and returns an empty list rather
-    than raising, so a caller can apply comments unconditionally on whichever
-    backend it finds.
     """
-    if dialect != POSTGRES:
-        return []
     out = []
     for view, text in _VIEW_COMMENTS.items():
         out.append(f"COMMENT ON VIEW {view} IS {_quote(text)}")
@@ -791,20 +784,21 @@ def _quote(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-def drop_sql(dialect: str = SQLITE) -> List[str]:
+def drop_sql() -> List[str]:
     """DROP statements, reverse dependency order. Idempotent."""
-    return [f"DROP VIEW IF EXISTS {name}" for name in reversed(view_names(dialect))]
+    return [f"DROP VIEW IF EXISTS {name}" for name in reversed(view_names())]
 
 
-def create_all(conn, dialect: str = SQLITE, max_hold: float = DEFAULT_MAX_HOLD,
+def create_all(conn, max_hold: float = DEFAULT_MAX_HOLD,
                offline_after: float = DEFAULT_OFFLINE_AFTER,
                temp: bool = False) -> List[str]:
     """(Re)create every view on an open DB-API connection. Returns the names."""
     names = []
-    for stmt in drop_sql(dialect):
+    for stmt in drop_sql():
         conn.execute(stmt)
-    for name, sql in view_definitions(dialect, max_hold=max_hold,
-                                  offline_after=offline_after, temp=temp):
+    for name, sql in view_definitions(max_hold=max_hold,
+                                      offline_after=offline_after,
+                                      temp=temp):
         conn.execute(sql)
         names.append(name)
     return names

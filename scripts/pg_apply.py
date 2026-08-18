@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pg_conn                                                     # noqa: E402
 
-from services.api.analytics_views import (POSTGRES, drop_sql,      # noqa: E402
+from services.api.analytics_views import (drop_sql,               # noqa: E402
                                           view_definitions)
 
 dsn = pg_conn.dsn(sys.argv[1] if len(sys.argv) > 1 else None)
@@ -57,10 +57,10 @@ with pg_conn.connect(dsn) as conn:
           f"missing {sorted(expected - set(tables))}")
 
     print("\n== creating the analytics views (postgres dialect)")
-    for stmt in drop_sql(POSTGRES):
+    for stmt in drop_sql():
         conn.execute(stmt)
     created = []
-    for name, sql in view_definitions(POSTGRES):
+    for name, sql in view_definitions():
         try:
             conn.execute(sql)
             created.append(name)
@@ -71,7 +71,7 @@ with pg_conn.connect(dsn) as conn:
     # took it to fourteen and the script started reporting a healthy apply as a
     # failure. A hardcoded count in a checker is a second source of truth for
     # something the module already knows.
-    expected = [n for n, _ in view_definitions(POSTGRES)]
+    expected = [n for n, _ in view_definitions()]
     check(f"all {len(expected)} views created on Postgres",
           created == expected,
           f"created {len(created)} of {len(expected)}: "

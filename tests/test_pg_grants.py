@@ -24,20 +24,16 @@ from scripts.pg_grants import statements, verify                    # noqa: E402
 
 
 def _pg_dsn():
-    for var in ("FINBLADE_TEST_DSN", "DATABASE_URL"):
-        if os.environ.get(var):
-            return os.environ[var]
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    pglib, pgdata = os.path.join(repo, ".pgtest"), os.path.join(repo, ".pgdata")
-    if not os.path.isdir(pglib) or not os.path.isdir(pgdata):
-        return None
-    if pglib not in sys.path:
-        sys.path.insert(0, pglib)
-    try:
-        import pgserver
-        return pgserver.get_server(pgdata).get_uri()
-    except Exception:                                   # noqa: BLE001
-        return None
+    """A DSN for a scratch Postgres, or None to skip.
+
+    Delegates to tests/pgfixture.py. This used to be a hand-rolled copy of the
+    same resolution order, and the copy went on calling pgserver.get_server()
+    after the shared one had stopped — which OWNS the cluster and fast-shuts it
+    at process exit. Three resolvers meant fixing one fixed nothing; the
+    developer's server still died on every test run.
+    """
+    from tests import pgfixture
+    return pgfixture.dsn()
 
 
 PG_DSN = _pg_dsn()

@@ -24,15 +24,61 @@ DDL = os.path.join(REPO, "services", "api", "ddl_pg.sql")
 _counter = 0
 
 
+# The cluster scripts/pg_dev.sh runs, as a maintenance connection. Scratch
+# schemas are created inside it; the database itself is never written to.
+LOCAL_DSN = "postgresql://postgres@127.0.0.1:5432/postgres"
+
+
+def _server_already_running(host="127.0.0.1", port=5432, timeout=0.4):
+    """Is something already listening? A socket probe, not a connection.
+
+    THE REASON THIS EXISTS. pgserver.get_server() does not attach to a cluster,
+    it OWNS one — when the owning process exits it issues a fast shutdown. Point
+    it at the same .pgdata that scripts/pg_dev.sh started and running the test
+    suite silently kills the developer's server, which then surfaces minutes
+    later as the API refusing to boot with a pool timeout. Diagnosing that from
+    the far end costs far more than this probe.
+    """
+    import socket
+    with socket.socket() as s:
+        s.settimeout(timeout)
+        return s.connect_ex((host, port)) == 0
+
+
 def dsn():
     """A DSN for a scratch Postgres, or None to skip.
 
-    Prefers FINBLADE_TEST_DSN, then DATABASE_URL, then the local cluster that
-    scripts/pg_dev.sh runs. Never invents one.
+    In order: FINBLADE_TEST_DSN, DATABASE_URL, a cluster that is ALREADY
+    running locally, and only then a pgserver cluster of our own. Never invents
+    one.
+
+    The third step is the important one. Attaching to a running server borrows
+    it; starting one through pgserver takes responsibility for stopping it, and
+    those are very different things to do to a machine somebody is working on.
     """
     for var in ("FINBLADE_TEST_DSN", "DATABASE_URL"):
         if os.environ.get(var):
             return os.environ[var]
+
+    if _server_already_running():
+        return LOCAL_DSN
+
+    return _own_a_cluster()
+
+
+def _own_a_cluster():
+    """Start a cluster AND TAKE RESPONSIBILITY FOR STOPPING IT. Last resort.
+
+    Separated from dsn() and given a blunt name because calling it has a
+    consequence that reading it does not suggest: pgserver registers an exit
+    hook, so this process now owns the postmaster and will fast-shut it on the
+    way out — including a postmaster somebody else started on the same PGDATA.
+
+    It is also why a test may never call this. The first version of
+    tests/test_pg_fixture_ownership.py asserted the fallback was reachable by
+    reaching it, and so shut down the developer's server on every run — the
+    exact bug it existed to prevent. Stub this function; do not invoke it.
+    """
     pglib = os.path.join(REPO, ".pgtest")
     pgdata = os.path.join(REPO, ".pgdata")
     if not os.path.isdir(pglib) or not os.path.isdir(pgdata):

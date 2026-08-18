@@ -52,8 +52,17 @@ class MatchResult:
     runner_up: float = 0.0        # best rejected candidate, for margin auditing
     reason: str = ""
     candidates: int = 0
+    # Diagnosis. Present on the object, absent from as_dict() — the HTTP reply
+    # goes back to a camera worker on every resolve and does not need the
+    # candidate list. The journal does.
+    scored: List[dict] = field(default_factory=list)
+    rejected_topology: int = 0
+    rejected_simultaneous: int = 0
+    unknown_pairs: int = 0
+    gallery: int = 0
 
     def as_dict(self) -> dict:
+        """The wire format. Deliberately unchanged — workers parse this."""
         return {
             "global_ref": self.global_ref,
             "matched": self.matched,
@@ -61,6 +70,34 @@ class MatchResult:
             "runner_up": round(self.runner_up, 4),
             "reason": self.reason,
             "candidates": self.candidates,
+        }
+
+    def journal_entry(self, camera_id: str, local_track_id: int, ts: float,
+                      zone_id=None, bank_size: int = 0) -> dict:
+        """One replayable record of this decision.
+
+        Everything a later question needs — "would 0.65 have matched?", "how
+        often did physics leave exactly one candidate?" — and nothing that
+        could reconstruct a person: no vectors, no crops, no boxes, and no
+        person_ref. global_ref is the same opaque salted hash already stored.
+        """
+        return {
+            "ts": round(ts, 3),
+            "camera": camera_id,
+            "track": int(local_track_id),
+            "zone": zone_id,
+            "bank": bank_size,
+            "gallery": self.gallery,
+            "candidates": self.candidates,
+            "rejected_topology": self.rejected_topology,
+            "rejected_simultaneous": self.rejected_simultaneous,
+            "unknown_pairs": self.unknown_pairs,
+            "best": round(self.score, 4),
+            "runner_up": round(self.runner_up, 4),
+            "decision": self.reason,
+            "matched": self.matched,
+            "global_ref": self.global_ref,
+            "scored": self.scored,
         }
 
 
@@ -326,11 +363,19 @@ class GlobalIdentityRegistry:
 
         self.expire(now)
 
+        gallery_size = len(self._identities)
         best_ref, best_score = None, -1.0
         runner_up_ref, runner_up = None, -1.0
         considered = 0
         topo_rejected = 0
         unknown_pairs = 0
+        simultaneous = 0
+        # Every candidate that reached scoring, with what physics said about
+        # it. This is what makes the decision replayable offline: raising a
+        # threshold changes WHICH candidates cross it, so knowing only the
+        # winner's score cannot tell you what else would have crossed too.
+        # Scores and elapsed times only - no vectors leave this loop.
+        scored: List[dict] = []
 
         for ref, ident in self._identities.items():
             # Gate 1: one person cannot be two live tracks on the same camera.
@@ -354,6 +399,7 @@ class GlobalIdentityRegistry:
             if any(c != camera_id and not self.topology.is_overlapping(c, camera_id)
                    for c, _t in ident.active):
                 self.stats["rejected_simultaneous"] += 1
+                simultaneous += 1
                 continue
             # Gate 2: physics.
             ok, reason = self.topology.feasible(
@@ -366,6 +412,9 @@ class GlobalIdentityRegistry:
             # Gate 3: appearance.
             considered += 1
             score = bank.similarity(ident.bank)
+            scored.append({"ref": ref, "score": round(score, 4),
+                           "dt": round(now - ident.last_seen, 2),
+                           "from": ident.last_camera, "gate": reason})
             if score > best_score:
                 runner_up_ref, runner_up = best_ref, best_score
                 best_ref, best_score = ref, score
@@ -373,6 +422,7 @@ class GlobalIdentityRegistry:
                 runner_up_ref, runner_up = ref, score
 
         self.stats["rejected_topology"] += topo_rejected
+        scored.sort(key=lambda c: -c["score"])
         self.stats["unknown_pair"] += unknown_pairs
         runner_up = max(runner_up, 0.0)
         best_score = max(best_score, 0.0)
@@ -389,7 +439,11 @@ class GlobalIdentityRegistry:
             self.stats["matched"] += 1
             return MatchResult(global_ref=ref, matched=True, score=best_score,
                                runner_up=runner_up, reason=reason,
-                               candidates=considered)
+                               candidates=considered, scored=scored,
+                               rejected_topology=topo_rejected,
+                               rejected_simultaneous=simultaneous,
+                               unknown_pairs=unknown_pairs,
+                               gallery=gallery_size)
 
         if best_ref is not None and best_score >= self.threshold:
             if (best_score - runner_up) >= self.margin or considered == 1:
@@ -458,7 +512,12 @@ class GlobalIdentityRegistry:
         self.stats["created"] += 1
         self._evict_if_full()
         return MatchResult(global_ref=ref, matched=False, score=best_score,
-                           runner_up=runner_up, reason=reason, candidates=considered)
+                           runner_up=runner_up, reason=reason,
+                           candidates=considered, scored=scored,
+                           rejected_topology=topo_rejected,
+                           rejected_simultaneous=simultaneous,
+                           unknown_pairs=unknown_pairs,
+                           gallery=gallery_size)
 
     def release(self, camera_id: str, local_track_id: int) -> Optional[str]:
         """Local track ended. Keep the identity warm so another camera can match it."""

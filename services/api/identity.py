@@ -25,6 +25,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from finblade.appearance import TrackFeatureBank   # noqa: E402
+from finblade.reid_journal import DecisionJournal  # noqa: E402
 from finblade.globalid import GlobalIdentityRegistry  # noqa: E402
 from finblade.topology import CameraTopology       # noqa: E402
 
@@ -113,7 +114,12 @@ class IdentityService:
     }
 
     def __init__(self, registry: Optional[GlobalIdentityRegistry] = None,
-                 topology_path: Optional[str] = None):
+                 topology_path: Optional[str] = None,
+                 journal: Optional[DecisionJournal] = None):
+        # Off unless FINBLADE_REID_JOURNAL names a path. A diagnostic for an
+        # evaluation run, not telemetry — a system that quietly records every
+        # person it sees is a different product from one that does not.
+        self.journal = journal if journal is not None else DecisionJournal()
         topology = CameraTopology.empty()
         self.topology_source = "default(permissive)"
         self.tuning_source = "defaults"
@@ -244,6 +250,20 @@ class IdentityService:
             now=float(payload["ts"]),
             zone_id=payload.get("zone_id"),
         )
+
+        # Journalling lives HERE, not in the registry. globalid.py is pure
+        # stdlib with no I/O so it stays testable without a filesystem, and
+        # this is the process boundary where writing a file is already normal.
+        # record() cannot raise: a journalling problem must not change the
+        # answer to "who is this?".
+        if self.journal.enabled:
+            self.journal.record(result.journal_entry(
+                camera_id=payload["camera_id"],
+                local_track_id=int(payload["local_track_id"]),
+                ts=float(payload["ts"]),
+                zone_id=payload.get("zone_id"),
+                bank_size=bank.n))
+
         body = result.as_dict()
         body["resolved"] = True
         return 200, body
@@ -277,6 +297,9 @@ class IdentityService:
         snap["threshold"] = self.registry.threshold
         snap["margin"] = self.registry.margin
         snap["ttl_seconds"] = self.registry.ttl_seconds
+        # Surfaced so an evaluation run can be seen to be recording. A journal
+        # that silently stopped writing looks exactly like a quiet building.
+        snap["journal"] = self.journal.snapshot()
         return snap
 
     def release_camera(self, camera_id: str) -> int:

@@ -96,6 +96,67 @@ DSN = dsn()
 skip_without_pg = unittest.skipIf(DSN is None, "no Postgres available")
 
 
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True            # exists, owned by somebody else
+    except OSError:
+        return True            # unknown: assume alive and leave it alone
+    return True
+
+
+def sweep_stale_schemas(dsn=None) -> int:
+    """Drop fixture schemas left by test runs that are no longer running.
+
+    THE LEAK THIS CLOSES. Every scratch schema holds a full copy of
+    ddl_pg.sql - thirteen tables and their indexes. teardown() drops them and
+    store_for() registers an atexit handler, but a run killed by a timeout or a
+    Ctrl-C runs neither, and under pgserver that never mattered because the
+    whole cluster was thrown away with the process. Attached to a long-lived
+    server they simply accumulate: 221 of them after a day, and a suite that
+    had taken 65 seconds took 222.
+
+    So cleanup happens at START-UP, not only at exit. A run that dies cannot
+    tidy up after itself; the next one can. Schemas belonging to a LIVE pid are
+    never touched, so two suites can run side by side.
+    """
+    dsn = dsn or DSN
+    if dsn is None:
+        return 0
+    try:
+        import psycopg
+    except ImportError:
+        return 0
+    dropped = 0
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as c:
+            rows = c.execute(
+                "SELECT schema_name FROM information_schema.schemata "
+                "WHERE schema_name LIKE 'fbt\_%' OR schema_name LIKE 'fx\_%'"
+            ).fetchall()
+            for (name,) in rows:
+                parts = name.split("_")
+                # fbt_<pid>_<rest>, and the legacy fx_<pid>_<hash>.
+                pid = None
+                for part in parts[1:2]:
+                    if part.isdigit():
+                        pid = int(part)
+                if pid is not None and _pid_is_alive(pid):
+                    continue
+                c.execute('DROP SCHEMA IF EXISTS "%s" CASCADE' % name)
+                dropped += 1
+    except Exception:                                   # noqa: BLE001
+        return dropped
+    return dropped
+
+
+_SWEPT = sweep_stale_schemas()
+
+
 def _scoped(base, schema):
     sep = "&" if "?" in base else "?"
     return f"{base}{sep}options=-csearch_path%3D{schema}"
@@ -112,7 +173,7 @@ def make_store(prefix="t"):
     from services.api.postgres_store import PostgresStore
 
     _counter += 1
-    schema = f"{prefix}_{os.getpid()}_{_counter}"
+    schema = f"fbt_{os.getpid()}_{prefix}{_counter}"
 
     with psycopg.connect(DSN, autocommit=True) as c:
         c.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
@@ -176,7 +237,7 @@ def store_for(path):
     schema = _SCHEMAS.get(key)
     if schema is None:
         digest = hashlib.sha1(key.encode()).hexdigest()[:12]
-        schema = f"fx_{os.getpid()}_{digest}"
+        schema = f"fbt_{os.getpid()}_fx{digest}"
         _SCHEMAS[key] = schema
         with psycopg.connect(DSN, autocommit=True) as c:
             c.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")

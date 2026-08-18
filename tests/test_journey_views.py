@@ -532,5 +532,37 @@ class TestTopologyProjection(unittest.TestCase):
         self.assertEqual(len(self.CAMS) ** 2, len(rows))
 
 
+
+class TestReportWindowParsing(unittest.TestCase):
+    """journey_report.py takes a time window from the command line, and a
+    misread one silently reports on the wrong period."""
+
+    def parse(self, text):
+        from scripts.journey_report import parse_when
+        return parse_when(text)
+
+    def test_the_three_accepted_shapes_agree(self):
+        day = self.parse("2026-08-18")
+        self.assertEqual(day, self.parse("2026-08-18T00:00"))
+        self.assertEqual(day, self.parse("2026-08-18T00:00:00"))
+
+    def test_it_is_utc_not_local(self):
+        """The database stores epoch seconds and the walk times were paced in
+        UTC. Parsing as local would shift the window by hours."""
+        import datetime as dt
+        got = self.parse("2026-08-18T06:00")
+        self.assertEqual(
+            dt.datetime(2026, 8, 18, 6, 0, tzinfo=dt.timezone.utc).timestamp(),
+            got)
+
+    def test_no_window_means_no_bound(self):
+        self.assertIsNone(self.parse(None))
+        self.assertIsNone(self.parse(""))
+
+    def test_an_unparseable_time_stops_rather_than_guesses(self):
+        with self.assertRaises(SystemExit):
+            self.parse("last tuesday")
+
+
 if __name__ == "__main__":
     unittest.main()

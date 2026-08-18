@@ -17,9 +17,29 @@
 # want them anyway: start the API and point it at your RTSP URLs from
 # /web/cameras.html.
 #
-# Persists to data/finblade.db (NOT in-memory), so history and reports survive.
+# Persists to whichever backend .env selects - Postgres when DATABASE_URL is
+# set, SQLite otherwise. Either way NOT in-memory, so history survives.
 set -u
 cd "$(dirname "$0")/.."
+
+# READ .env, THE SAME FILE THE SYSTEMD UNIT READS.
+#
+# This script used not to, and the systemd unit did. So one checkout ran on two
+# different databases depending on how it was started: systemd picked up
+# DATABASE_URL and wrote to Postgres, this script ignored it and wrote to
+# SQLite. Both looked healthy, and it cost most of a day to notice that a server
+# held two divergent histories, one per launch method, with a figure verified
+# through one invisible to the other.
+#
+# set -a exports everything the file defines, so DATABASE_URL, FINBLADE_API_KEY
+# and FINBLADE_AUTOSTART_CAMERAS reach the API and the workers alike. An absent
+# .env is fine and changes nothing.
+if [ -f .env ]; then
+  set -a
+  . ./.env
+  set +a
+  echo "== loaded .env =="
+fi
 
 MODE="${1:-rtsp}"
 PY=.venv/bin/python
@@ -63,7 +83,16 @@ else
   TOPO=config/topology.yaml
 fi
 
-echo "== starting API on :8000 (SQLite, topology=$TOPO) =="
+# Report the backend the API will ACTUALLY use, not a guess. This line said
+# "SQLite" unconditionally, and kept saying it after .env pointed the process at
+# Postgres - so the one place an operator looks to confirm the backend was the
+# one place guaranteed to be wrong.
+if [ -n "${DATABASE_URL:-}" ]; then
+  BACKEND="Postgres ${DATABASE_URL##*@}"
+else
+  BACKEND="SQLite data/finblade.db"
+fi
+echo "== starting API on :8000 ($BACKEND, topology=$TOPO) =="
 FINBLADE_TOPOLOGY="$TOPO" nohup $PY -m uvicorn services.api.app:app \
   --host 0.0.0.0 --port 8000 --log-level warning > scripts/api.log 2>&1 &
 sleep 1

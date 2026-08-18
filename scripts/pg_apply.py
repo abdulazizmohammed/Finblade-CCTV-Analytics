@@ -66,8 +66,16 @@ with pg_conn.connect(dsn) as conn:
             created.append(name)
         except Exception as exc:                    # noqa: BLE001
             check(f"view {name}", False, str(exc)[:250])
-    check("all five views created on Postgres", len(created) == 5,
-          f"{created}")
+    # Count comes from view_definitions, not a literal. This said "all five"
+    # and asserted len == 5; the facility, area, camera and zone-config views
+    # took it to fourteen and the script started reporting a healthy apply as a
+    # failure. A hardcoded count in a checker is a second source of truth for
+    # something the module already knows.
+    expected = [n for n, _ in view_definitions(POSTGRES)]
+    check(f"all {len(expected)} views created on Postgres",
+          created == expected,
+          f"created {len(created)} of {len(expected)}: "
+          f"missing {[n for n in expected if n not in created]}")
 
     print("\n== the views are queryable (empty tables, but the SQL must run)")
     for name in created:

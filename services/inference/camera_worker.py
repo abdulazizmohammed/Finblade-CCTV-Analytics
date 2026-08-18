@@ -156,6 +156,8 @@ class CameraWorker:
         self._reconnects = 0
         self._loops = 0
         self._ts_window = deque()
+        # Guards _ts_window only. See input_fps() for why it is not _lock.
+        self._fps_lock = threading.Lock()
         self._fps_window = fps_window
 
         self._thread: Optional[threading.Thread] = None
@@ -253,10 +255,17 @@ class CameraWorker:
             self._frozen = True                    # identical content for too long
 
         self._last_valid_ts = now
-        self._ts_window.append(now)
-        cutoff = now - self._fps_window
-        while self._ts_window and self._ts_window[0] < cutoff:
-            self._ts_window.popleft()
+        # Under _fps_lock: this runs on the CAPTURE thread while the main loop
+        # reads the same deque in input_fps(). Unguarded, the reader raised
+        # "RuntimeError: deque mutated during iteration" out of a health poll,
+        # which nothing caught - the worker died with "terminate called without
+        # an active exception" and the camera simply went offline. CAM-04 was
+        # killed this way.
+        with self._fps_lock:
+            self._ts_window.append(now)
+            cutoff = now - self._fps_window
+            while self._ts_window and self._ts_window[0] < cutoff:
+                self._ts_window.popleft()
 
         shape = getattr(frame, "shape", None)
         if shape is not None and len(shape) >= 2:
@@ -276,7 +285,12 @@ class CameraWorker:
     def input_fps(self, now: Optional[float] = None) -> float:
         now = now if now is not None else time.time()
         cutoff = now - self._fps_window
-        n = sum(1 for t in self._ts_window if t >= cutoff)
+        # Copy under the lock, count outside it. A SEPARATE lock from _lock on
+        # purpose: health() holds _lock and then calls this, and _lock is not
+        # reentrant - sharing one would trade a crash for a deadlock.
+        with self._fps_lock:
+            stamps = list(self._ts_window)
+        n = sum(1 for t in stamps if t >= cutoff)
         return n / self._fps_window if self._fps_window else 0.0
 
     def state(self, now: Optional[float] = None) -> str:

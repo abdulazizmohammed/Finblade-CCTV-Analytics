@@ -24,7 +24,7 @@ import os
 import tempfile
 import unittest
 
-from services.api.sqlite_store import SQLiteStore
+from tests.pgfixture import store_for
 
 
 class TestCameraCountsPersist(unittest.TestCase):
@@ -32,7 +32,7 @@ class TestCameraCountsPersist(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        self.store = SQLiteStore(self.path)
+        self.store = store_for(self.path)
         self.addCleanup(lambda: os.path.exists(self.path) and os.unlink(self.path))
 
     def _counts(self, camera_id="CAM-A"):

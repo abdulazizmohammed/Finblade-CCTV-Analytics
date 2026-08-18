@@ -14,7 +14,7 @@ import unittest
 from finblade.events import ZONE_ENTRY, ZONE_TRANSITION, new_event
 from finblade.presence import DoorPolicy
 from services.api.service import IngestService
-from services.api.sqlite_store import SQLiteStore
+from tests.pgfixture import store_for
 
 CAM, SITE = "CAM-01", "SITE-01"
 ZONES = [
@@ -35,7 +35,7 @@ class Case(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        self.store = SQLiteStore(self.path)
+        self.store = store_for(self.path)
         self.store.upsert_camera(CAM, site_id=SITE)
         self.store.save_zones(CAM, ZONES)
         self.svc = IngestService(self.store)
@@ -120,7 +120,7 @@ class TestRosterReset(Case):
         for i in range(3):
             self.enter(f"p{i}")
         self.svc.clear_facility()
-        self.assertEqual(IngestService(SQLiteStore(self.path))
+        self.assertEqual(IngestService(store_for(self.path))
                          .facility_state(now=self.t)["occupancy"], 0)
 
     def test_counting_resumes_after_a_clear(self):
@@ -154,7 +154,7 @@ class TestDoorPolicyScoping(unittest.TestCase):
         fd, path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         try:
-            store = SQLiteStore(path)
+            store = store_for(path)
             store.upsert_camera("CAM-01", site_id=SITE)
             store.save_zones("CAM-01", [ZONES[0]])
             store.save_zones("CAM-05", [{"zone_id": "ZONE-07",

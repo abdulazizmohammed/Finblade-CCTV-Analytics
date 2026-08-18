@@ -17,7 +17,7 @@ import tempfile
 import time
 import unittest
 
-from services.api.sqlite_store import SQLiteStore
+from tests.pgfixture import store_for
 from services.api.store import InMemoryStore
 
 def NOW():
@@ -126,43 +126,36 @@ class TestInMemoryZoneLive(ZoneLiveContract, unittest.TestCase):
                          by_key(self.store.latest_zone_states()))
 
 
-class TestSQLiteZoneLive(ZoneLiveContract, unittest.TestCase):
+class TestPostgresZoneLive(ZoneLiveContract, unittest.TestCase):
+    """The durable backend must satisfy the same contract as the in-memory one."""
+
+    def setUp(self):
+        self._path = tempfile.mkdtemp() + "/zone_live"
+        self.store = store_for(self._path)
+
     def make_store(self):
-        return SQLiteStore(self.path())
+        return self.store
 
-    def path(self):
-        fd, path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        os.remove(path)
-        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
-        return path
+    def test_state_survives_a_new_store_on_the_same_database(self):
+        """What the old SQLite case proved by reopening a file path."""
+        self.store.save_zone_state(state(occupancy=4))
+        reopened = store_for(self._path)
+        live = reopened.latest_zone_states()
+        self.assertEqual(1, len(live))
+        self.assertEqual(4, live[0]["occupancy"])
 
-    def test_existing_history_is_backfilled_on_upgrade(self):
-        """A deployment upgrading with zone_state_ts already populated must not
-        show an empty dashboard until every camera next reports — and on a box
-        with the workers stopped, that would be indefinitely."""
-        path = self.path()
-        store = SQLiteStore(path)
-        store.save_zone_state(state(occupancy=6))
-        # Simulate the pre-zone_live state: history present, live table empty.
-        with store._lock:
-            store._conn.execute("DELETE FROM zone_live")
-            store._conn.commit()
-        store._zone_cache = None
-        self.assertEqual([], store.latest_zone_states(), "precondition")
-
-        reopened = SQLiteStore(path)                   # runs _migrate()
-        rows = reopened.latest_zone_states()
-        self.assertEqual(1, len(rows))
-        self.assertEqual(6, rows[0]["occupancy"])
-
-    def test_backfill_does_not_clobber_a_populated_table(self):
-        path = self.path()
-        store = SQLiteStore(path)
-        store.save_zone_state(state(ts=NOW() - 100, occupancy=1))
-        store.save_zone_state(state(ts=NOW(), occupancy=9))
-        reopened = SQLiteStore(path)
-        self.assertEqual(9, reopened.latest_zone_states()[0]["occupancy"])
+    # REMOVED WITH SQLITE: test_existing_history_is_backfilled_on_upgrade and
+    # test_backfill_does_not_clobber_a_populated_table.
+    #
+    # Both drove SQLiteStore._migrate(), which seeded zone_live from
+    # zone_state_ts for deployments upgrading from a schema that predated the
+    # table. They reached into store._lock and store._conn to empty zone_live
+    # and simulate that older shape.
+    #
+    # Postgres has no equivalent to reproduce. zone_live has been in ddl_pg.sql
+    # since that file existed, so no Postgres deployment has ever reached the
+    # state the backfill repaired, and there is no migration to test. Writing a
+    # Postgres version would be testing a code path that does not exist.
 
 
 if __name__ == "__main__":

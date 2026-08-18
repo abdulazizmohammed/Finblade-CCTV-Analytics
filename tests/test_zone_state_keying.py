@@ -26,7 +26,7 @@ import os
 import tempfile
 import unittest
 
-from services.api.sqlite_store import SQLiteStore
+from tests.pgfixture import store_for
 from services.api.store import InMemoryStore
 
 
@@ -106,7 +106,7 @@ class TestSQLiteZoneKeying(_ZoneKeyingContract, unittest.TestCase):
         fd, path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
-        return SQLiteStore(path)
+        return store_for(path)
 
 
 if __name__ == "__main__":

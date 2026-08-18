@@ -32,20 +32,32 @@ from .store import InMemoryStore
 from .bus import InMemoryBus
 from .report import render_report_html, render_report_csv
 
-# Backend selection: durable SQLite by default (survives restarts, date-queryable).
-# DATABASE_URL -> Postgres; FINBLADE_INMEMORY=1 -> in-memory (tests/ephemeral).
+# Backend selection. POSTGRES IS THE ONLY DURABLE STORE.
 #
-# All three are held to one behaviour by tests/test_store_conformance.py, which
-# runs the same suite against each. Setting DATABASE_URL is the whole cutover:
-# nothing below this block knows which store it is talking to.
+# SQLite was removed deliberately. It was never a second implementation so much
+# as a second deployment: the same checkout wrote to Postgres under systemd and
+# to SQLite under start_stack.sh, because only one of them read .env. Both
+# looked healthy, and a server accumulated two divergent histories with figures
+# verified through one invisible in the other. One backend removes the class of
+# bug rather than the instance.
+#
+# FINBLADE_INMEMORY=1 still selects InMemoryStore for tests and throwaway runs.
+# It is explicitly opt-in and never a fallback: an unset DATABASE_URL is a
+# misconfiguration, and starting on a store that silently forgets everything is
+# a worse answer than refusing to start.
 if os.environ.get("DATABASE_URL"):
     from .postgres_store import PostgresStore
     store = PostgresStore(os.environ["DATABASE_URL"])
 elif os.environ.get("FINBLADE_INMEMORY"):
     store = InMemoryStore()
 else:
-    from .sqlite_store import SQLiteStore
-    store = SQLiteStore(os.environ.get("FINBLADE_DB", "data/finblade.db"))
+    raise RuntimeError(
+        "DATABASE_URL is not set and FINBLADE_INMEMORY is not set. "
+        "Postgres is the only durable backend; SQLite has been removed. "
+        "Dev: run 'bash scripts/pg_dev.sh start', then put "
+        "DATABASE_URL=postgresql://postgres@127.0.0.1:5432/finblade in .env. "
+        "For tests and throwaway runs, set FINBLADE_INMEMORY=1."
+    )
 
 if os.environ.get("REDIS_URL"):
     from .bus import RedisStreamBus

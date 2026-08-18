@@ -14,7 +14,7 @@ import tempfile
 import time
 import unittest
 
-from services.api.sqlite_store import SQLiteStore
+from tests.pgfixture import store_for
 from services.api.store import InMemoryStore
 
 NOW = time.time()
@@ -87,7 +87,7 @@ class TestSQLiteRetention(RetentionContract, unittest.TestCase):
         os.close(fd)
         os.remove(path)
         self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
-        return SQLiteStore(path)
+        return store_for(path)
 
     def test_live_zone_cache_is_dropped_after_a_delete(self):
         """latest_zone_states() caches for 1s. Pruning underneath a warm cache

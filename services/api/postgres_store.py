@@ -1,9 +1,9 @@
-"""Postgres-backed store. Same behaviour as SQLiteStore, different engine.
+"""Postgres-backed store. The only durable backend.
 
-Written against sqlite_store.py method for method, because that file — not the
-old hand-written ddl.sql — is the only authority on what this system actually
-stores and how it behaves. Every non-obvious rule in there was learned from a
-bug, and re-deriving them here would mean re-finding them:
+It began as a transcription of sqlite_store.py, method for method, because that
+file was then the only authority on what this system stores and how it behaves.
+Every non-obvious rule below was learned from a bug there, and the comments keep
+that provenance even though the file itself is gone:
 
   * zone_live is keyed on (camera_id, zone_id). Zone ids are unique only within
     a camera, so keying on the id alone makes two cameras' zones overwrite each
@@ -18,24 +18,22 @@ bug, and re-deriving them here would mean re-finding them:
   * delete_alerts collects frame refs BEFORE deleting, or the JPEGs are
     orphaned on disk with nothing left pointing at them.
 
-tests/test_store_conformance.py runs one suite against all three backends so
-these stay true rather than being true on the day they were written.
+tests/test_store_conformance.py runs one suite against this and InMemoryStore so
+these stay true rather than being true on the day they were written. Since
+SQLite was removed that suite is also the only thing standing between
+ddl_pg.sql and drift — it exercises every method here against a schema built
+from that file, so a write referencing a column the DDL lacks fails loudly.
 
-DIFFERENCES FROM SQLITE THAT ARE DELIBERATE
+A connection POOL rather than one connection behind a lock: serialising every
+query was the concurrency ceiling this backend exists to lift.
 
-A connection POOL rather than one connection behind a threading.Lock. The lock
-in SQLiteStore exists because a single sqlite3 connection is not safely shared;
-serialising every query through it is the concurrency ceiling this migration is
-meant to lift, so copying that pattern here would move to Postgres and keep the
-bottleneck.
+Timestamps stay DOUBLE PRECISION epoch seconds. The application speaks epoch end
+to end; converting at the storage boundary means converting back on every read,
+and every conversion is a chance to lose a timezone. The analytics views expose
+a real timestamptz for SQL clients, which is where it is wanted.
 
-Timestamps stay DOUBLE PRECISION epoch seconds. The application speaks epoch
-end to end; converting at the storage boundary means converting back on every
-read, and every conversion is a chance to lose a timezone. The analytics views
-expose a real timestamptz for SQL clients, which is where it is wanted.
-
-Schema comes from services/api/ddl_pg.sql, generated from the live SQLite
-schema by scripts/gen_pg_ddl.py.
+Schema comes from services/api/ddl_pg.sql, which is hand-maintained and is the
+authority. It applies at startup and every statement in it is idempotent.
 """
 
 import json
@@ -54,8 +52,8 @@ def _row(cur) -> List[dict]:
 
 
 class PostgresStore(Store):
-    # Kept well under the 5s aggregation window, as in SQLiteStore, so the
-    # numbers are never meaningfully older than they would be anyway.
+    # Kept well under the 5s aggregation window, so the numbers are never
+    # meaningfully older than they would be anyway.
     _ZONE_CACHE_TTL = 1.0
 
     def __init__(self, dsn: str, min_size: int = 1, max_size: int = 8,
@@ -79,7 +77,7 @@ class PostgresStore(Store):
     def _apply_schema(self) -> None:
         if not os.path.exists(DDL_PATH):
             raise RuntimeError(
-                f"{DDL_PATH} missing — run scripts/gen_pg_ddl.py to generate it")
+                f"{DDL_PATH} missing - it is the schema authority and must be present")
         with open(DDL_PATH) as fh:
             ddl = fh.read()
         with self._pool.connection() as conn:

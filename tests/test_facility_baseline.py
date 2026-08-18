@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from finblade.presence import DoorPolicy, FacilityRoster, apply_event  # noqa: E402
 from services.api.service import IngestService                        # noqa: E402
-from services.api.sqlite_store import SQLiteStore                     # noqa: E402
+from tests.pgfixture import store_for
 from services.api.store import InMemoryStore                          # noqa: E402
 
 ZONES = {"IN": "ENTRANCE", "OUT": "EXIT", "LOBBY": "MONITORED"}
@@ -378,27 +378,27 @@ class BaselineSurvivesRestartTest(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def test_baseline_and_roster_both_come_back(self):
-        store = SQLiteStore(self.db)
+        store = store_for(self.db)
         svc = IngestService(store)
         svc.set_facility_baseline({"count": 17})
         svc.roster.admit(GP, 5.0, "IN")
         svc._flush_presence(force=True)
         store.close() if hasattr(store, "close") else None
 
-        restarted = IngestService(SQLiteStore(self.db))
+        restarted = IngestService(store_for(self.db))
         self.assertEqual(restarted.roster.baseline, 17)
         self.assertEqual(restarted.roster.observed(), 1)
         self.assertEqual(restarted.roster.occupancy(), 18)
 
     def test_a_drained_baseline_stays_drained(self):
-        store = SQLiteStore(self.db)
+        store = store_for(self.db)
         svc = IngestService(store)
         svc.set_facility_baseline({"count": 3})
         svc.roster.discharge("gp_someone_we_never_admitted", 10.0)
         svc._flush_presence(force=True)
         store.close() if hasattr(store, "close") else None
 
-        restarted = IngestService(SQLiteStore(self.db))
+        restarted = IngestService(store_for(self.db))
         self.assertEqual(restarted.roster.baseline, 2)
         self.assertEqual(restarted.roster.stats["baseline_discharged"], 1)
 

@@ -1,4 +1,4 @@
-"""One suite, three backends. InMemoryStore, SQLiteStore, PostgresStore.
+"""One suite, two backends. InMemoryStore and PostgresStore.
 
 The application picks its store from an environment variable, so a behaviour
 that differs between them is a bug that only appears in one deployment. This
@@ -20,7 +20,6 @@ import tempfile
 import time
 import unittest
 
-from services.api.sqlite_store import SQLiteStore
 from services.api.store import InMemoryStore
 
 # Relative to now, and evaluated PER TEST rather than once at import.
@@ -566,17 +565,6 @@ class TestInMemoryStore(StoreContract, unittest.TestCase):
         return InMemoryStore()
 
 
-class TestSQLiteStore(StoreContract, unittest.TestCase):
-    def make_store(self):
-        fd, path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
-        return SQLiteStore(path)
-
-
-@unittest.skipIf(PG_DSN is None,
-                 "no Postgres: set FINBLADE_TEST_DSN or run "
-                 "scripts/pg_local_install.sh")
 class TestPostgresStore(StoreContract, unittest.TestCase):
     """Runs against a real server on a scratch schema.
 

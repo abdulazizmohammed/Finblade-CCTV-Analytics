@@ -13,7 +13,7 @@ import unittest
 
 from finblade.events import ZONE_ENTRY, ZONE_TRANSITION, new_event, validate_event
 from services.api.service import IngestService
-from services.api.sqlite_store import SQLiteStore
+from tests.pgfixture import store_for
 
 SITE = "SITE-DXB-01"
 GREF_A = "gp_aaaaaaaaaaaaaaaa"
@@ -51,7 +51,7 @@ class TestStoredAndQueryable(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        self.store = SQLiteStore(self.path)
+        self.store = store_for(self.path)
         self.svc = IngestService(self.store)
 
     def tearDown(self):
@@ -114,7 +114,7 @@ class TestStoredAndQueryable(unittest.TestCase):
         # The migration path: a store opened again over the same file must not
         # lose the column or the rows.
         self.post("CAM-01", 100.0, "a", GREF_A, zone_from="A", zone_to="B")
-        reopened = SQLiteStore(self.path)
+        reopened = store_for(self.path)
         self.assertEqual(len(reopened.list_events(0, 9e12, global_ref=GREF_A)), 1)
 
 

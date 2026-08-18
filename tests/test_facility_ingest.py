@@ -14,7 +14,7 @@ from finblade.events import (
     ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, new_event,
 )
 from services.api.service import IngestService
-from services.api.sqlite_store import SQLiteStore
+from tests.pgfixture import store_for
 
 CAM = "CAM-A-01"
 SITE = "SITE-DXB-01"
@@ -35,7 +35,7 @@ class FacilityCase(unittest.TestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        self.store = SQLiteStore(self.path)
+        self.store = store_for(self.path)
         self.store.save_zones(CAM, ZONES)
         self.svc = IngestService(self.store)
         self.t = 1000.0
@@ -181,7 +181,7 @@ class TestPersistence(FacilityCase):
         self.assertEqual(self.occupancy(), 2)
 
         # Restart: brand-new store handle and service over the same file.
-        reopened = SQLiteStore(self.path)
+        reopened = store_for(self.path)
         svc2 = IngestService(reopened)
         state = svc2.facility_state(now=self.t)
         self.assertEqual(state["occupancy"], 2, "occupancy must not reset to zero")
@@ -192,7 +192,7 @@ class TestPersistence(FacilityCase):
 
     def test_a_restored_roster_still_discharges(self):
         self.walk_in("pr_1")
-        svc2 = IngestService(SQLiteStore(self.path))
+        svc2 = IngestService(store_for(self.path))
         self.t += 10.0
         evt = new_event(ZONE_TRANSITION, CAM, SITE, self.t,
                         person_ref=self._anon("pr_1"),

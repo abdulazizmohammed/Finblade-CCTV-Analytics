@@ -6,11 +6,21 @@
 # from linking two similar-looking strangers.
 #
 # ---------------------------------------------------------------------------
-# NEEDS A HUMAN. The numbers below are placeholders, not survey data.
+# TWO SITES SHARE THIS FILE and are at different stages.
+#
+#   CAM-01..CAM-06   test site. SURVEYED 2026-08-18 - every one of its 15 pairs
+#                    is described, with paced times. Not placeholders.
+#   CAM-ST1-*        dev box. Overlaps declared from the operator's own area
+#                    mapping; its transits are still unsurveyed and fall through
+#                    to default_transit.
+#
 # Wrong transit times fail in two directions, both bad:
 #   min too LOW  -> strangers get linked (two people become one on the dashboard)
 #   min too HIGH -> real handovers are missed (one person becomes two)
-# Pace the walk between each camera pair and put the real seconds in.
+#
+# Of the two, min-too-high is the one that hides: the match is refused on
+# physics before appearance is ever scored, so the logs show a healthy system
+# quietly counting one person as two. Pace the walk; do not estimate upward.
 # ---------------------------------------------------------------------------
 
 # Pairs whose views share floor area. The same person is legitimately visible
@@ -91,11 +101,131 @@ overlapping_pairs:
 # Pairs separated by a walk. min_seconds is the fastest a person could
 # physically cover it; max_seconds is the longest gap still worth treating as
 # one continuous journey rather than a fresh visit.
-transits: []
-  # - a: CAM-A-01
-  #   b: CAM-B-02
-  #   min_seconds: 12      # measured: brisk walk, lobby -> terminal
-  #   max_seconds: 90      # beyond this, treat as a new visit
+transits:
+  # =========================================================================
+  # TEST SITE (CAM-01..CAM-06), surveyed by the operator 2026-08-18.
+  #
+  #   CAM-01  GF  lift lobby and stair foot, whole floor visible
+  #   CAM-02  1F  lift lobby and stair foot
+  #   CAM-03  GF  entrance/exit door and reception lobby
+  #   CAM-04  GF  reception sitting        (overlaps CAM-03 on the entrance mat)
+  #   CAM-05  2F  passage
+  #   CAM-06  2F  lift lobby and stair head
+  #
+  # min_seconds IS THE FASTEST ROUTE, NOT THE USUAL ONE. Where stairs and a lift
+  # both connect two floors the minimum is whichever is quicker, and it is
+  # shaved a couple of seconds below the paced figure. Erring low costs a little
+  # precision; erring high rejects a real handover as physically impossible, and
+  # that failure is silent - the person simply becomes two people.
+  #
+  # WHY INDIRECT PAIRS ARE DECLARED TOO. Identity resolution on this site
+  # currently runs 0.1-5.5% per camera, so a person walking GF -> 2F is usually
+  # NOT re-identified at the intermediate camera. The match that has to succeed
+  # is the end-to-end one, and if only adjacent pairs were declared every such
+  # journey would fall through to the permissive default instead of being
+  # gated. Their minima are the shortest path through the adjacency graph.
+  #
+  # max_seconds is roughly three times the peak wait, kept under ttl_seconds
+  # (300) so the gallery never expires an identity before its window closes. If
+  # real journeys start exceeding these, raise BOTH together.
+  # =========================================================================
+
+  # --- direct routes, paced -------------------------------------------------
+
+  # GF <-> 1F. Stairs 12s brisk; lift typically 20s, up to 50s at peak.
+  - a: CAM-01
+    b: CAM-02
+    min_seconds: 10
+    max_seconds: 150
+
+  # GF <-> 2F. Stairs 14s brisk; lift typically 40s, up to 90s at peak. The
+  # longest single hop in the building, hence the widest window.
+  - a: CAM-01
+    b: CAM-06
+    min_seconds: 12
+    max_seconds: 240
+
+  # 1F <-> 2F. Lift 10s BEATS the stairs at 15s here, so the lift sets the
+  # minimum - the one pair in the building where it does.
+  - a: CAM-02
+    b: CAM-06
+    min_seconds: 8
+    max_seconds: 120
+
+  # Same floor, 2F. Explicitly NOT overlapping: a 6s walk between two views.
+  - a: CAM-05
+    b: CAM-06
+    min_seconds: 5
+    max_seconds: 120
+
+  # Across the ground-floor lobby, entrance to lift.
+  - a: CAM-01
+    b: CAM-03
+    min_seconds: 10
+    max_seconds: 120
+
+  # --- indirect routes, minima derived from the shortest path ---------------
+
+  # Lift lobby <-> reception sitting. Via CAM-03, which overlaps CAM-04, so the
+  # second leg costs nothing: 10 + 0.
+  - a: CAM-01
+    b: CAM-04
+    min_seconds: 10
+    max_seconds: 120
+
+  # GF lift <-> 2F passage, via CAM-06: 12 + 5.
+  - a: CAM-01
+    b: CAM-05
+    min_seconds: 17
+    max_seconds: 240
+
+  # 1F <-> entrance, via CAM-01: 10 + 10.
+  - a: CAM-02
+    b: CAM-03
+    min_seconds: 20
+    max_seconds: 180
+
+  # 1F <-> reception sitting. Same path as above; CAM-03/CAM-04 overlap.
+  - a: CAM-02
+    b: CAM-04
+    min_seconds: 20
+    max_seconds: 180
+
+  # 1F <-> 2F passage, via CAM-06: 8 + 5.
+  - a: CAM-02
+    b: CAM-05
+    min_seconds: 13
+    max_seconds: 180
+
+  # Entrance <-> 2F passage. The operator states there is NO route that avoids
+  # CAM-06 and CAM-01, so the minimum is the full chain: 10 + 12 + 5.
+  - a: CAM-03
+    b: CAM-05
+    min_seconds: 27
+    max_seconds: 270
+
+  # Entrance <-> 2F lift, via CAM-01: 10 + 12.
+  - a: CAM-03
+    b: CAM-06
+    min_seconds: 22
+    max_seconds: 240
+
+  # Reception sitting <-> 2F passage. As CAM-03 <-> CAM-05; the overlap is free.
+  - a: CAM-04
+    b: CAM-05
+    min_seconds: 27
+    max_seconds: 270
+
+  # Reception sitting <-> 2F lift.
+  - a: CAM-04
+    b: CAM-06
+    min_seconds: 22
+    max_seconds: 240
+
+  # All 15 pairs of CAM-01..CAM-06 are now described: 14 transits above plus the
+  # CAM-03/CAM-04 overlap. allow_unknown_pairs stays TRUE all the same, because
+  # this file also serves the dev box (CAM-ST1-*), whose pairs are only partly
+  # surveyed. Setting it false would reject every undeclared pair there.
 
   # NEEDS A HUMAN — the routes between the three ST1 areas. A person can walk
   # Entrance-ST1 -> Room1 -> Room2, so these pairs are real transits and their

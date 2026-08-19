@@ -436,6 +436,37 @@ class StoreContract:
         self.assertEqual(1, len(got))
         self.assertEqual("Second", got[0]["name"])
 
+    def test_a_zone_keeps_its_room_across_a_save(self):
+        """The editor sends physical_area_id with every zone, and save_zones
+        DELETEs the camera's set and reinserts it. PostgresStore left the column
+        out of that INSERT, so every zone edit silently unmapped the room: two
+        cameras on one reception went back to counting it twice, and the editor
+        showed 'none' as though nobody had ever set it.
+
+        Nothing caught it because the only test touching the column checked its
+        value AFTER delete_area(), which is None either way."""
+        self.store.save_area({"area_id": "RECEPTION", "name": "Reception"})
+        self.store.save_zones("CAM-03", [{"zone_id": "ENT-01",
+                                          "physical_area_id": "RECEPTION"}])
+        got = self.store.list_zones("CAM-03")
+        self.assertEqual("RECEPTION", got[0].get("physical_area_id"))
+
+    def test_re_saving_a_zone_does_not_lose_the_room(self):
+        """The failure as an operator meets it: map the room, then change
+        anything else about the zone and the mapping is gone."""
+        self.store.save_area({"area_id": "RECEPTION", "name": "Reception"})
+        self.store.save_zones("CAM-03", [{"zone_id": "ENT-01", "zone_name": "Reception",
+                                          "physical_area_id": "RECEPTION"}])
+        self.store.save_zones("CAM-03", [{"zone_id": "ENT-01", "zone_name": "Front Desk",
+                                          "physical_area_id": "RECEPTION"}])
+        got = self.store.list_zones("CAM-03")
+        self.assertEqual("Front Desk", got[0].get("zone_name"))
+        self.assertEqual("RECEPTION", got[0].get("physical_area_id"))
+
+    def test_a_zone_with_no_room_stays_unmapped(self):
+        self.store.save_zones("CAM-03", [{"zone_id": "ENT-01"}])
+        self.assertIsNone(self.store.list_zones("CAM-03")[0].get("physical_area_id"))
+
     def test_deleting_an_area_detaches_its_zones(self):
         # A zone left pointing at a deleted area drops out of every area total
         # while still looking mapped. Detached, it falls back to single-camera

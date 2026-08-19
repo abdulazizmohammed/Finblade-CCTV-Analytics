@@ -326,7 +326,7 @@ function render(){
       zones.splice(i,1); draw(); render();          // remove locally...
       const ok=await persistZones();                // ...and persist so it can't reappear
       setStatus(ok ? `deleted ${zid} — saved (applies live)`
-                   : `deleted ${zid} locally but SAVE FAILED — cannot reach the API`);
+                   : `deleted ${zid} on screen only — NOT SAVED: ${saveFailureReason()}`);
     });
     box.querySelectorAll('.edit').forEach(b=> b.onclick=()=>editZone(+b.dataset.i));
     // Map/unmap a zone to a physical area straight from its card.
@@ -436,8 +436,21 @@ async function persistZones(){
   try{
     const r=await fetch(`${api}/api/v1/zones`, {method:'POST',
       headers:{'Content-Type':'application/json'}, body:JSON.stringify(zonesPayload(cam))});
+    // Remember WHY it failed. Returning a bare boolean made every failure read
+    // as "cannot reach the API", which sent people looking at the network when
+    // the real answer was a read-only key answering 403 instantly.
+    lastSaveStatus = r.status;
     return r.ok;
-  }catch(e){ return false; }
+  }catch(e){ lastSaveStatus = 0; return false; }
+}
+
+// 0 = never reached the server. Anything else is what the server said.
+let lastSaveStatus = null;
+function saveFailureReason(){
+  if(lastSaveStatus === 403) return 'the API key is READ-ONLY — paste the full key';
+  if(lastSaveStatus === 401) return 'the API key is missing or wrong';
+  if(lastSaveStatus === 0)   return 'cannot reach the API';
+  return `the API returned ${lastSaveStatus}`;
 }
 
 async function saveServer(){
@@ -449,7 +462,7 @@ async function saveServer(){
   setStatus(`saving ${zones.length} zone(s) to ${cam}…`);
   const ok=await persistZones();
   setStatus(ok ? `saved ${zones.length} zone(s) to ${cam} — applies live in a few seconds`
-               : 'save failed — is the API running on :8000?');
+               : `save failed — ${saveFailureReason()}`);
 }
 
 async function loadServer(){

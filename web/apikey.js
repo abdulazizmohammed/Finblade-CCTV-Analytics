@@ -43,14 +43,38 @@
       init = Object.assign({}, init, { headers: h });
     }
     return nativeFetch(input, init).then(function (r) {
+      if (!r || url.indexOf('/api/') < 0 || prompting) return r;
+
       // 401 means the key is missing or wrong. Ask once, then reload — retrying
       // silently would leave the page half-populated with stale data.
-      if (r && r.status === 401 && !prompting) {
+      if (r.status === 401) {
         prompting = true;
         var entered = window.prompt(
           'This FinBlade API requires a key.\nPaste it to continue:',
           window.fbGetKey());
         if (entered) { window.fbSetKey(entered.trim()); location.reload(); }
+        else { prompting = false; }
+      }
+
+      // 403 is the READ-ONLY key on a write, and it used to fall through here
+      // untouched. That was the worst possible outcome: every GET succeeds, so
+      // the page looks healthy and fully populated, while saving silently does
+      // nothing. The zone editor reported it as "cannot reach the API" —
+      // blaming the network when the API had answered immediately and
+      // correctly. It cost a long time to find from the far end.
+      //
+      // The API returns 403 only for scope, so there is no body to inspect.
+      // Offer to swap the key: a read-only key on a write is the same
+      // credentials problem as 401, wearing a different number.
+      if (r.status === 403) {
+        prompting = true;
+        var full = window.prompt(
+          'That key is READ-ONLY (integration scope).\n\n' +
+          'It can display everything but cannot save changes — zone edits, ' +
+          'deletions and acknowledgements will not stick.\n\n' +
+          'Paste the full API key to continue, or Cancel to keep browsing:',
+          '');
+        if (full) { window.fbSetKey(full.trim()); location.reload(); }
         else { prompting = false; }
       }
       return r;

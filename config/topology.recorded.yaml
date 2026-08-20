@@ -38,9 +38,33 @@
 # Minimums sit below the observed transits, not at them - what was measured is
 # the fastest anyone was seen to do it, not the fastest it can be done.
 #
-#     hop              observed    minimum set
-#     CAM-03 -> 04      22-24s         12s
-#     CAM-04 -> 05      20-22s         10s
+#     hop              observed    min     max
+#     CAM-03 -> 04      22-24s        12s     50s
+#     CAM-04 -> 05      20-22s        10s     50s
+#     ground -> 05      ~42s          25s    100s
+#
+# THE MAXIMUMS MATTER AS MUCH AS THE MINIMUMS, which took a concrete failure to
+# see. They were 150s and 240s - guesses made to stop the gate rejecting
+# everything while the rest was tuned. A maximum far above the real transit does
+# not simply admit the truth; it admits everyone ELSE as well, and then
+# appearance has to separate people that physics should never have offered.
+#
+# The CAM-04 arrival that broke the chain had two candidates:
+#
+#     from CAM-03  dt 27.8s  score 0.623   <- the walker
+#     from CAM-01  dt 55.5s  score 0.565   <- somebody else on the ground floor
+#     margin 0.058, requires 0.060 -> both refused, new identity minted
+#
+# At a 50s maximum the 55.5s candidate is too_slow and never reaches scoring.
+# The walker is then the ONLY survivor, the margin rule is waived because there
+# is nothing to be ambiguous against, and the link is made on the score alone.
+#
+# Note what this is NOT: it is not a lower threshold, a smaller margin, or a
+# bonus for the "right" camera. CAM-01 and CAM-03 overlap - they are one place
+# seen twice - so no adjacency rule can tell them apart, and both are equally
+# adjacent to CAM-04. What separates them is TIME: 27.8s matches a 22-24s walk,
+# 55.5s does not. The gate already knows how to use that; it just needed to be
+# told the truth about the walk.
 
 overlapping_pairs:
   - {a: CAM-01, b: CAM-02}
@@ -49,18 +73,18 @@ overlapping_pairs:
 
 transits:
   # Ground floor to the first: the only way up that these cameras see.
-  - {a: CAM-01, b: CAM-04, min_seconds: 12, max_seconds: 150}
-  - {a: CAM-02, b: CAM-04, min_seconds: 12, max_seconds: 150}
-  - {a: CAM-03, b: CAM-04, min_seconds: 12, max_seconds: 150}
+  - {a: CAM-01, b: CAM-04, min_seconds: 12, max_seconds: 50}
+  - {a: CAM-02, b: CAM-04, min_seconds: 12, max_seconds: 50}
+  - {a: CAM-03, b: CAM-04, min_seconds: 12, max_seconds: 50}
 
   # First floor to the second.
-  - {a: CAM-04, b: CAM-05, min_seconds: 10, max_seconds: 150}
+  - {a: CAM-04, b: CAM-05, min_seconds: 10, max_seconds: 50}
 
   # Ground floor to the second has to pass the first, so it cannot be quicker
-  # than the two legs together.
-  - {a: CAM-01, b: CAM-05, min_seconds: 25, max_seconds: 240}
-  - {a: CAM-02, b: CAM-05, min_seconds: 25, max_seconds: 240}
-  - {a: CAM-03, b: CAM-05, min_seconds: 25, max_seconds: 240}
+  # than the two legs together - nor much slower than both of them.
+  - {a: CAM-01, b: CAM-05, min_seconds: 25, max_seconds: 100}
+  - {a: CAM-02, b: CAM-05, min_seconds: 25, max_seconds: 100}
+  - {a: CAM-03, b: CAM-05, min_seconds: 25, max_seconds: 100}
 
 # Every pair of the five is described above. Left permissive because the dev box
 # also carries CAM-06 and the CAM-ST1-* fixtures, and refusing them outright

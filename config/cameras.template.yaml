@@ -7,8 +7,8 @@ camera_id: UI-CAM
 site_id: SITE-UI
 
 source: ""              # overridden with --source (the RTSP URL / file)
-frame_width: 1280
-frame_height: 720
+frame_width: 2688
+frame_height: 1520
 
 model_path: models/yolo11s.pt
 device: cuda            # NVIDIA GPU; falls back to CPU if unavailable

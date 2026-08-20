@@ -781,6 +781,32 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         last_seq = seq
         vnow = now                           # wall-clock epoch: stamps events/state
 
+        # ADOPT THE REAL GEOMETRY FROM A REAL FRAME, not just from the probe at
+        # startup. The probe opens the source before anything else happens, and
+        # if the stream is not publishing yet it returns 0x0 and is skipped -
+        # leaving cfg.frame_width/height at whatever the YAML guessed. Zones are
+        # normalized 0-1, so the wrong denominator puts every polygon in the
+        # wrong place: with a 1280x720 config against a 2688x1520 source they
+        # land squeezed into the top-left 48% of the picture, which reads as
+        # "the editor saved my zones wrong" and sends you to the wrong file.
+        #
+        # It happens whenever the workers start BEFORE the cameras publish,
+        # which is exactly what you want to do when the sources are recordings
+        # you need to begin in step. So take the size from a frame we actually
+        # decoded, and rebuild the zones if it disagrees.
+        _fh, _fw = frame.shape[:2]
+        if _fw > 0 and _fh > 0 and (_fw, _fh) != (cfg.frame_width, cfg.frame_height):
+            log.warning("%s: frames are %dx%d but zones were scaled to %dx%d - "
+                        "rebuilding zones against the real geometry",
+                        cfg.camera_id, _fw, _fh, cfg.frame_width, cfg.frame_height)
+            cfg.frame_width, cfg.frame_height = _fw, _fh
+            _raw_now = _fetch_zones_raw(cfg.camera_id)
+            cfg.zones = (_zones_from_raw(_raw_now, _fw, _fh)
+                         if _raw_now else list(config_zones))
+            restricted_zone_ids = {z.zone_id for z in cfg.zones if z.restricted}
+            loiter_zone = {z.zone_id: z.loitering_threshold_sec for z in cfg.zones}
+            zone_sig = _zone_sig(_raw_now) if _raw_now else None
+
         if not last_still:
             # The zone editor draws on this still, so if it never lands the
             # operator cannot create zones at all — and without zones there is no

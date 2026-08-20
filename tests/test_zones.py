@@ -149,3 +149,48 @@ class TestZoneModel(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNormalizedPolygonsNeedTheRightFrame(unittest.TestCase):
+    """A normalized polygon means nothing without the frame it is scaled to.
+
+    The zone editor stores 0-1 coordinates precisely so a zone survives a change
+    of resolution. The flip side is that the DENOMINATOR is load-bearing: scale
+    the same polygon by the wrong frame size and every corner moves.
+
+    This is not hypothetical. The camera worker probes its source once at
+    startup, and when the source is not publishing yet the probe returns 0x0 and
+    the configured guess stands. With a 1280x720 guess against a 2688x1520
+    stream, zones drew into the top-left 47% of the picture - which looks
+    exactly like the editor having saved them wrong, and sends you to the wrong
+    file entirely. The worker now re-adopts the size from the first frame it
+    actually decodes.
+    """
+
+    POLY = [[0.185, 0.20], [0.997, 0.20], [0.997, 0.80], [0.185, 0.80]]
+
+    def zone(self, w, h):
+        return zone_from_dict({"zone_id": "Z", "zone_name": "Entrance",
+                               "zone_type": "MONITORED",
+                               "normalized_polygon": self.POLY}, w, h)
+
+    def test_the_frame_size_decides_where_the_zone_lands(self):
+        small = self.zone(1280, 720).polygon
+        big = self.zone(2688, 1520).polygon
+        self.assertNotEqual(small, big)
+        # The same right-hand edge, on the two frames.
+        self.assertAlmostEqual(0.997 * 1280, small[1][0], delta=1)
+        self.assertAlmostEqual(0.997 * 2688, big[1][0], delta=1)
+
+    def test_the_wrong_frame_confines_the_zone_to_a_corner(self):
+        """The symptom, stated as a number: scaled to 1280 but drawn on a
+        2688-wide frame, a zone spanning almost the full width covers less than
+        half of it."""
+        small = self.zone(1280, 720).polygon
+        widest = max(p[0] for p in small)
+        self.assertLess(widest / 2688.0, 0.5)
+
+    def test_the_right_frame_spans_it(self):
+        big = self.zone(2688, 1520).polygon
+        widest = max(p[0] for p in big)
+        self.assertGreater(widest / 2688.0, 0.95)

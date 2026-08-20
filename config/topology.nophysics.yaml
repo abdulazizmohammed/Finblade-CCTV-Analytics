@@ -1,0 +1,41 @@
+# DIAGNOSTIC ONLY - physics disabled. Do not deploy behind this.
+#
+# Every pair feasible at any elapsed time, so the topology gate can never reject
+# a candidate and appearance alone decides every match. The question it answers
+# is narrow and worth answering: can OSNet carry this walk unaided, or is the
+# gate the thing holding it together?
+#
+#   5/5 here  -> ReID is sufficient and the surveyed windows were only pruning
+#   <5/5 here -> appearance cannot separate these people on its own, and the
+#                gate is contributing rather than obstructing
+#
+# GATE 1B GOES WITH IT, WITHOUT BEING MENTIONED. The registry refuses a
+# candidate that is actively bound on another camera only when that pair has a
+# transit MINIMUM ABOVE ZERO - a zero minimum is the topology declining to claim
+# a distance, and you cannot call simultaneous presence impossible without one.
+# Every minimum here is zero, so gate 1b is already inert. Nothing to switch off
+# separately.
+#
+# GATE 1 STAYS: two live tracks on ONE camera are still refused. That is not
+# physics from a config file, it is one body not being in two places in the same
+# frame, and turning it off would only invite the registry to merge people
+# standing next to each other.
+#
+# Note the side effect on retention: it is derived from the slowest journey the
+# gate will accept, so a 9999s window pushes it to the ceiling
+# (max_retention_seconds, 1800s). Identities therefore survive many loops of the
+# recordings, which is another reason this is a diagnostic and not a setting.
+
+overlapping_pairs: []
+transits: []
+
+default_transit:
+  min_seconds: 0
+  max_seconds: 9999
+
+same_camera_max_seconds: 99999.0
+overlap_tolerance_seconds: 5.0
+allow_unknown_pairs: true
+
+matching:
+  bank_capacity: 8

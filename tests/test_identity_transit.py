@@ -163,18 +163,41 @@ class TestNoOneIsInTwoPlacesAtOnce(unittest.TestCase):
         self.assertNotEqual(a.global_ref, b.global_ref)
         self.assertGreaterEqual(r.stats["rejected_simultaneous"], 1)
 
-    def test_it_holds_when_the_topology_does_not_describe_the_pair(self):
-        """THE GAP THIS CLOSES. With allow_unknown_pairs the fallback transit
-        minimum is ZERO, so dt near zero is 'feasible' and the physics gate lets
-        a simultaneous sighting through. A camera added from the UI is in no
-        topology file, so this was the default for every new camera."""
+    def test_a_zero_minimum_buys_no_exclusion(self):
+        """WHERE THE GUARANTEE COMES FROM, and where it does not.
+
+        An earlier version excluded here too, reasoning that a camera missing
+        from the topology should not be able to steal an identity from someone
+        plainly standing in front of another camera. The intent was right; the
+        evidence was not there to act on. A zero transit minimum is not a claim
+        that two cameras are adjacent - it is the topology declining to claim
+        anything, which is the default for every unsurveyed pair.
+
+        Turning "unknown" into "impossible" refused real handovers. Measured on
+        the recorded rig: rejected_simultaneous 7 against matched 7, blocking as
+        many links as the matcher managed to make, because a track that has not
+        been reaped yet still counts as live on the previous camera.
+
+        So the rule now rests on the same evidence as the rest of the physics.
+        Survey the pair and it bites (see the test above). Leave it unsurveyed
+        and the system declines to invent a distance it was never told."""
         permissive = CameraTopology(allow_unknown_pairs=True,
                                     default_transit=(0.0, 120.0))
         r = GlobalIdentityRegistry(topology=permissive, ttl_seconds=300.0)
         a = r.resolve("CAM-01", 1, bank(PERSON, PERSON), now=1000.0)
         b = r.resolve("CAM-NEW", 2, bank(PERSON, PERSON), now=1000.0)
-        self.assertNotEqual(a.global_ref, b.global_ref,
-                            "a lookalike on an undeclared camera stole the id")
+        self.assertEqual(a.global_ref, b.global_ref)
+        self.assertEqual(0, r.stats["rejected_simultaneous"])
+
+    def test_a_surveyed_minimum_does(self):
+        """The same two sightings, on a pair somebody measured. Now the
+        topology genuinely says they are apart, so simultaneous is refused."""
+        surveyed = CameraTopology(transits={("CAM-01", "CAM-NEW"): (10.0, 200.0)},
+                                  allow_unknown_pairs=True)
+        r = GlobalIdentityRegistry(topology=surveyed, ttl_seconds=300.0)
+        a = r.resolve("CAM-01", 1, bank(PERSON, PERSON), now=1000.0)
+        b = r.resolve("CAM-NEW", 2, bank(PERSON, PERSON), now=1000.0)
+        self.assertNotEqual(a.global_ref, b.global_ref)
         self.assertGreaterEqual(r.stats["rejected_simultaneous"], 1)
 
     def test_overlapping_cameras_are_exempt_because_both_can_see_them(self):

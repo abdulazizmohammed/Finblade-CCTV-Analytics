@@ -111,6 +111,9 @@ class GlobalIdentity:
     cameras_seen: Dict[str, float] = field(default_factory=dict)
     zones_visited: List[Tuple[str, str, float]] = field(default_factory=list)
     active: Set[Binding] = field(default_factory=set)
+    # Bank size when this identity last re-tried a match. See
+    # GlobalIdentityRegistry.resolve()'s deferred re-match.
+    retry_at_n: int = 0
 
     def note_seen(self, camera_id: str, now: float,
                   zone_id: Optional[str] = None) -> None:
@@ -168,6 +171,15 @@ class GlobalIdentityRegistry:
         # a five-minute privacy bound into an all-day one. ttl_seconds is the
         # floor, this is the ceiling, and the topology moves within them.
         max_retention_seconds: float = 1800.0,
+        # Evidence at which a single-camera identity earns a second opinion.
+        # A track decides as soon as it has min_samples_to_resolve crops -
+        # three, typically - and the binding is sticky, so that first guess
+        # stands for the rest of the track's life however much better the
+        # evidence gets. Measured on the recorded rig, that is what splits a
+        # walk: the reception cameras form one identity, the upper floors
+        # another, each correct in isolation, and nothing ever reconsiders.
+        # 0 disables the re-match entirely.
+        retry_min_bank: int = 4,
         max_identities: int = 2000,
         bank_capacity: int = 5,
         session_salt: Optional[str] = None,
@@ -183,6 +195,7 @@ class GlobalIdentityRegistry:
         self.transit_grace = max(1.0, float(transit_grace))
         self.max_retention_seconds = max(float(ttl_seconds),
                                          float(max_retention_seconds))
+        self.retry_min_bank = int(retry_min_bank)
         self.max_identities = max_identities
         self.bank_capacity = bank_capacity
         self.session_salt = session_salt or secrets.token_hex(16)
@@ -218,6 +231,9 @@ class GlobalIdentityRegistry:
                       # Ambiguities resolved by folding two gallery records of
                       # the same person together instead of splitting again.
                       "consolidated": 0,
+                      # Provisional single-camera identities that a
+                      # second opinion later folded into a real match.
+                      "rematched": 0,
                       # Candidates evaluated for a camera pair that appears in
                       # no topology entry. Non-zero means the topology file does
                       # not cover the cameras actually running, so those pairs
@@ -319,6 +335,38 @@ class GlobalIdentityRegistry:
             self._exclusive.setdefault(ref, set()).add(other)
             self._exclusive.setdefault(other, set()).add(ref)
 
+    def _cannot_be_both(self, other_cam: str, this_cam: str) -> bool:
+        """Is being live on both cameras at once physically impossible?
+
+        Only the topology can say. Three cases:
+
+          same camera        handled by gate 1, not here
+          overlapping        both see the same floor, so simultaneous is the
+                             EXPECTED case - never exclude
+          a real walk        a positive transit minimum means the topology has
+                             measured a distance. Being on both at once
+                             contradicts it, so exclude.
+
+        A ZERO minimum is the case worth being careful about, and the first
+        version of this got it wrong by excluding there too. A zero minimum is
+        not a claim that the cameras are adjacent; it is the topology declining
+        to claim anything, which is the default for any pair nobody surveyed.
+        Turning "unknown" into "impossible" refused real handovers - measured on
+        the recorded rig at rejected_simultaneous 7 against matched 7, blocking
+        as many links as the matcher was making.
+
+        The protection this exists for still holds wherever it can be justified:
+        a surveyed site has real minimums, and there the rule bites. Somewhere
+        unsurveyed it stays silent rather than inventing physics. Survey the
+        pair to get the guarantee.
+        """
+        if other_cam == this_cam:
+            return False
+        if self.topology.is_overlapping(other_cam, this_cam):
+            return False
+        lo, _hi = self.topology.transit_window(other_cam, this_cam)
+        return lo > 0
+
     def _are_exclusive(self, a: str, b: str) -> bool:
         return b in self._exclusive.get(a, ())
 
@@ -358,8 +406,28 @@ class GlobalIdentityRegistry:
                 # camera holds the binding cannot crowd every other viewpoint
                 # out of the bank. See TrackFeatureBank._evict.
                 ident.bank.add(v, source=camera_id)
-            return MatchResult(global_ref=existing, matched=True,
-                               reason="existing_binding")
+            # DEFERRED RE-MATCH. Sticky binding is right for a track's own
+            # continuity - re-deciding every frame would make refs flicker -
+            # but it also freezes the very first guess, taken on the fewest
+            # crops the system will ever have. An identity still confined to
+            # ONE camera has not bridged anything yet, so there is nothing to
+            # lose by asking again now that the bank has grown.
+            #
+            # Rather than duplicate the gates, this drops through to the same
+            # matching path below with itself excluded, and merges on success.
+            # One code path decides who matches whom, always.
+            retry_ref = None
+            if (self.retry_min_bank
+                    and len(ident.cameras_seen) == 1
+                    and bank.n >= self.retry_min_bank
+                    and bank.n > ident.retry_at_n):
+                ident.retry_at_n = bank.n
+                retry_ref = existing
+            else:
+                return MatchResult(global_ref=existing, matched=True,
+                                   reason="existing_binding")
+        else:
+            retry_ref = None
 
         self.expire(now)
 
@@ -378,6 +446,8 @@ class GlobalIdentityRegistry:
         scored: List[dict] = []
 
         for ref, ident in self._identities.items():
+            if ref == retry_ref:
+                continue          # an identity cannot be its own second opinion
             # Gate 1: one person cannot be two live tracks on the same camera.
             if any(c == camera_id and t != binding[1] for c, t in ident.active):
                 continue
@@ -396,8 +466,7 @@ class GlobalIdentityRegistry:
             # last_seen, and it does not depend on the survey being complete:
             # if the two views share no floor area, the same body cannot be in
             # both, whatever the crops score.
-            if any(c != camera_id and not self.topology.is_overlapping(c, camera_id)
-                   for c, _t in ident.active):
+            if any(self._cannot_be_both(c, camera_id) for c, _t in ident.active):
                 self.stats["rejected_simultaneous"] += 1
                 simultaneous += 1
                 continue
@@ -428,6 +497,13 @@ class GlobalIdentityRegistry:
         best_score = max(best_score, 0.0)
 
         def _bind(ref: str, reason: str) -> MatchResult:
+            if retry_ref is not None and retry_ref in self._identities:
+                # The second opinion found somebody. Fold the provisional
+                # identity in rather than abandoning it: it owns this track's
+                # history, and merge() carries the journey and the co-presence
+                # exclusions across.
+                self.merge(ref, retry_ref)
+                self.stats["rematched"] += 1
             ident = self._identities[ref]
             for v in bank.vectors:
                 ident.bank.add(v, source=camera_id)
@@ -494,6 +570,17 @@ class GlobalIdentityRegistry:
                 prev = self.stats.get("best_rejected_score", 0.0)
                 self.stats["best_rejected_score"] = round(
                     max(prev, best_score), 4)
+
+        if retry_ref is not None:
+            # Asked again, still nobody. Keep the identity we already have —
+            # minting a second one for the same live track is the one outcome
+            # a re-match must never produce.
+            return MatchResult(global_ref=retry_ref, matched=True,
+                               reason="existing_binding", score=best_score,
+                               runner_up=runner_up, candidates=considered,
+                               scored=scored, rejected_topology=topo_rejected,
+                               rejected_simultaneous=simultaneous,
+                               unknown_pairs=unknown_pairs, gallery=gallery_size)
 
         ref = self._mint_ref()
         new_bank = TrackFeatureBank(capacity=self.bank_capacity)

@@ -60,6 +60,22 @@ class CameraTopology:
         # transit times (and allow_unknown_pairs: false on a surveyed site),
         # not from guessing one here.
         default_transit: Tuple[float, float] = (0.0, 120.0),
+        # How long a person may be gone from ONE camera and still be treated as
+        # the same track resuming, rather than a fresh visit.
+        #
+        # feasible() used to answer "same camera" with an unconditional yes, at
+        # any gap at all. That is wrong in the one direction that matters: a
+        # record from minutes ago stays a candidate forever, and because a
+        # person's own earlier crops on the SAME camera look more alike than
+        # their crops from a different angle, that stale candidate outscores
+        # the genuine cross-camera arrival and wins. Measured on the recorded
+        # rig: a CAM-03 track matched its own record from 142.8s earlier at
+        # 0.908 and pushed aside the correct CAM-02 link at 0.691, breaking the
+        # walk exactly there.
+        #
+        # Re-acquisition after a tracker ID break happens in seconds. 120s is
+        # already generous for that, and anything longer is a new visit.
+        same_camera_max_s: float = 120.0,
         overlap_tolerance_s: float = 5.0,
         allow_unknown_pairs: bool = True,
     ):
@@ -71,6 +87,7 @@ class CameraTopology:
                 raise ValueError(f"invalid transit window for {a}->{b}: {window}")
             self.transits[_key(a, b)] = (lo, hi)
         self.default_transit = (float(default_transit[0]), float(default_transit[1]))
+        self.same_camera_max_s = float(same_camera_max_s)
         # Clock skew between independent camera processes is real; an
         # overlapping pair can legitimately report dt slightly negative.
         self.overlap_tolerance_s = float(overlap_tolerance_s)
@@ -126,8 +143,15 @@ class CameraTopology:
         """
         if from_cam == to_cam:
             # Same camera: re-appearance after an occlusion or a tracker ID
-            # break. Always physically possible; the caller applies its own
-            # rule about not binding two live tracks on one camera at once.
+            # break. Physically possible, but NOT for any gap - see
+            # same_camera_max_s. An unbounded yes leaves a stale record of the
+            # person competing with their genuine arrival from the next camera
+            # along, and it usually wins, because two crops from one viewpoint
+            # resemble each other more than the same person seen from two.
+            if dt < -self.overlap_tolerance_s:
+                return False, "same_camera_clock_skew"
+            if dt > self.same_camera_max_s:
+                return False, "same_camera_stale"
             return True, "same_camera"
 
         if self.is_overlapping(from_cam, to_cam):
@@ -180,6 +204,7 @@ class CameraTopology:
             overlapping=overlapping,
             transits=transits,
             default_transit=default,
+            same_camera_max_s=float(cfg.get("same_camera_max_seconds", 120.0)),
             overlap_tolerance_s=float(cfg.get("overlap_tolerance_seconds", 5.0)),
             allow_unknown_pairs=bool(cfg.get("allow_unknown_pairs", True)),
         )

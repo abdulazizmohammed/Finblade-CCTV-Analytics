@@ -1,0 +1,80 @@
+# Camera topology for the RECORDED-STREAM RIG, not the live building.
+#
+# config/topology.yaml describes the real site and its paced walk times, and the
+# test server runs on it. This file is a separate variant so that tuning against
+# the recordings cannot damage a survey somebody walked the building to produce.
+# Select it with FINBLADE_TOPOLOGY=config/topology.recorded.yaml.
+#
+# THE RIG. Five merged recordings served on a loop by ~/Recordcctv/stream-merged.sh:
+#
+#   CAM-01  reception_elevator   Door + Entrance Lobby
+#   CAM-02  reception            Reception
+#   CAM-03  gf_lobby_elevator    GF Elevator + GF Steps
+#   CAM-04  1f_lobby             1F Passage
+#   CAM-05  2f_lobby             2F Passage
+#
+# A person walks them in order, CAM-01 through CAM-05.
+#
+# WHY THE WINDOWS ARE WIDE AND START AT ZERO. The first measurement against this
+# rig scored 1 of 5 - not one identity crossed a single camera - and the reason
+# was this gate, not appearance. The live topology was in force, and its paced
+# windows belong to a different building:
+#
+#     hop            observed here   live topology   verdict
+#     CAM-01 -> 02        0.3s          min 10s      too_fast, rejected
+#     CAM-02 -> 03        4.4s          min 20s      too_fast, rejected
+#     CAM-04 -> 05       21.8s          min 27s      too_fast, rejected
+#
+# Physics ran before appearance was ever scored, so three of the four hops were
+# refused with no crop involved. Starting the windows at zero removes the gate
+# as a variable while the appearance side is tuned. TIGHTEN THESE ONCE MATCHING
+# WORKS - a zero minimum admits candidates that are physically impossible, and
+# every extra candidate costs uniqueness.
+#
+# CAM-01 AND CAM-02 ARE DECLARED OVERLAPPING, and that is load-bearing rather
+# than cosmetic. They sit 0.3s apart, which means both see the person at once.
+# The registry refuses to bind an identity that is ACTIVELY tracked on a
+# non-overlapping camera - one body cannot be in two places - so without this
+# declaration every simultaneous sighting at reception is rejected as a
+# conflict. Declaring the overlap is what tells it the two views share floor.
+
+overlapping_pairs:
+  - {a: CAM-01, b: CAM-02}
+
+transits:
+  # Adjacent hops along the walk.
+  - {a: CAM-02, b: CAM-03, min_seconds: 0, max_seconds: 180}
+  - {a: CAM-03, b: CAM-04, min_seconds: 0, max_seconds: 180}
+  - {a: CAM-04, b: CAM-05, min_seconds: 0, max_seconds: 180}
+
+  # Non-adjacent. Reachable only by passing the cameras in between, so the
+  # windows widen with distance rather than being left to the default.
+  - {a: CAM-01, b: CAM-03, min_seconds: 0, max_seconds: 240}
+  - {a: CAM-01, b: CAM-04, min_seconds: 0, max_seconds: 300}
+  - {a: CAM-01, b: CAM-05, min_seconds: 0, max_seconds: 360}
+  - {a: CAM-02, b: CAM-04, min_seconds: 0, max_seconds: 300}
+  - {a: CAM-02, b: CAM-05, min_seconds: 0, max_seconds: 360}
+  - {a: CAM-03, b: CAM-05, min_seconds: 0, max_seconds: 300}
+
+default_transit:
+  min_seconds: 0
+  max_seconds: 180
+
+overlap_tolerance_seconds: 5.0
+
+# Every pair of the five is described above, so nothing should fall through.
+# Left permissive anyway: the dev box also carries CAM-06 and the CAM-ST1-*
+# fixtures, and refusing them outright would break those runs rather than this
+# one. v_journey_links reports any pair that lands here as pair_kind='default'.
+allow_unknown_pairs: true
+
+same_camera_max_seconds: 90.0
+
+# Tuning for this rig. Environment variables still win for threshold/margin/ttl
+# (FINBLADE_REID_*), so this block is where the values with no env knob live.
+matching:
+  # The worker collects up to max_samples (8) crops per track, but a gallery
+  # identity only kept 5 of them. Cross-camera matching is a viewpoint problem
+  # above all - the more angles an identity carries, the better its chance of
+  # resembling the same person seen from somewhere new. Match the worker.
+  bank_capacity: 8

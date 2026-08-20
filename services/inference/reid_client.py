@@ -69,6 +69,8 @@ class ReIDResolver:
         self.embedder = OSNetEmbedder(weights=weights, device=device)
 
         self._banks: Dict[int, TrackFeatureBank] = {}
+        # Bank size at the last successful post, per track.
+        self._posted_n: Dict[int, int] = {}
         self._refs: Dict[int, str] = {}
         self.enabled = bool(enabled)
         self.status = "disabled" if not enabled else "not_loaded"
@@ -164,7 +166,16 @@ class ReIDResolver:
             return assigned
 
         for tid, bank in self._banks.items():
-            if tid in self._refs or bank.n < self.min_samples_to_resolve:
+            if bank.n < self.min_samples_to_resolve:
+                continue
+            # Keep reporting while the signature is still improving. The first
+            # resolve happens on the fewest crops the track will ever have, and
+            # the server's binding is sticky - so without this, that first guess
+            # is final no matter how much better the evidence gets. The server
+            # re-decides only for identities still confined to one camera, and
+            # only when the bank has actually grown, so this is bounded by
+            # max_samples posts per track rather than one per frame.
+            if tid in self._refs and bank.n <= self._posted_n.get(tid, 0):
                 continue
             last = self._last_attempt.get(tid)
             if last is not None and (now - last) < self.retry_interval_s:
@@ -181,6 +192,12 @@ class ReIDResolver:
                 self.stats["resolve_failed"] += 1
                 continue
             ref = resp["global_ref"]
+            self._posted_n[tid] = bank.n
+            # The ref can CHANGE here: a deferred re-match folds this track's
+            # provisional identity into the one it belongs to, and the server
+            # returns the surviving ref. Overwrite rather than keep the old.
+            if self._refs.get(tid) not in (None, ref):
+                self.stats["rematched"] = self.stats.get("rematched", 0) + 1
             self._refs[tid] = ref
             self.stats["resolved"] += 1
             if resp.get("matched"):
@@ -202,6 +219,7 @@ class ReIDResolver:
         if bank is not None:
             bank.vectors.clear()               # explicit: templates do not linger
         self.sampler.drop(tid)
+        self._posted_n.pop(tid, None)
         self._last_attempt.pop(tid, None)
         if self._refs.pop(tid, None) is not None and self.ready:
             self._post_json("/api/v1/identity/release", {

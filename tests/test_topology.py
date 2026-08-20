@@ -4,13 +4,54 @@ from finblade.topology import CameraTopology
 
 
 class TestSameCamera(unittest.TestCase):
-    def test_same_camera_always_feasible(self):
+    """Re-acquisition on one camera is bounded, and that bound is load-bearing.
+
+    This used to assert the opposite - that any gap at all was feasible,
+    reasoning that a person can leave one view and come back. They can, and
+    that reasoning is still true about PEOPLE. It was wrong about CANDIDATES.
+
+    An unbounded yes leaves the person's own earlier record on that camera
+    competing forever with their genuine arrival from the next camera along,
+    and it usually wins: two crops from one viewpoint resemble each other far
+    more than the same person seen from two. Measured on the recorded rig, a
+    CAM-03 track matched its own record from 142.8s before at 0.908 and pushed
+    aside the correct CAM-02 link at 0.691. The walk broke exactly there.
+
+    Bounding it means a genuine return after the window becomes a new identity.
+    That is a split, which is the error this system prefers - a wrong merge puts
+    a stranger's movements under someone else's ref.
+    """
+
+    def test_a_recent_reacquisition_is_feasible(self):
         t = CameraTopology()
         ok, reason = t.feasible("CAM-A", "CAM-A", 0.0)
         self.assertTrue(ok)
-        self.assertEqual(reason, "same_camera")
-        # Even a long gap: a person can leave and come back into one view.
-        self.assertTrue(t.feasible("CAM-A", "CAM-A", 9999.0)[0])
+        self.assertEqual("same_camera", reason)
+        self.assertTrue(t.feasible("CAM-A", "CAM-A", 30.0)[0])
+
+    def test_a_stale_one_is_not(self):
+        t = CameraTopology()
+        ok, reason = t.feasible("CAM-A", "CAM-A", 9999.0)
+        self.assertFalse(ok)
+        self.assertEqual("same_camera_stale", reason)
+
+    def test_the_bound_is_configurable(self):
+        t = CameraTopology(same_camera_max_s=30.0)
+        self.assertTrue(t.feasible("CAM-A", "CAM-A", 29.0)[0])
+        self.assertFalse(t.feasible("CAM-A", "CAM-A", 31.0)[0])
+
+    def test_it_comes_from_config(self):
+        t = CameraTopology.from_dict({"same_camera_max_seconds": 45.0})
+        self.assertEqual(45.0, t.same_camera_max_s)
+        self.assertFalse(t.feasible("CAM-A", "CAM-A", 46.0)[0])
+
+    def test_a_default_generous_enough_for_a_tracker_break(self):
+        """A dropout is seconds. The default must not be so tight that an
+        ordinary occlusion mints a new identity."""
+        t = CameraTopology()
+        self.assertEqual(120.0, t.same_camera_max_s)
+        for gap in (1.0, 5.0, 30.0, 90.0, 119.0):
+            self.assertTrue(t.feasible("CAM-A", "CAM-A", gap)[0], gap)
 
 
 class TestOverlappingPairs(unittest.TestCase):

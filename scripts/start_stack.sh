@@ -52,7 +52,7 @@ sleep 1
 
 if [ "$MODE" = "api" ]; then
   CFG1=""; CFG2=""
-  TOPO=config/topology.yaml
+  TOPO="${FINBLADE_TOPOLOGY:-config/topology.yaml}"
 elif [ "$MODE" = "rtsp" ]; then
   # Preflight the test fixtures before starting anything, and say plainly what
   # is missing — both are gitignored, so this is the normal state of a fresh
@@ -77,11 +77,11 @@ elif [ "$MODE" = "rtsp" ]; then
     echo "[BLOCKER] RTSP publish failed — run: bash scripts/rtsp_dual.sh"; exit 1; }
   CFG1=config/cameras.vid1.yaml
   CFG2=config/cameras.vid2.yaml
-  TOPO=config/topology.vid.yaml
+  TOPO="${FINBLADE_TOPOLOGY:-config/topology.vid.yaml}"
 else
   CFG1=config/cameras.synthetic.yaml
   CFG2=config/cameras.cam2.yaml
-  TOPO=config/topology.yaml
+  TOPO="${FINBLADE_TOPOLOGY:-config/topology.yaml}"
 fi
 
 # Report the backend the API will ACTUALLY use, not a guess. This line said

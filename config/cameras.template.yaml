@@ -56,13 +56,13 @@ reid:
   enabled: true
   weights: models/osnet_x0_25_msmt17.pt
   device: "0"
-  interval_seconds: 1.0
+  interval_seconds: 0.4
   # More views per person than the default 5. Individual embeddings from a
   # low-resolution substream are noisy, so the bank needs more of them before
   # its average is trustworthy.
   max_samples: 8
   budget_per_frame: 8
-  min_samples_to_resolve: 2
+  min_samples_to_resolve: 3
 
   # SET THIS TO MATCH YOUR SOURCE RESOLUTION.
   #

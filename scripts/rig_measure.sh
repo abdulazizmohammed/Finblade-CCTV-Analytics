@@ -32,12 +32,25 @@ bash scripts/stop_all.sh >/dev/null 2>&1
 
 cd "$RIG" || exit 1
 ./stream-merged.sh stop >/dev/null 2>&1
-# shellcheck disable=SC2086
-./stream-merged.sh start $CAMERAS >/dev/null 2>&1
 
+# STACK FIRST, STREAMS SECOND, and the order is the whole point.
+#
+# stream-merged.sh publishes on demand: each video starts playing when its
+# first player connects. Start the streams first and the five videos begin
+# staggered by however long each worker takes to load YOLO - tens of seconds -
+# so the person arrives on the cameras in an order nobody walked.
+#
+# With every worker already up and retrying, all five connect within one retry
+# interval and the recordings begin in step.
 cd "$REPO" || exit 1
 bash scripts/pg_dev.sh start >/dev/null 2>&1
 ( cd scripts && nohup bash start_stack.sh api > /tmp/stack_start.log 2>&1 & )
+sleep "${STACK_WAIT:-45}"          # workers up and polling before anything plays
+
+cd "$RIG" || exit 1
+# shellcheck disable=SC2086
+./stream-merged.sh start $CAMERAS >/dev/null 2>&1
+cd "$REPO" || exit 1
 
 sleep "$WAIT"
 timeout 300 .venv/bin/python scripts/walk_score.py --minutes "$WIN"

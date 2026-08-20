@@ -95,6 +95,27 @@ DEFAULT_OFFLINE_AFTER = 30.0
 # and well below the ReID TTL, so it splits on real absences and not on noise.
 DEFAULT_FRAGMENT_GAP = 60.0
 
+# How far back the journey views look, in hours.
+#
+# THEY DO NOT SCALE WITHOUT THIS. v_journey_links self-joins fragments
+# against fragments and then does a NOT EXISTS over that join for the
+# transitive reduction. On a small window that is nothing; against three
+# weeks of history it was 62,797 fragments and the query never returned -
+# measured at over 240s with no result on the live database.
+#
+# Filtering the OUTER query does not help and it is worth knowing why: the
+# view carries window functions (COUNT(*) OVER (PARTITION BY ...)), which
+# are optimisation fences. Postgres cannot push a WHERE below them, so
+# "SELECT ... WHERE left_at >= x" still builds the whole thing first. The
+# bound has to be INSIDE the view, which means baked in at creation like
+# max_hold and fragment_gap already are.
+#
+# 24h suits the live views: recent enough to stay fast, long enough to
+# answer "what happened today". For anything older, build scoped temp
+# views with create_journey_views(since=..., until=...) - which is what
+# scripts/journey_report.py does for its --since/--until.
+DEFAULT_JOURNEY_HOURS = 24.0
+
 
 def _utc(column: str) -> str:
     """Epoch seconds -> a real timestamp, for humans and BI tools.
@@ -132,6 +153,9 @@ def _json_text(column: str, key: str) -> str:
 def view_definitions(max_hold: float = DEFAULT_MAX_HOLD,
                      offline_after: float = DEFAULT_OFFLINE_AFTER,
                      fragment_gap: float = DEFAULT_FRAGMENT_GAP,
+                     journey_hours: float = DEFAULT_JOURNEY_HOURS,
+                     journey_since: float = None,
+                     journey_until: float = None,
                      temp: bool = False) -> List[Tuple[str, str]]:
     """[(view_name, CREATE VIEW sql)], in dependency order.
 
@@ -142,6 +166,19 @@ def view_definitions(max_hold: float = DEFAULT_MAX_HOLD,
     """
     ts = _utc
     views: List[Tuple[str, str]] = []
+
+    # Absolute bounds win when given (a report on a named window); otherwise
+    # the rolling one. Always a bound - an unbounded journey view is the bug.
+    if journey_since is not None or journey_until is not None:
+        parts = []
+        if journey_since is not None:
+            parts.append("e.ts >= %r" % float(journey_since))
+        if journey_until is not None:
+            parts.append("e.ts <= %r" % float(journey_until))
+        journey_bound = " AND ".join(parts)
+    else:
+        journey_bound = ("e.ts >= EXTRACT(EPOCH FROM now()) - %r"
+                         % (float(journey_hours) * 3600.0))
 
     # ---------------------------------------------------------------- zones --
     # Config joined onto every reading. This join is one-to-one — a zone has
@@ -602,7 +639,8 @@ WITH ev AS (
         {zone_ref} AS zone_ref,
         e.ts
     FROM events e
-    WHERE (e.person_ref IS NOT NULL OR e.global_ref IS NOT NULL)
+    WHERE {journey_bound}
+      AND (e.person_ref IS NOT NULL OR e.global_ref IS NOT NULL)
       -- Person-bearing events only. A DENSITY_UPDATE or CAMERA_HEARTBEAT has
       -- no one in it, and including them would extend a fragment past the
       -- point the person was last actually seen.
@@ -1116,6 +1154,9 @@ def drop_sql() -> List[str]:
 def create_all(conn, max_hold: float = DEFAULT_MAX_HOLD,
                offline_after: float = DEFAULT_OFFLINE_AFTER,
                fragment_gap: float = DEFAULT_FRAGMENT_GAP,
+               journey_hours: float = DEFAULT_JOURNEY_HOURS,
+               journey_since: float = None,
+               journey_until: float = None,
                temp: bool = False) -> List[str]:
     """(Re)create every view on an open DB-API connection. Returns the names."""
     names = []
@@ -1124,6 +1165,9 @@ def create_all(conn, max_hold: float = DEFAULT_MAX_HOLD,
     for name, sql in view_definitions(max_hold=max_hold,
                                       offline_after=offline_after,
                                       fragment_gap=fragment_gap,
+                                      journey_hours=journey_hours,
+                                      journey_since=journey_since,
+                                      journey_until=journey_until,
                                       temp=temp):
         conn.execute(sql)
         names.append(name)

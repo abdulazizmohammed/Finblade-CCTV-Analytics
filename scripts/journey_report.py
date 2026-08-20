@@ -99,6 +99,30 @@ def main() -> int:
 
     import psycopg
     conn = psycopg.connect(d, autocommit=True)
+
+    # Scope the journey views to exactly this window, as TEMP views.
+    #
+    # The deployed views carry a rolling 24h bound because v_journey_links
+    # self-joins fragments and cannot be filtered from outside - its window
+    # functions are optimisation fences, so a WHERE on the outer query still
+    # builds the whole thing first. Asking for an older window therefore means
+    # rebuilding the views around it rather than filtering them.
+    #
+    # TEMP is what makes that safe against a live database: the views live in
+    # this session's pg_temp, unqualified names resolve there first, and the
+    # real ones are neither dropped nor touched. The DROPs below are explicitly
+    # qualified to pg_temp for the same reason - an unqualified DROP VIEW in a
+    # session with no temp view yet would find and remove the production one.
+    if args.since or args.until:
+        from services.api.analytics_views import view_definitions
+        for name, sql in view_definitions(journey_since=lo, journey_until=hi,
+                                          temp=True):
+            if not name.startswith("v_journey"):
+                continue
+            conn.execute("DROP VIEW IF EXISTS pg_temp.%s CASCADE" % name)
+            conn.execute(sql)
+        print("journey views scoped to the requested window (temp, session-only)")
+
     q = lambda sql, p=win: conn.execute(sql, p).fetchall()
 
     span = q("""SELECT MIN(ts), MAX(ts), COUNT(*) FROM events

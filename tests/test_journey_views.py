@@ -104,6 +104,13 @@ class Base(unittest.TestCase):
              zone, f"pr_{self._eid:016x}", ref, ts))
 
     def build(self, **kw):
+        # The journey views carry a time bound now, defaulting to a rolling 24h
+        # (see DEFAULT_JOURNEY_HOURS: unbounded, v_journey_links never returned
+        # on three weeks of real history). These fixtures are dated 2023, so
+        # they scope explicitly - which is also exactly how
+        # scripts/journey_report.py uses the views for a historical window.
+        kw.setdefault("journey_since", T0 - 3600.0)
+        kw.setdefault("journey_until", T0 + 1_000_000.0)
         return create_all(self.conn, **kw)
 
     def rows(self, sql, params=()):
@@ -563,6 +570,59 @@ class TestReportWindowParsing(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.parse("last tuesday")
 
+
+
+class TestTheTimeBound(Base):
+    """The bound is what makes these views usable on a real database.
+
+    Without it v_journey_links self-joins every fragment ever recorded: 62,797
+    of them on the live server, and the query did not return inside 240s. The
+    outer query cannot rescue it either - the window functions are optimisation
+    fences, so a WHERE on the caller's side still builds the whole thing first.
+    """
+
+    def test_events_before_the_window_are_not_fragments(self):
+        self.seen("CAM-01", T0 - 50_000, "ZONE-A", ref="gp_old")
+        self.seen("CAM-01", T0, "ZONE-A", ref="gp_now")
+        self.build(journey_since=T0 - 100.0, journey_until=T0 + 100.0)
+        keys = [r["person_key"] for r in
+                self.rows("SELECT person_key FROM v_journey_fragments")]
+        self.assertEqual(["gp_now"], keys)
+
+    def test_events_after_the_window_are_not_fragments(self):
+        self.seen("CAM-01", T0, "ZONE-A", ref="gp_now")
+        self.seen("CAM-01", T0 + 50_000, "ZONE-A", ref="gp_later")
+        self.build(journey_since=T0 - 100.0, journey_until=T0 + 100.0)
+        keys = [r["person_key"] for r in
+                self.rows("SELECT person_key FROM v_journey_fragments")]
+        self.assertEqual(["gp_now"], keys)
+
+    def test_the_default_is_rolling_and_recent(self):
+        """No explicit window means the last 24 hours. A 2023 fixture is
+        therefore invisible - which is the point, and why every other test in
+        this file scopes itself."""
+        self.seen("CAM-01", T0, "ZONE-A", ref="gp_old")
+        create_all(self.conn)
+        self.assertEqual([], self.rows("SELECT * FROM v_journey_fragments"))
+
+    def test_the_bound_reaches_links_and_traces_too(self):
+        """Bounding only the fragments would be pointless: the expensive view
+        is the self-join built on top of them."""
+        self.seen("CAM-01", T0 - 50_000, "ZONE-A", ref="gp_old1")
+        self.seen("CAM-02", T0 - 49_940, "ZONE-C", ref="gp_old2")
+        self.build(journey_since=T0 - 100.0, journey_until=T0 + 100.0)
+        self.assertEqual([], self.rows("SELECT * FROM v_journey_links"))
+        self.assertEqual([], self.rows("SELECT * FROM v_journey_traces"))
+
+    def test_a_window_still_traces_what_is_inside_it(self):
+        """The bound must not break the thing it protects."""
+        self.seen("CAM-01", T0, "ZONE-A", ref="gp_1")
+        self.seen("CAM-01", T0 + 10, "ZONE-A", ref="gp_1")
+        self.seen("CAM-02", T0 + 70, "ZONE-C", ref="gp_2")
+        self.seen("CAM-02", T0 + 80, "ZONE-C", ref="gp_2")
+        self.build(journey_since=T0 - 100.0, journey_until=T0 + 1000.0)
+        self.assertEqual(1, len(self.rows(
+            "SELECT * FROM v_journey_links WHERE is_unique")))
 
 if __name__ == "__main__":
     unittest.main()

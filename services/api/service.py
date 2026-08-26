@@ -364,6 +364,10 @@ class IngestService:
     def occupancy_stats(self, t0, t1, **f):
         return self.store.zone_state_stats(t0, t1, **f)
 
+    def identity_window_counts(self, t0, t1):
+        """Distinct people seen between t0 and t1, from stored history."""
+        return self.store.identity_window_counts(t0, t1)
+
     _TW_FIELDS = ("occupancy", "density", "capacity_pct")
 
     # Matches the sentinel the history routes already use for "no upper bound".

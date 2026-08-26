@@ -748,8 +748,14 @@ class GlobalIdentityRegistry:
         """Cumulative count of people ever seen by more than one camera.
 
         Must be derived from _seen_pairs, not the gallery: mixing a live count
-        with cumulative ones makes the numbers fail to reconcile
-        (unique_by_camera summed, minus unique_total, should equal this).
+        with cumulative ones puts figures from two different populations in one
+        response.
+
+        This is a COUNT of people seen by more than one camera. It is NOT
+        sum(unique_by_camera) - unique_total, which is sum(cameras - 1) summed
+        over everyone: a person on three cameras contributes 2 there and 1 here.
+        The two match only while nobody is seen by three, so on a site where
+        anyone crosses three cameras they legitimately differ.
         """
         cams: Dict[str, Set[str]] = {}
         for cam, ref in self._seen_pairs:

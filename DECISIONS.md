@@ -116,3 +116,47 @@ must be < 1.9; 1.8 (10% band) is a conventional choice. Symmetric ~10% band for
 the others.
 **Reverse:** Thresholds are constructor args in `finblade/rules.py`
 (`RuleThresholds`); change in one place.
+
+## D-14 — Headline counts report a BUSINESS DAY, not the process lifetime
+**Choice:** Added `finblade/window.py` (06:00-18:00 `Asia/Riyadh`; before 06:00
+the day reported is the previous one) and `Store.identity_window_counts`.
+`GET /api/v1/identity/counts` gained a `window` block counting distinct
+`global_ref`s in stored history over that window, and the `footfall_total` /
+`cross_camera` chart tiles now draw from it. The session totals beside them are
+untouched.
+**Why:** the session `unique_total` counts identity RECORDS, not people. The
+gallery evicts on `max_identities` (2000) and on a 30-minute retention ceiling,
+and a person who returns after eviction is minted again — so it climbs past the
+number of real people the longer the service runs. The dashboard showed 2,843
+"visitors" for one building. A windowed count over persisted events is bounded
+by the window and survives a restart.
+**Reverse:** delete the `window` block from `identity_counts` in `app.py`; the
+chart builder falls back to the session totals when no window is present, and
+every existing key keeps its meaning. Hours and timezone are configurable with
+`FINBLADE_BUSINESS_TZ`, `FINBLADE_BUSINESS_START_HOUR`,
+`FINBLADE_BUSINESS_END_HOUR`.
+
+## D-15 — `people_on_site` reports a measured 0 instead of being withheld
+**Choice:** the metric is now always offered when either zones or identity can
+answer, falls back to the identity live count where no polygons are drawn, and
+is titled "People on site" to match its id. It is dropped only when neither
+source can answer at all.
+**Why:** the old rule ("a number that cannot be computed is omitted, never sent
+as 0") is right and still holds everywhere else, but applying it here was wrong.
+Withholding a chart does not render as a blank number on the FinBlade dashboard
+— it renders as "the source no longer offers this chart", permanently, until
+someone re-adds the tile by hand. A quiet evening, or one camera restarting,
+broke a configured tile.
+**CAVEAT FOR THE HUMAN:** with every camera offline this now reads 0 rather than
+"unknown". The operator asked for 0 explicitly. If you want the two
+distinguished, gate it on `summary.cameras.online > 0`.
+**Reverse:** one condition in `summary_charts` in `services/api/charts.py`.
+
+## D-16 — `zone_transitions` labels read the field names the endpoint emits
+**Choice:** `movement_charts` now reads `zone_from` / `zone_to`, falling back to
+`from` / `to`.
+**Why:** it read `from` / `to` only — the names of the WINDOW BOUNDS at the top
+of the same response — so every bar was labelled `"? -> ?"` while the counts
+beside them were correct. `IngestService.movement` emits `zone_from`/`zone_to`,
+which is what `web/history.html` already reads.
+**Reverse:** it is one helper, `_flow_end`, in `services/api/charts.py`.

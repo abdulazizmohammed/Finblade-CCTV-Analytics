@@ -133,13 +133,25 @@ class TestSummaryCharts(unittest.TestCase):
                             "alerts": {"open_total": 2, "red": 1, "amber": 1,
                                        "critical": 0, "info": 0}}}
 
-    def test_uncomputable_occupancy_is_omitted_not_zero(self):
-        """people_in_zones is null when no polygons are drawn. A metric of 0
-        would show an empty site while people are standing in it."""
-        ids = [c["id"] for c in charts.summary_charts(self.body(people=None))]
+    def test_people_on_site_reports_a_measured_zero(self):
+        """An empty building is a fact. Withholding the chart does not render
+        as a blank number, it renders as a broken tile."""
+        chart = next(c for c in charts.summary_charts(self.body(people=0, live=0))
+                     if c["id"] == "people_on_site")
+        self.assertEqual(0, chart["value"])
+
+    def test_people_on_site_falls_back_to_identity_without_zones(self):
+        """people_in_zones is null with no polygons drawn — but identity can
+        still answer "how many people are here", and does so without them."""
+        chart = next(c for c in charts.summary_charts(self.body(people=None, live=9))
+                     if c["id"] == "people_on_site")
+        self.assertEqual(9, chart["value"])
+
+    def test_people_on_site_omitted_only_when_nothing_can_answer(self):
+        """The one genuinely uncomputable case: no zones AND no identity."""
+        ids = [c["id"] for c in charts.summary_charts(
+            self.body(people=None, live=None))]
         self.assertNotIn("people_on_site", ids)
-        ids = [c["id"] for c in charts.summary_charts(self.body(people=0))]
-        self.assertIn("people_on_site", ids, "a real measured 0 IS reportable")
 
     def test_per_camera_bar_never_becomes_a_site_total(self):
         """people_in_view summed across cameras double-counts anyone two
@@ -172,6 +184,47 @@ class TestCountsCharts(unittest.TestCase):
 
     def test_missing_values_are_skipped(self):
         self.assertEqual([], charts.counts_charts({}))
+
+    def test_footfall_comes_from_the_window_not_the_session_total(self):
+        """The session total counts identity records minted since startup and
+        climbs past the number of real people as the gallery evicts. The tile
+        must draw the business day instead."""
+        out = charts.counts_charts({
+            "live": 0, "unique_total": 2843, "cross_camera": 792,
+            "window": {"date": "2026-08-26", "unique_total": 61,
+                       "cross_camera": 12}})
+        by_id = {c["id"]: c["value"] for c in out}
+        self.assertEqual(61, by_id["footfall_total"])
+        self.assertEqual(12, by_id["cross_camera"])
+        self.assertEqual(0, by_id["live_now"], "live is never windowed")
+
+    def test_session_totals_are_used_when_no_window_is_offered(self):
+        out = charts.counts_charts({"live": 1, "unique_total": 9,
+                                    "cross_camera": 2})
+        by_id = {c["id"]: c["value"] for c in out}
+        self.assertEqual(9, by_id["footfall_total"])
+        self.assertEqual(2, by_id["cross_camera"])
+
+
+class TestMovementCharts(unittest.TestCase):
+    def test_labels_use_the_field_names_the_endpoint_actually_emits(self):
+        """IngestService.movement emits zone_from/zone_to. Reading from/to —
+        the window bounds at the top of the same response — labelled every bar
+        '? -> ?' while the counts beside them were correct."""
+        out = charts.movement_charts([
+            {"zone_from": "LOBBY", "zone_to": "ATRIUM", "count": 12}])
+        self.assertEqual(["LOBBY -> ATRIUM"], out[0]["labels"])
+        self.assertEqual([12], out[0]["datasets"][0]["data"])
+
+    def test_busiest_first(self):
+        out = charts.movement_charts([
+            {"zone_from": "A", "zone_to": "B", "count": 2},
+            {"zone_from": "C", "zone_to": "D", "count": 9}])
+        self.assertEqual(["C -> D", "A -> B"], out[0]["labels"])
+
+    def test_an_unknown_end_is_still_marked(self):
+        out = charts.movement_charts([{"zone_to": "ATRIUM", "count": 3}])
+        self.assertEqual(["? -> ATRIUM"], out[0]["labels"])
 
 
 @unittest.skipUnless(HAVE_APP, "fastapi/httpx not available")

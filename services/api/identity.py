@@ -331,9 +331,15 @@ class IdentityService:
         return {
             "live": self.registry.site_occupancy(),
             "unique_total": self.registry.unique_total(),
-            # Cumulative, to match unique_total: sum(per_camera unique)
-            # - unique_total == cross_camera. A live-scoped count here would not
-            # reconcile with the other figures in the same response.
+            # Cumulative, to match unique_total: a live-scoped count here would
+            # not be comparable with the other figures in the same response.
+            #
+            # NOT a difference of the other two. sum(per_camera unique) minus
+            # unique_total is sum(cameras - 1) over everyone; this is a COUNT of
+            # people with more than one camera. They agree only while nobody is
+            # seen by three cameras, and this site has people crossing four —
+            # so the two diverge in normal operation. Documented as an identity
+            # here until 2026-08-26; anything using it as a checksum was wrong.
             "cross_camera": self.registry.cross_camera_total(),
             "per_camera": [
                 {"camera_id": c,

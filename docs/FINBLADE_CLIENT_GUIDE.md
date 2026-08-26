@@ -335,26 +335,50 @@ tracking, so it will never appear in occupancy.
 ### Cross-camera people counts
 
 ```
-GET /api/v1/identity/counts
+GET /api/v1/identity/counts[?from=<epoch>&to=<epoch>]
 ```
 ```json
 {"live": 4, "unique_total": 93, "cross_camera": 16,
  "per_camera": [{"camera_id": "CAM-01", "live": 2, "unique": 23}],
+ "window": {"date": "2026-08-26", "tz": "Asia/Riyadh",
+            "from": 1787713200.0, "to": 1787756400.0,
+            "start_hour": 6, "end_hour": 18, "complete": true,
+            "unique_total": 61, "cross_camera": 12,
+            "per_camera": [{"camera_id": "CAM-01", "unique": 44}]},
  "ts": 1785306062.3}
 ```
 
 * `live` — distinct people on site right now, de-duplicated across cameras
-* `unique_total` — distinct people since the service started (footfall)
+* `unique_total` — identity records this SESSION has minted (see the warning
+  below — this is not a visitor count)
 * `cross_camera` — how many of those were seen by more than one camera
+
+**Use `window` for anything you show a client.** It is the same two figures
+counted over the site's business day from stored history, and it is what the
+chart tag draws. `date` is the day it describes and `complete` says whether that
+day has closed.
+
+**The top-level `unique_total` counts identity RECORDS, not people.** The live
+gallery is bounded — by `max_identities` and by a retention ceiling — and a
+person who returns after being evicted is minted as a new record. So the session
+figure drifts above the number of real people the longer the service runs, and a
+long-running process can report thousands for a building that saw dozens. It
+also resets to 0 on restart: treat a decrease as a session boundary, not bad
+data, and do not compute deltas across it. `window` has neither problem.
+
+**The business day is 06:00–18:00 in the site's own timezone**, and before
+06:00 the day reported is the PREVIOUS one — at 01:00 the honest answer to "how
+many visitors today" is yesterday's figure, not a count of the hours since
+midnight. Configurable with `FINBLADE_BUSINESS_TZ`, `FINBLADE_BUSINESS_START_HOUR`
+and `FINBLADE_BUSINESS_END_HOUR`. Pass `from`/`to` to ask about a fixed range
+instead; such a window reports `date: null`, because an arbitrary range does not
+describe one business day.
 
 **`sum(per_camera.unique)` deliberately exceeds `unique_total`.** Someone seen by
 two cameras counts once site-wide but once per camera. The difference is the
 double-counting removed. It is an inequality, not an equality:
 `sum − unique_total >= cross_camera` (someone on three cameras adds 2 to the
-difference but 1 to `cross_camera`).
-
-**`unique_total` resets to 0 when the CCTV service restarts.** Treat a decrease
-as a session boundary, not bad data, and do not compute deltas across it.
+difference but 1 to `cross_camera`). This holds for the `window` figures too.
 
 ### Active alerts
 
@@ -513,9 +537,17 @@ omits the block entirely. It costs about 750 bytes per response.
 
 Three behaviours worth knowing, because they are deliberate:
 
-* **A number that cannot be computed is omitted, not sent as 0.** With no zone
-  polygons drawn there is no `people_on_site` metric at all, rather than a
-  metric reading zero. A measured zero *is* sent.
+* **A number that cannot be computed is omitted, not sent as 0** — but a
+  measured zero *is* sent, and that includes an empty building. `people_on_site`
+  reports 0 when nobody is there, and falls back to the identity count on a site
+  with no zone polygons drawn, so the tile keeps working. It is dropped only
+  when neither zones nor identity can answer at all. (Before 2026-08-26 it was
+  withheld whenever no zone was reporting; a withheld chart does not render as a
+  blank number, it renders as "the source no longer offers this chart" until
+  someone re-adds the tile by hand.)
+* **`footfall_total` and `cross_camera` are drawn over the business day**, from
+  stored history — not the session totals beside them in the same response. See
+  *Cross-camera people counts* above for why those two differ.
 * **No chart is ever a sum of `people_in_view`.** `camera_people` and
   `live_per_camera` are one bar per camera and say so in their titles; adding
   them up double-counts anyone two cameras can see.

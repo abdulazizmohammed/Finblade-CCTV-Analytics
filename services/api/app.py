@@ -24,6 +24,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from finblade.areas import distinct_occupancy as _distinct_occupancy
+from finblade import window as _window
+
+# The site's reporting day. Headline counts answer "how many today", and "today"
+# is opening hours in the site's own timezone — not a UTC day, and not "since
+# this process started". See finblade/window.py for the before-opening rule.
+BUSINESS_TZ = os.environ.get("FINBLADE_BUSINESS_TZ", _window.DEFAULT_TZ)
+BUSINESS_START_HOUR = int(os.environ.get("FINBLADE_BUSINESS_START_HOUR",
+                                         _window.DEFAULT_START_HOUR))
+BUSINESS_END_HOUR = int(os.environ.get("FINBLADE_BUSINESS_END_HOUR",
+                                       _window.DEFAULT_END_HOUR))
 
 from . import charts as _charts
 from . import redact as _redact
@@ -828,13 +838,36 @@ async def set_identity_tuning(request: Request):
 
 
 @app.get("/api/v1/identity/counts")
-async def identity_counts(charts: int = Query(1)):
+async def identity_counts(charts: int = Query(1),
+                          frm: float = Query(None, alias="from"),
+                          to: float = Query(None, alias="to")):
     """Unique-people counts that work with NO zones defined.
 
     Zone occupancy needs a polygon; this needs only identity. `live` is distinct
-    people visible now, `unique_total` is distinct people since startup.
+    people visible now.
+
+    TWO KINDS OF NUMBER LIVE HERE, and conflating them is what put 2,843
+    "visitors" on a dashboard watching one building.
+
+    The top-level `unique_total` / `cross_camera` are SESSION figures from the
+    live gallery: everything this process has minted since it started. The
+    gallery evicts (max_identities, and a retention ceiling), and a person who
+    returns after eviction is minted again — so those climb above the number of
+    real people the longer the process runs, and reset to zero on restart.
+
+    `window` is the answer to the question a dashboard is actually asking: how
+    many distinct people were seen during the site's business day, counted from
+    stored history. Bounded, restart-proof, and the figure the chart tag draws.
+
+    `from`/`to` (epoch seconds) address a fixed range instead of today's
+    business window — "how many people last Tuesday".
     """
     body = id_svc.counts()
+    span = _window.resolve_window(time.time(), frm=frm, to=to,
+                                  tz=BUSINESS_TZ, start_hour=BUSINESS_START_HOUR,
+                                  end_hour=BUSINESS_END_HOUR)
+    body["window"] = dict(span, **svc.identity_window_counts(span["from"],
+                                                             span["to"]))
     # FinBlade chart tag (live-feed-chart-tags.md). Additive; ?charts=0 omits it.
     return _charts.attach(body, _charts.counts_charts(body)) if charts else body
 

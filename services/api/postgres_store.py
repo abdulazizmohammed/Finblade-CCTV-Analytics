@@ -449,6 +449,31 @@ class PostgresStore(Store):
                     pass
         return rows
 
+    def identity_window_counts(self, t0: float, t1: float) -> dict:
+        """Distinct people in a window — see Store.identity_window_counts.
+
+        Grouped in SQL rather than by paging list_events: that route caps at a
+        row limit, and a limit silently applied to a COUNT DISTINCT returns a
+        number that looks like an answer.
+        """
+        refs = self._q(
+            "SELECT global_ref, COUNT(DISTINCT camera_id) AS cameras "
+            "FROM events WHERE ts BETWEEN %s AND %s "
+            "AND global_ref IS NOT NULL AND global_ref <> '' "
+            "GROUP BY global_ref", (t0, t1))
+        per_camera = self._q(
+            "SELECT camera_id, COUNT(DISTINCT global_ref) AS people "
+            "FROM events WHERE ts BETWEEN %s AND %s "
+            "AND global_ref IS NOT NULL AND global_ref <> '' "
+            "AND camera_id IS NOT NULL "
+            "GROUP BY camera_id ORDER BY camera_id", (t0, t1))
+        return {
+            "unique_total": len(refs),
+            "cross_camera": sum(1 for r in refs if int(r["cameras"] or 0) > 1),
+            "per_camera": [{"camera_id": r["camera_id"],
+                            "unique": int(r["people"] or 0)} for r in per_camera],
+        }
+
     def list_alerts_history(self, t0: float, t1: float, camera_id=None, rule_id=None,
                             limit: int = 500) -> List[dict]:
         q = f"SELECT {self._ALERT_COLS} FROM alerts WHERE ts BETWEEN %s AND %s"

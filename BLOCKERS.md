@@ -4,6 +4,50 @@ Timestamped, most-blocking first. Each: what failed, what I tried, best hypothes
 
 ---
 
+## B-9 — The chart changes are UNVERIFIED against live pipeline data  [HIGH]
+
+**What:** the new business-day counts and the `people_on_site` fallback are
+tested and were driven end to end over real HTTP, but only against events
+injected by hand. No camera has run against them.
+
+**Why not:** the camera service is scheduled on the TEST SERVER, not this box.
+On this box `media/` is empty, `scripts/bin/mediamtx` is absent, and the local
+Postgres had no finblade schema at all until this session. Nothing here can
+produce a detection.
+
+**What it needs (~5 min once the stream is up at 06:00 KSA):**
+1. `GET /api/v1/identity/counts` — check `window.unique_total` against a rough
+   door count for the day. It should be plausible; the session `unique_total`
+   beside it will still drift upward, and that is expected.
+2. `GET /api/v1/identity/stats` — compare `stats.created` against
+   `stats.matched`. If `created` dwarfs `matched`, ReID is re-minting people
+   rather than recognising them, and the windowed figure will inflate too — just
+   more slowly. That is the next thing to tune (see D-11, B-4).
+3. `GET /api/v1/movement` — the `zone_transitions` labels should now read
+   `LOBBY -> ATRIUM`, not `? -> ?`.
+
+## B-10 — 6 test modules cannot run: pytest is not installed  [MEDIUM]
+
+**What:** `test_areas`, `test_areas_api`, `test_cross_camera_dedup`,
+`test_dashboard_sort`, `test_topology_survey`, `test_wisenet_import` all
+`import pytest`, which is not in the venv and not in `requirements.txt` or
+`constraints.txt`. They error at import; the other 1,269 tests run and pass.
+
+**What I tried:** nothing — CLAUDE.md forbids changing pinned dependencies, and
+installing a test dependency is the same class of change.
+
+**Hypothesis / what it needs:** `pip install pytest` and add it to
+`requirements.txt`, OR rewrite those six against `unittest` like the rest of the
+suite (D-1 says the suite is deliberately stdlib-only, so the second is more
+consistent with how this repo was built). Until then those areas have no
+coverage running in CI.
+
+**Also:** `tests/test_pg_grants.py` needs a superuser Postgres role to
+`DROP ROLE`; it errors under the unprivileged `finblade` role this session
+created locally.
+
+---
+
 ## B-4 — No genuine two-camera footage: cross-camera accuracy is UNVALIDATED  [HIGH]
 
 **What:** Cross-camera identity is built, wired and running, but nothing in

@@ -154,14 +154,30 @@ def summary_charts(body: dict) -> List[dict]:
     charts: List[dict] = []
 
     people = summary.get("people_in_zones")
-    if people is not None:
-        # Only when zones exist. None means "cannot be computed", and a 0 here
-        # would show an empty site while people are standing in it.
-        charts.append({"id": "people_on_site", "type": "metric",
-                       "title": "People on the floor", "unit": "people",
-                       "value": _num(people, 0)})
-
     live = (body.get("counts") or {}).get("live")
+
+    # HOW MANY PEOPLE ARE ON SITE RIGHT NOW. Zero is a real answer here — an
+    # empty building at eight in the evening is a fact, not a gap — so this
+    # metric reports 0 rather than being withheld.
+    #
+    # It used to be offered only when a zone was reporting, on the rule that an
+    # uncomputable number must never be sent as 0. The rule is right and still
+    # holds below; applying it HERE was wrong, because withholding a chart does
+    # not render as a blank number. It renders as a tile saying the source no
+    # longer offers this chart, and it stays that way until somebody re-adds it
+    # by hand. A quiet evening or one camera restarting broke the tile.
+    #
+    # Zone occupancy answers this when polygons are drawn. Where they are not,
+    # identity answers it without them — that is the whole point of the
+    # identity counts — so the metric survives a site with no zones at all.
+    # Only when NEITHER can answer is it genuinely unknown, and only then is it
+    # dropped.
+    headline = people if people is not None else live
+    if headline is not None:
+        charts.append({"id": "people_on_site", "type": "metric",
+                       "title": "People on site", "unit": "people",
+                       "value": _num(headline, 0)})
+
     if live is not None:
         charts.append({"id": "people_live", "type": "metric",
                        "title": "Distinct people on site", "unit": "people",
@@ -204,15 +220,34 @@ def summary_charts(body: dict) -> List[dict]:
 
 
 def counts_charts(counts: dict) -> List[dict]:
-    """From GET /api/v1/identity/counts."""
+    """From GET /api/v1/identity/counts.
+
+    Footfall and cross-camera are drawn from the BUSINESS WINDOW when the
+    endpoint supplies one, not from the session totals beside them.
+
+    The session totals count identity records this process has minted. The
+    gallery evicts — on size, and on a retention ceiling — and a person who
+    comes back after being evicted is minted again, so that figure climbs past
+    the number of real people the longer the service runs. Drawn on a tile
+    labelled "visitors" it reads as a footfall count and is not one.
+
+    The window figures are distinct global_refs in stored history over the
+    site's business day: bounded by the window, and unaffected by a restart.
+    Falls back to the session totals when no window is present, so a caller on
+    the older response shape still gets its charts.
+    """
     counts = counts or {}
+    window = counts.get("window") or {}
     charts: List[dict] = []
     for cid, title, unit in (("live_now", "People on site", "people"),
-                             ("footfall_total", "Unique visitors", None),
-                             ("cross_camera", "Seen by 2+ cameras", None)):
+                             ("footfall_total", "Unique visitors", "people"),
+                             ("cross_camera", "Seen by 2+ cameras", "people")):
         key = {"live_now": "live", "footfall_total": "unique_total",
                "cross_camera": "cross_camera"}[cid]
-        value = _num(counts.get(key))
+        # live is a right-now number and never comes from the window.
+        source = counts if cid == "live_now" else (window if key in window
+                                                   else counts)
+        value = _num(source.get(key))
         if value is not None:
             chart = {"id": cid, "type": "metric", "title": title, "value": value}
             if unit:
@@ -230,6 +265,19 @@ def counts_charts(counts: dict) -> List[dict]:
     return charts
 
 
+def _flow_end(flow: dict, which: str):
+    """One end of a transition: `zone_from` / `zone_to`.
+
+    Those are the field names GET /api/v1/movement emits (see
+    IngestService.movement) and the ones the operator history page reads. This
+    read `from` / `to` instead — the names of the WINDOW BOUNDS at the top of
+    the same response — so every bar in the chart was labelled "? -> ?" while
+    the counts beside them were right. Both spellings are accepted now; the
+    bare one is only ever a fallback.
+    """
+    return flow.get(f"zone_{which}") or flow.get(which)
+
+
 def movement_charts(flows: List[dict]) -> List[dict]:
     """Zone-to-zone transitions, busiest first."""
     flows = [f for f in (flows or []) if isinstance(f, dict)]
@@ -238,7 +286,8 @@ def movement_charts(flows: List[dict]) -> List[dict]:
     top = sorted(flows, key=lambda f: _num(f.get("count"), 0), reverse=True)[:15]
     return [{"id": "zone_transitions", "type": "bar",
              "title": "Movement between zones", "unit": "people",
-             "labels": [f"{f.get('from') or '?'} -> {f.get('to') or '?'}" for f in top],
+             "labels": [f"{_flow_end(f, 'from') or '?'} -> "
+                        f"{_flow_end(f, 'to') or '?'}" for f in top],
              "datasets": [{"label": "Transitions",
                            "data": [_num(f.get("count"), 0) for f in top]}]}]
 

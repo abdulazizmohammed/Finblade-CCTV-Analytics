@@ -113,6 +113,26 @@ class Store:
 
     def list_events(self, t0: float, t1: float, camera_id=None, zone_id=None,
                     event_type=None, person_ref=None, limit: int = 500) -> List[dict]: return []
+
+    def identity_window_counts(self, t0: float, t1: float) -> dict:
+        """Distinct people in a time window, from stored history.
+
+        The companion to GlobalIdentityRegistry's live counts, and NOT a
+        duplicate of them. The registry answers "who is here now" from a gallery
+        bounded by max_identities and a retention ceiling; both of those evict,
+        and an evicted person who returns is minted as a new ref. Its cumulative
+        tally therefore counts identity RECORDS, which drifts above the number
+        of people the longer the process runs.
+
+        This counts refs that appear in the event log inside one window. A
+        window bounds the drift to what happened during it, and it survives a
+        restart, which the gallery does not.
+
+        Only events carrying a global_ref count. person_ref is a per-camera,
+        per-session hash of a tracker id, so counting it would count one person
+        once per camera and again after every restart.
+        """
+        return {"unique_total": 0, "cross_camera": 0, "per_camera": []}
     def list_alerts_history(self, t0: float, t1: float, camera_id=None, rule_id=None,
                             limit: int = 500) -> List[dict]: return []
     def zone_state_stats(self, t0: float, t1: float, camera_id=None,
@@ -434,6 +454,28 @@ class InMemoryStore(Store):
             out.append(e)
         out.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
         return out[:limit]
+
+    def identity_window_counts(self, t0, t1):
+        cams: Dict[str, set] = {}
+        by_camera: Dict[str, set] = {}
+        for e in self._events:
+            ts = e.get("timestamp", 0)
+            if not (t0 <= ts <= t1):
+                continue
+            ref = e.get("global_ref")
+            if not ref:
+                continue
+            camera = e.get("camera_id")
+            cams.setdefault(ref, set())
+            if camera:
+                cams[ref].add(camera)
+                by_camera.setdefault(camera, set()).add(ref)
+        return {
+            "unique_total": len(cams),
+            "cross_camera": sum(1 for c in cams.values() if len(c) > 1),
+            "per_camera": [{"camera_id": c, "unique": len(refs)}
+                           for c, refs in sorted(by_camera.items())],
+        }
 
     def list_alerts_history(self, t0, t1, camera_id=None, rule_id=None, limit=500):
         out = []

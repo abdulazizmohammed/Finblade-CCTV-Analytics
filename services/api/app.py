@@ -87,6 +87,13 @@ _TOPOLOGY_PATH = os.environ.get(
     os.path.join(os.path.dirname(__file__), "..", "..", "config", "topology.yaml"))
 id_svc = IdentityService(topology_path=_TOPOLOGY_PATH)
 
+# Source-agnostic detection observations (finblade/observation.py). Separate
+# from IngestService because an observation is not an event: it is a raw
+# measurement from any sensor, camera or otherwise, before anything has decided
+# what it means. Part A accepts and accounts for them; fusion follows.
+from .fusion import FusionService                                # noqa: E402
+fusion_svc = FusionService()
+
 # Manages detection pipelines for UI-provisioned cameras (Add camera + a source).
 from .camera_manager import CameraManager                       # noqa: E402
 _SELF_URL = os.environ.get("FINBLADE_SELF_URL", "http://127.0.0.1:8000")
@@ -1144,6 +1151,35 @@ async def ingest(request: Request):
     payload = await request.json()
     code, body = svc.ingest_event(payload)
     return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/observations/ingest")
+async def ingest_observation(request: Request):
+    """Accept one source-agnostic detection (camera, radar, ...).
+
+    Additive: /events/ingest is unchanged and remains what the camera workers
+    post to. This is the seam a source with no zones and no appearance channel
+    publishes through. Nothing is fused yet — see services/api/fusion.py."""
+    payload = await request.json()
+    code, body = fusion_svc.ingest_observation(payload)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.get("/api/v1/observations/stats")
+async def observation_stats():
+    return fusion_svc.snapshot()
+
+
+@app.get("/api/v1/observations/sources")
+async def observation_sources():
+    return {"sources": fusion_svc.sources()}
+
+
+@app.get("/api/v1/observations/recent")
+async def observations_recent(source_id: str = Query(None),
+                              limit: int = Query(20)):
+    """The last few accepted observations. Shakeout aid, not history."""
+    return {"observations": fusion_svc.recent(source_id=source_id, limit=limit)}
 
 
 @app.post("/api/v1/zones/state")

@@ -77,16 +77,42 @@ Levels 1-7 complete, Level 8 partial:
 - Dashboard: live annotated feed, zone cards, alert feed with acknowledge,
   occupancy report generation
 
+## Scope — BUILT SINCE, past the original cut
+
+These were cut on day one as out-of-budget and have since been built, tested and
+run against real footage. **They are working code. Do not strip them out.**
+
+- **Multi-camera.** One process per camera (`services/api/camera_manager.py`
+  launches `services/inference/run_cpu.py`); cameras are provisioned from the UI
+  against `config/cameras.template.yaml`.
+- **Cross-camera re-identification.** OSNet appearance embeddings
+  (`finblade/appearance.py`) gated by transit-time physics
+  (`finblade/topology.py` + `config/topology.yaml`), resolved to one anonymous
+  `gp_` ref per person by `finblade/globalid.py` behind
+  `services/api/identity.py`. See `tests/test_globalid.py`,
+  `tests/test_identity_transit.py`, `tests/test_cross_camera_dedup.py`.
+- **Physical areas.** `physical_area_id` on a zone plus `finblade/areas.py` —
+  the "two cameras watch one room" abstraction that stops occupancy being
+  double-counted. Symbolic, not metric: it says two polygons are the same room,
+  not where either sits in space.
+- **Facility presence.** `finblade/presence.py` keeps a roster that survives a
+  person leaving camera view, driven by global-ref door crossings.
+- **API-key authentication**, two roles, off unless `FINBLADE_API_KEY` is set
+  (`services/api/auth.py`). User management and multi-tenancy remain cut.
+
+Homography / camera calibration remains **unbuilt** but is no longer cut — it is
+planned as ground-plane fusion (Part B), and is a hard prerequisite for fusing a
+radar source, which carries position but no appearance signature. It waits on
+real point-correspondence data from an actual overlapping camera pair; do not
+implement it against guessed merge radii or bin widths.
+
 ## Scope — DO NOT BUILD (explicitly cut)
 
-- Cross-camera re-identification (any form)
-- Homography / camera calibration
 - Sankey flow diagram
 - Site heatmap
 - R-04 bottleneck detection
-- Second camera support
 - Video clip bookmarking
-- Authentication, user management, multi-tenancy
+- User management, multi-tenancy (API-key auth itself is built — see above)
 - Any model training or fine-tuning
 
 Building cut items is a failure, not a bonus. Time is the binding constraint.

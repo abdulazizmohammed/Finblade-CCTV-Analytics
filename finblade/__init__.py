@@ -10,6 +10,7 @@ feeds (track_id, x1,y1,x2,y2) tuples into this core; see services/inference.
 
 __all__ = [
     "geometry",
+    "observation",
     "zones",
     "debounce",
     "metrics",

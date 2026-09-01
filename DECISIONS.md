@@ -257,3 +257,31 @@ creating a bare `.env` to hold one setting would have left a later
 so. The warning makes that visible; generating keys there instead would turn
 auth on under an operator who never asked for it.
 **Reverse:** delete `.env`, and the two `grep -q` lines in install_service.sh.
+
+## D-24 — pg_dev.sh reads the cluster's real port instead of asserting 5432
+**Choice:** the script now reads line 4 of `.pgdata/postmaster.pid` for the port
+the postmaster actually bound, verifies via `SHOW data_directory` that the
+server answering there really is `.pgdata`, and prints every DSN with that port.
+`start` refuses when something else already holds the port, naming it;
+`PGPORT=` overrides for a box where 5432 cannot be freed. `psql` gained `-w`.
+**Why:** two Postgres servers run on this box — the apt-installed PG 14 owns
+5432 from boot, and the project's PG 16 cluster is on 5433. The script printed a
+5432 DSN unconditionally and listed the databases it found there, so it was
+confidently describing the SYSTEM server while the project's cluster sat
+untouched. Every 5432 default in the repo (`tests/pgfixture.py` LOCAL_DSN, the
+docs) hit the system server, which refuses passwordless TCP — so the whole
+Postgres-backed suite failed with `fe_sendauth: no password supplied`, an auth
+error naming a database with nothing to do with this project.
+**Also fixed:** the probe had no `-w`, so against a password-protected server
+`psql` prompted on a terminal nobody was watching and the script hung forever
+with no output.
+**CAVEAT FOR THE HUMAN:** with the guard in place, stopping this cluster and
+running `start` will now REFUSE while systemd's Postgres holds 5432. That is
+intended — landing on an arbitrary port is the bug — but it means freeing 5432
+(`sudo systemctl disable --now postgresql`) or using `PGPORT=5433`.
+**STILL OUTSTANDING:** `tests/pgfixture.py:29` hardcodes
+`LOCAL_DSN = postgresql://postgres@127.0.0.1:5432/postgres`, so the suite still
+needs `FINBLADE_TEST_DSN=postgresql://postgres@127.0.0.1:5433/postgres` on this
+box. Teaching it to read the port from postmaster.pid would remove the env var;
+not done here because it is test infrastructure beyond the reported fault.
+**Reverse:** `git revert` the pg_dev.sh hunk.

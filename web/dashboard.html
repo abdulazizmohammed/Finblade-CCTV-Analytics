@@ -37,7 +37,7 @@ body{
 .wrap{max-width:1440px;margin:0 auto;padding:18px 22px 40px;}
 
 /* KPI strip */
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:18px;}
 .kpi{background:linear-gradient(180deg,var(--fb-surface-2),var(--fb-surface));border:1px solid var(--fb-line);
   border-radius:var(--fb-r-lg);padding:14px 16px;position:relative;overflow:hidden;}
 .kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--fb-teal);opacity:.35;}
@@ -46,6 +46,10 @@ body{
 .kpi .val .u{font-size:13px;color:var(--fb-text-muted);margin-left:5px;letter-spacing:0;}
 .kpi .sub{margin-top:8px;font-size:11px;color:var(--fb-text-muted);font-family:var(--fb-font-data);}
 .kpi.alert .val{color:var(--fb-critical);}
+/* Roster drift — entries nobody has seen for a while. Amber, never red: red is
+   reserved for "something is wrong on the floor right now", and this is a
+   data-quality caveat asking a human to look at the roster. */
+.kpi .drift{color:var(--fb-warning);}
 
 .grid{display:grid;grid-template-columns:1.65fr 1fr;gap:16px;}
 @media(max-width:960px){.grid{grid-template-columns:1fr;}.kpis{grid-template-columns:repeat(2,1fr);}}
@@ -174,6 +178,12 @@ body{
   <div class="wrap">
     <div class="kpis">
       <div class="kpi"><p class="eyebrow">Total occupancy</p><div class="val fb-num" id="kOcc">0<span class="u">people</span></div><div class="sub" id="kOccSub">across 0 zones</div></div>
+      <!-- Facility occupancy sits next to zone occupancy deliberately: they are
+           different measures and an operator needs to read one against the
+           other. Zone occupancy is people standing inside a polygon this frame;
+           this is people admitted through a door and not yet seen to leave, so
+           it keeps counting someone in a corridor no camera watches. -->
+      <div class="kpi" title="People counted through door crossings and not yet seen to leave — unlike zone occupancy, this survives someone walking out of every camera's view."><p class="eyebrow">In facility</p><div class="val fb-num" id="kFac">0<span class="u">people</span></div><div class="sub" id="kFacSub">counted at doors</div></div>
       <div class="kpi" id="kAlertTile"><p class="eyebrow">Active alerts</p><div class="val fb-num" id="kAlerts">0</div><div class="sub" id="kAlertsSub">0 critical · 0 warning</div></div>
       <div class="kpi"><p class="eyebrow">Cameras online</p><div class="val fb-num" id="kCams">0<span class="u">/ 0</span></div><div class="sub">heartbeat &lt; 30s</div></div>
       <div class="kpi"><p class="eyebrow">Peak density</p><div class="val fb-num" id="kDens">0.00<span class="u">/m²</span></div><div class="sub" id="kDensSub">—</div></div>
@@ -620,6 +630,64 @@ async function pollCounts(){
   catch(e){}
 }
 
+// --- facility occupancy ----------------------------------------------------
+// On its own timer for the same reason as the counts above, and one more: this
+// number changes on door crossings — minutes apart on most sites — while /ws
+// pushes twice a second. Riding the socket would recompute the roster snapshot
+// (stale scan + per-door rate windows) 2x/s per connected dashboard for a figure
+// that moves on the order of minutes, and would throw away the publish-on-change
+// gating the server does deliberately. It would also go stale exactly when the
+// socket drops, because the 5s REST fallback carries zones and alerts only.
+//
+// Unlike pollCounts this paints directly rather than stashing for apply(), so
+// the tile does not depend on there being any zone or alert traffic at all.
+const FACILITY_MS=3000;
+
+function facilityWindow(s){
+  const v=+s||0;
+  return v>=3600?`${Math.round(v/3600)}h`:`${Math.round(v/60)}m`;
+}
+
+// The subtitle, composed from whatever the roster can honestly say. Kept pure so
+// each branch is testable under node (tests/test_facility_tile.py).
+function facilitySub(f){
+  const policyDoors=(f&&f.policy&&f.policy.doors)||[];
+  // No door zones means the count can never be anything but a declared baseline.
+  // A confident "0 people" would read as "the building is empty" when in fact
+  // nothing is being counted — the same trap the zone KPI avoids below.
+  if(!policyDoors.length) return 'no door zones configured — cannot be counted';
+  const doors=(f&&f.doors)||[];
+  const ein=doors.reduce((s,d)=>s+(+d.entry_rate_per_min||0),0);
+  const eout=doors.reduce((s,d)=>s+(+d.exit_rate_per_min||0),0);
+  // Site totals only. Which door is busy is a detail-view question and would
+  // crowd out the headline here.
+  const parts=[`↑${ein.toFixed(1)} ↓${eout.toFixed(1)} /min`];
+  // The decomposition, only when there is a baseline to decompose. At zero it
+  // says nothing and costs a line.
+  const base=+f.baseline||0;
+  if(base>0) parts.push(`${+f.observed||0} observed · ${base} declared`);
+  // Drift: roster entries nobody has seen. Either a person in an unmonitored
+  // space or a missed exit, and nothing here can tell which — so it is surfaced
+  // for a human rather than acted on.
+  const stale=+f.stale||0;
+  if(stale>0) parts.push(
+    `<span class="drift">${stale} unseen &gt;${facilityWindow(f.stale_after_s)}</span>`);
+  return parts.join(' · ');
+}
+
+function renderFacility(f){
+  if(!f)return;
+  // Two small writes on a 3s timer — nothing like the innerHTML rebuilds the
+  // signature guards exist for, so no guard here.
+  $('kFac').innerHTML=`${+f.occupancy||0}<span class="u">people</span>`;
+  $('kFacSub').innerHTML=facilitySub(f);
+}
+
+async function pollFacility(){
+  try{ renderFacility(await fetch(`${API}/api/v1/facility/occupancy`).then(r=>r.json())); }
+  catch(e){}
+}
+
 // Re-render only what CHANGED.
 //
 // apply() runs on every socket message, about twice a second. Each of these
@@ -788,6 +856,7 @@ $('clearAll').addEventListener('click',()=>clearAlerts('all'));
 
 pollCameras();setInterval(pollCameras,3000);   // cameras/feeds refresh independently of WS
 pollCounts();setInterval(pollCounts,3000);     // unique-people counts (zone-independent)
+pollFacility();setInterval(pollFacility,FACILITY_MS);  // door-counted facility roster (WS-independent)
 </script>
 <footer class="fb-footer">
   <div class="fb-footer-build">FinBlade Crowd Analytics &middot; GPU inference &middot; air-gapped build</div>

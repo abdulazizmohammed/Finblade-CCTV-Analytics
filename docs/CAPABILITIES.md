@@ -266,14 +266,25 @@ than cosmetic.
 
 | Page | Contents | Status |
 |---|---|---|
-| `web/dashboard.html` | live feeds, zone cards, alert feed with acknowledge, unique-people counts | Built |
+| `web/dashboard.html` | live feeds, zone cards, alert feed with acknowledge, unique-people counts, facility occupancy | Built |
 | `web/cameras.html` | camera provisioning and pipeline control | Built |
 | `web/history.html` | event and alert history, movement | Built |
 | `web/report.html` | occupancy report generation | Built |
 | `tools/zone-editor.html` | draw and save zone polygons | Built |
 
-Facility occupancy has REST endpoints but **no dashboard consumer yet** — the
-`/ws` payload carries cameras, zones and alerts only.
+The dashboard's "In facility" KPI tile shows door-counted occupancy, aggregate
+door flow, the observed/declared split when a baseline is set, and the drift
+count when roster entries have gone unseen. It polls
+`GET /api/v1/facility/occupancy` every 3s on its own timer rather than riding
+`/ws` — the socket pushes at 2 Hz for a figure that moves on door crossings, and
+its 5s REST fallback carries zones and alerts only, so a socket-fed tile would go
+stale exactly when the socket dropped. The `/ws` payload is unchanged and still
+carries cameras, zones and alerts only.
+
+A site with no door zones configured is told the count is unavailable rather than
+shown a `0`, which would read as "the building is empty". Facility occupancy is
+labelled distinctly from zone occupancy throughout — they are different measures
+and are never shown as the same number.
 
 ## 13. Integrations
 
@@ -298,8 +309,12 @@ Facility occupancy has REST endpoints but **no dashboard consumer yet** — the
 | Cross-camera identity evaluation harness | Built | `scripts/eval_cross_camera.py` |
 | Secret scanning, credential-leak checks | Built | `scripts/secret_scan.sh` |
 
-**Test suite: 1499 passing, 5 skipped.** Runs headless against the in-memory
-store, and against a real Postgres where a cluster is reachable. Every API route
+**Test suite: 1520 passing, 15 skipped.** Runs headless against the in-memory
+store, and against a real Postgres where a cluster is reachable. 10 of the skips
+are UI-behaviour tests that lift JavaScript out of `web/dashboard.html` and run
+it under node (`test_dashboard_sort.py`, `test_facility_tile.py`); they skip
+where no JS runtime is installed, which includes the current dev box — so that
+JavaScript is **not** covered by a green run here. Every API route
 is referenced by at least one test. What each capability is verified by — and
 what still needs a human — is in [TEST_CASES.md](TEST_CASES.md).
 
@@ -310,7 +325,6 @@ what still needs a human — is in [TEST_CASES.md](TEST_CASES.md).
 - Ground-plane homography and geometric fusion (Part B). Blocked on real point
   correspondences from an overlapping camera pair; must not be built against
   guessed merge radii.
-- Dashboard consumption of merged facility counts.
 - Radar identity fusion — depends on Part B.
 
 **Cut** — deliberately out of scope, see [CLAUDE.md](../CLAUDE.md):

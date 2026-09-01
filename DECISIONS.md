@@ -335,3 +335,52 @@ both halves of the stack return on their own.
 **NOT YET VERIFIED:** an actual `wsl --shutdown` and cold boot.
 **Reverse:** `sudo systemctl disable --now finblade-postgres` and delete
 `/etc/systemd/system/finblade-postgres.service`; `scripts/pg_dev.sh` still works.
+
+## D-27 — The facility tile polls; `/ws` is left alone
+**Choice:** the "In facility" KPI tile fetches `GET /api/v1/facility/occupancy`
+on its own 3s timer and paints directly, rather than facility counts being added
+to the `/ws` payload.
+**Why:** three reasons, in order of weight. The socket pushes at 2 Hz, and
+`facility_state()` recomputes the whole roster snapshot — the stale scan plus
+per-door rate windows — on every call; doing that twice a second per connected
+dashboard, for a number that moves when someone walks through a door, is work
+for nothing. It would also discard the server's own publish-on-change gating
+(`service.py`, `counts_gate`), which exists precisely so a quiet building is not
+republished constantly. And the 5s REST fallback carries zones and alerts only,
+so a socket-fed tile would go stale exactly when the socket dropped — the
+failure mode this page has been hardened against repeatedly.
+**Precedent:** identical to `pollCameras` / `pollCounts`, which already run on
+independent 3s timers regardless of socket state, for the reason documented
+above `pollCounts` in `web/dashboard.html`.
+**One deliberate difference from `pollCounts`:** that one stashes into
+`LAST_COUNTS` and depends on `apply()` firing to paint. This one renders
+directly, so the tile does not depend on there being any zone or alert traffic
+at all.
+**Cost:** up to 3s of staleness instead of 0.5s, and one connection slot every
+3s against the browser's ~6-per-origin budget (the snapshot cap at
+`SNAP_MAX_INFLIGHT=2` already reserves headroom for exactly this).
+**Reverse:** delete `pollFacility` and its `setInterval`, add facility data to
+the `/ws` payload in `app.py` AND to `poll()`'s fallback fetches — both, or the
+fallback path regresses.
+
+## D-28 — Drift is amber, and the tile stays out of `.kpi.alert`
+**Choice:** the stale/drift count renders in `--fb-warning` via a `.drift` span;
+the tile never takes the red `.kpi.alert` treatment.
+**Why:** CLAUDE.md reserves red-solid for "something is wrong on the floor right
+now". A roster entry nobody has seen is either a person in an unmonitored space
+or a missed exit, and nothing in the data separates them — it is a data-quality
+caveat that wants a human to look at the roster, not an incident. Red here would
+compete with real density and intrusion alerts.
+**Reverse:** one CSS rule, `.kpi .drift`.
+
+## D-29 — Five KPI tiles across, not an auto-fit wrap
+**Choice:** `.kpis` moved from `repeat(4,1fr)` to `repeat(5,1fr)`; the existing
+960px breakpoint down to two columns is untouched.
+**Why:** the facility tile sits second, next to Total occupancy, because the two
+are different measures and an operator needs to read one against the other.
+**UNVERIFIED — needs eyes.** I cannot see whether five tiles at 1440px reads as
+cramped. At max-width that is roughly 268px per tile; the longest subtitle
+("no door zones configured — cannot be counted") will wrap to two lines, which
+`kOccSub` already does today.
+**Reverse:** `grid-template-columns:repeat(auto-fit,minmax(220px,1fr))`, which
+wraps to 3+2 instead. One line.

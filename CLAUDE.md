@@ -41,6 +41,13 @@ Therefore:
    "improvements" to slices already verified. Forward progress only.
 8. **Never wait for input.** There is no human awake. If you would ask a question,
    pick the most reversible option, log the decision in DECISIONS.md, continue.
+9. **Update `docs/CAPABILITIES.md` in the same commit** that adds, changes or
+   removes a capability — an endpoint, event type, rule, source type, stream,
+   table, view or service. Not in a follow-up commit: a capabilities list that
+   lags the code is worse than none, because it is trusted and wrong. That file
+   states its own rules for what an entry looks like; follow them, especially
+   the distinction between "Built" and "Runs" (see the PRIME DIRECTIVE above —
+   you still cannot claim the vision path is correct, only that it runs).
 
 ---
 

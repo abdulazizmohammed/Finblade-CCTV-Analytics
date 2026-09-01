@@ -14,8 +14,15 @@ from finblade.presence import (
     ADMIT, DISCHARGE, DoorPolicy, FacilityRoster, apply_event,
 )
 
+from .bus import FACILITY_STREAM
 from .schema import validate_ingest, validate_zone_state, validate_zones
 from .store import Store
+
+# Shape marker on every fb:facility record. A consumer branches on this rather
+# than sniffing for fields, and it is bumped on a breaking change — the same
+# habit as the forwarder's envelope version.
+FACILITY_COUNTS = "FACILITY_COUNTS"
+FACILITY_SCHEMA_VERSION = 1
 
 # How long a door policy built from the zones table is reused before rebuilding.
 # Zones change when an operator saves the editor, which also invalidates this
@@ -35,7 +42,7 @@ _MAX_BASELINE = 100_000
 
 
 class IngestService:
-    def __init__(self, store: Store, bus=None, state_gate=None):
+    def __init__(self, store: Store, bus=None, state_gate=None, counts_gate=None):
         self.store = store
         self.bus = bus  # optional event bus with .publish(evt); None = skip
         # The facility roster is the one piece of state here that cannot be
@@ -55,6 +62,17 @@ class IngestService:
         self.state_gate = state_gate if state_gate is not None else StateWriteGate(
             os.environ.get("FINBLADE_STATE_WRITES", "change"),
             float(os.environ.get("FINBLADE_STATE_KEEPALIVE", DEFAULT_KEEPALIVE) or 0))
+        # Same gate, separate knobs, for the fb:facility counts stream. Separate
+        # because the two answer different questions: the zone gate decides what
+        # enters a history table that has to stay small over months, this one
+        # decides what a live consumer is told. Sharing one variable would mean
+        # setting `always` to debug a zone-history problem also floods the
+        # counts stream, which is how one knob becomes two bugs.
+        self.counts_gate = counts_gate if counts_gate is not None else StateWriteGate(
+            os.environ.get("FINBLADE_COUNT_WRITES", "change"),
+            float(os.environ.get("FINBLADE_COUNT_KEEPALIVE", DEFAULT_KEEPALIVE) or 0))
+        self.counts_published = 0
+        self.counts_errors = 0
 
     # -- POST /api/v1/events/ingest --
     def ingest_event(self, payload: dict) -> Tuple[int, dict]:
@@ -162,6 +180,12 @@ class IngestService:
                                       door or view.get("zone_to")
                                       or view.get("zone_from"))
             self._flush_presence(force=True)
+            # A crossing is the only thing that moves the headline count, so the
+            # counts stream reacts here rather than waiting for the next
+            # background tick. The gate still decides — it will always say yes
+            # on a crossing, because occupancy is its change key — so the
+            # periodic loop remains purely the keepalive.
+            self.publish_facility_counts(evt.get("timestamp"))
         elif action:
             self._presence_dirty = True
             self._flush_presence()
@@ -210,6 +234,65 @@ class IngestService:
             return
         self._presence_dirty = False
         self._presence_flushed_at = now
+
+    def facility_counts_record(self, now: float = None,
+                               stale_after_s: float = 3600.0) -> dict:
+        """The merged-count record published to fb:facility.
+
+        Counted on GLOBAL IDENTITY door crossings, never on per-camera detection
+        counts — see finblade/presence.py. That is the whole reason this stream
+        exists separately from summing zone occupancy: a person standing where
+        two cameras overlap is one person here, and a person in a corridor no
+        camera watches is still counted.
+        """
+        now = time.time() if now is None else now
+        body = self.roster.snapshot(now=now, stale_after_s=stale_after_s)
+        body["record_type"] = FACILITY_COUNTS
+        body["schema_version"] = FACILITY_SCHEMA_VERSION
+        return body
+
+    def publish_facility_counts(self, now: float = None,
+                                force: bool = False) -> Optional[dict]:
+        """Publish merged counts to fb:facility if the gate allows it.
+
+        Returns the published record, or None if it was suppressed as unchanged
+        or there is no bus. Never raises: a bus problem must not be able to
+        reject an event or break a crossing, which is why the caller in
+        _apply_presence can ignore the result.
+        """
+        if self.bus is None:
+            return None
+        now = time.time() if now is None else now
+        occupancy = self.roster.occupancy()
+        if not force:
+            # Occupancy alone is the change key, deliberately. baseline and
+            # observed are its two components and cannot move without moving it;
+            # door tallies only change on a crossing, which changes it too. What
+            # this excludes is `stale`, which creeps upward with the clock alone
+            # and would defeat the gate entirely, republishing every tick for a
+            # number a consumer can recompute.
+            if not self.counts_gate.should_write(
+                    self.roster.site_id or "", "__facility__",
+                    occupancy, None, now):
+                return None
+        record = self.facility_counts_record(now=now)
+        try:
+            self.bus.publish_to(FACILITY_STREAM, record)
+        except Exception:                                   # noqa: BLE001
+            # Counted rather than swallowed silently: a stream that has been
+            # failing all day must be visible in /api/v1/health, not inferred
+            # from a dashboard that stopped moving.
+            self.counts_errors += 1
+            return None
+        self.counts_published += 1
+        return record
+
+    def counts_stats(self) -> dict:
+        return {"stream": FACILITY_STREAM,
+                "published": self.counts_published,
+                "errors": self.counts_errors,
+                "bus": type(self.bus).__name__ if self.bus else None,
+                "gate": self.counts_gate.stats()}
 
     def facility_state(self, now: float = None, stale_after_s: float = 3600.0) -> dict:
         now = time.time() if now is None else now

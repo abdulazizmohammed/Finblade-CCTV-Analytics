@@ -216,3 +216,44 @@ R-04, bookmarking, user management and multi-tenancy remain cut.
 be removed. Left as-is, a later session following the file would strip out
 working code.
 **Reverse:** `git revert` the CLAUDE.md hunk.
+
+## D-21 — `redis` was never a dependency; RedisStreamBus was a latent crash
+**Choice:** added `redis==5.2.1` to requirements.txt and installed it.
+**Why:** `RedisStreamBus.__init__` does `import redis`, and the package was in
+neither requirements.txt nor the venv. Setting `REDIS_URL` on any deployment
+would have taken the API down at startup on ModuleNotFoundError. Nothing had
+ever set it, so the bus had only ever run as `InMemoryBus` and the failure was
+invisible. Pure-Python wheel, no ABI coupling to the numpy/torch pins, installed
+under `-c constraints.txt` and it changed no other pin.
+**Reverse:** drop the line; with `REDIS_URL` unset nothing imports it.
+
+## D-22 — Counts publish on crossing AND on a keepalive, not on a fixed interval
+**Choice:** `IngestService.publish_facility_counts` is called directly from
+`_apply_presence` on every ADMIT/DISCHARGE, and from a 5s background loop in
+`app.py` that exists only to service the keepalive. Both go through the same
+`StateWriteGate` (`FINBLADE_COUNT_WRITES`, `FINBLADE_COUNT_KEEPALIVE`, default
+change/300s), which is the gate zone-state history already uses.
+**Why:** a crossing is the only thing that moves the headline number, so waiting
+up to a tick to publish it would add latency for nothing. The keepalive is the
+part that cannot be dropped: once publishing is sparse, "nothing changed" and
+"the publisher died" look identical on the stream. Occupancy alone is the change
+key — `stale` creeps upward with the clock and would defeat the gate entirely.
+**CAVEAT FOR THE HUMAN:** separate env vars from the zone gate on purpose. One
+shared knob would mean setting `always` to debug zone history also floods the
+counts stream.
+**Reverse:** `FINBLADE_COUNT_WRITES=always` restores a publish per tick; deleting
+`_facility_counts_loop` from the lifespan task list leaves only crossing-driven
+publishing.
+
+## D-23 — A stub `.env` would have silently disabled auth on the next install
+**Choice:** created `.env` with `REDIS_URL` (gitignored, chmod 600) and a header
+saying it is incomplete; added `REDIS_URL` to both branches of
+`scripts/install_service.sh`; made that script WARN when an existing `.env` has
+no `FINBLADE_API_KEY`.
+**Why:** the installer generates keys only when `.env` is absent — an existing
+file takes the "keeping it" branch, which tops up two variables and no keys. So
+creating a bare `.env` to hold one setting would have left a later
+`install_service.sh` run producing an unauthenticated API with nothing saying
+so. The warning makes that visible; generating keys there instead would turn
+auth on under an operator who never asked for it.
+**Reverse:** delete `.env`, and the two `grep -q` lines in install_service.sh.

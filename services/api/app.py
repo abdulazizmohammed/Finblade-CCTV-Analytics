@@ -116,7 +116,7 @@ _cam_offline: dict = {}
 # Background loops swallow their exceptions so one bad tick cannot kill them.
 # These counters are what makes that survivable rather than silent: they surface
 # in /api/v1/health, so a loop that has been failing for an hour is visible.
-_loop_errors = {"offline": 0, "report": 0}
+_loop_errors = {"offline": 0, "report": 0, "counts": 0}
 
 
 async def _offline_monitor():
@@ -181,6 +181,39 @@ async def _report_scheduler():
             # that has stopped producing reports must be visible in /health.
             _loop_errors["report"] += 1
             log.exception("scheduled report generation failed")
+
+
+# --- merged facility counts -> fb:facility ---------------------------------
+# How often the gate is CONSULTED, not how often it publishes. A crossing
+# publishes immediately from IngestService._apply_presence, so this loop only
+# ever emits the keepalive — the periodic "still 14 people inside" that stops a
+# quiet building being indistinguishable from a dead publisher. 5s matches the
+# offline monitor's tick; the gate's keepalive (FINBLADE_COUNT_KEEPALIVE,
+# default 300s) is what actually decides the cadence.
+COUNTS_TICK = float(os.environ.get("FINBLADE_COUNT_TICK", "5"))
+
+
+async def _facility_counts_loop():
+    # Anchor the stream at startup. A consumer reading the backlog from "0"
+    # then finds a value immediately rather than waiting for the first person
+    # to move, which on a quiet site could be hours.
+    try:
+        svc.publish_facility_counts(force=True)
+    except Exception:                              # noqa: BLE001
+        _loop_errors["counts"] += 1
+        log.exception("initial facility counts publish failed")
+    while True:
+        try:
+            await asyncio.sleep(COUNTS_TICK)
+            svc.publish_facility_counts()
+        except asyncio.CancelledError:
+            break
+        except Exception:                          # noqa: BLE001
+            # publish_facility_counts already swallows bus errors into its own
+            # counter; reaching here means something else broke. Either way the
+            # loop must survive, and the failure must be visible in /health.
+            _loop_errors["counts"] += 1
+            log.exception("facility counts tick failed")
 
 
 # --- retention -------------------------------------------------------------
@@ -344,6 +377,7 @@ async def lifespan(app):
              asyncio.create_task(_report_scheduler()),
              asyncio.create_task(_forward_loop()),
              asyncio.create_task(_retention_loop()),
+             asyncio.create_task(_facility_counts_loop()),
              asyncio.create_task(_autostart_cameras())]
     yield
     for t in tasks:
@@ -1475,6 +1509,14 @@ def _dependency_checks() -> dict:
     # altogether, and the only symptom would be a report that looks a bit flat
     # a week later.
     checks["state_writes"] = dict(svc.state_gate.stats(), ok=True)
+    # The fb:facility counts stream. Not-ok only on a publish that actually
+    # failed — suppression is the gate working. `bus` names the class, so an
+    # InMemoryBus (REDIS_URL unset) is visible as what it is rather than looking
+    # like a healthy stream nobody is receiving.
+    checks["facility_counts"] = dict(
+        svc.counts_stats(),
+        ok=(svc.counts_errors == 0 and _loop_errors["counts"] == 0),
+        loop_errors=_loop_errors["counts"])
     checks["ts"] = now
     return checks
 

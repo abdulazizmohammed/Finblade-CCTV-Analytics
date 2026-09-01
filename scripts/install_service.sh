@@ -80,6 +80,12 @@ FINBLADE_SELF_URL=http://127.0.0.1:8000
 # failed rather than like nothing started them.
 FINBLADE_AUTOSTART_CAMERAS=1
 
+# Event bus. Two streams: fb:events (every ingested event) and fb:facility
+# (merged occupancy counts). Unset, the API runs on an in-process bus and
+# nothing outside it ever sees a count — a working system with no bus.
+# Check /api/v1/health -> checks.facility_counts.bus to see which is in use.
+REDIS_URL=redis://127.0.0.1:6379/0
+
 # Push to FinBlade (optional): set the URL to enable.
 # FINBLADE_URL=https://finblade.example.com
 # FINBLADE_OUTBOUND_KEY=
@@ -91,6 +97,18 @@ else
   grep -q FINBLADE_PORT "$REPO/.env" || echo "FINBLADE_PORT=8000" >> "$REPO/.env"
   grep -q FINBLADE_AUTOSTART_CAMERAS "$REPO/.env" \
     || echo "FINBLADE_AUTOSTART_CAMERAS=1" >> "$REPO/.env"
+  grep -q REDIS_URL "$REPO/.env" \
+    || echo "REDIS_URL=redis://127.0.0.1:6379/0" >> "$REPO/.env"
+  # An .env that predates key generation has NO keys in it, and this branch
+  # does not add them — so auth is off and nothing says so. Generating them
+  # here would turn auth on under an operator who never asked, so say it
+  # instead and let them run the documented rotation.
+  grep -q FINBLADE_API_KEY "$REPO/.env" || {
+    echo "!! .env has no FINBLADE_API_KEY — the API is UNAUTHENTICATED." >&2
+    echo "   To enable auth:  FINBLADE_API_KEY=\$(.venv/bin/python -c \\" >&2
+    echo "       'import secrets;print(secrets.token_urlsafe(32))') \\" >&2
+    echo "       bash scripts/install_service.sh" >&2
+  }
 fi
 
 # Anything supplied in the environment wins, on a fresh install or an existing

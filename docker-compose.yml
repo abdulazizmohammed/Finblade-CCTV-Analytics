@@ -27,9 +27,34 @@ services:
       - "video"
       - "render"
 
+  # Stage 4 — event bus. Two streams: fb:events (every ingested event) and
+  # fb:facility (merged occupancy counts). See services/api/bus.py.
+  #
+  # Published on the host port because THE API DOES NOT RUN IN COMPOSE — it runs
+  # under systemd or scripts/start_stack.sh and reads .env (see docs/DEPLOY.md).
+  # So this container exists to give that process a Redis to connect to, and
+  # .env needs the matching line:
+  #
+  #     REDIS_URL=redis://127.0.0.1:6379/0
+  #
+  # Without REDIS_URL the API falls back to InMemoryBus and publishes into RAM.
+  # That is a working system with no bus, not a broken one — but nothing outside
+  # the process ever sees a count, so check /api/v1/health -> facility_counts.bus
+  # if a consumer is seeing nothing.
+  #
+  # A host Redis (apt install redis-server) serves the same purpose; use one or
+  # the other, not both on 6379.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # No persistence on purpose. Both streams are live telemetry with a capped
+    # backlog (MAXLEN 10000) and the durable record is Postgres; an RDB dump
+    # would preserve a stale backlog across a restart to no benefit.
+
   # ---- NEXT STEPS (build these once the spine is green) ----
-  # redis:            # Stage 4 — event bus + live state + embedding TTL
-  #   image: redis:7-alpine
   # api:              # Stage 5/6 — FastAPI: /events/ingest, /zones/state, rule engine
   #   build: ./services/api
   # postgres:         # zones/cameras/alerts/events (+ TimescaleDB for zone_state_ts)

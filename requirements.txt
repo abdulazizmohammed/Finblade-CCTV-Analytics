@@ -50,6 +50,14 @@ PyYAML==6.0.2
 # the migration exists to remove.
 psycopg[binary,pool]==3.3.4
 
+# --- event bus --------------------------------------------------------------
+# Only used when REDIS_URL is set; unset, the API runs on InMemoryBus and this
+# is never imported. It was missing entirely until Part C, which made
+# RedisStreamBus a latent failure: setting REDIS_URL would have taken the API
+# down at startup on ModuleNotFoundError, and nothing had ever set it.
+# Pure-Python wheel, no ABI coupling to the numpy/torch pins above.
+redis==5.2.1
+
 # --- weight fetching --------------------------------------------------------
 gdown==5.2.2                 # scripts/get_weights.py pulls OSNet via boxmot
 

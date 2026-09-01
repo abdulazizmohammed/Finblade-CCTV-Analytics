@@ -31,6 +31,7 @@ one test file naming it.
 | Area | Verified by |
 |---|---|
 | Geometry, foot point, point-in-polygon incl. on-edge | `test_geometry.py`, `test_zones.py` |
+| Geometry vs OpenCV, winding, ray-through-vertex | `test_geometry_properties.py` |
 | Zone assignment, restricted precedence, detection masks | `test_zones.py` |
 | Boundary debounce, N-1 vs N frames | `test_debounce.py` |
 | Density, capacity %, dwell, inflow/outflow, 5s aggregate | `test_metrics.py` |
@@ -57,6 +58,44 @@ one test file naming it.
 | Report generation, CSV/JSON parity | `test_uncovered_routes.py` |
 | Pipeline smoke — N frames, >0 events | `test_pipeline_integration.py` |
 | Theme compliance | `test_theme_compliance.py` |
+
+### Cross-camera identity — the best-covered area in the repo
+
+~191 tests across `test_globalid.py` (41), `test_appearance.py` (35),
+`test_identity_service.py` (33), `test_areas.py` (27), `test_topology.py` (25),
+`test_identity_transit.py` (16) and `test_cross_camera_dedup.py` (14). They cover
+the adversarial cases, not just the happy path: two people in similar clothing
+must not merge; ambiguous candidates split rather than guess; a track live on
+another camera blocks the match regardless of appearance score; unrelated
+cameras are never compared however alike they look; one camera cannot crowd
+every other viewpoint out of a feature bank.
+
+**What that does not cover.** Every test feeds *synthetic* embedding vectors.
+Nothing here establishes that OSNet's real output separates real people at this
+site — that is what `scripts/eval_cross_camera.py` and `TC-M-06` are for, and
+why the threshold in `globalid.py` carries a measured comment saying it is a
+floor rather than a settled value.
+
+### Geometry — the foundation, and the thinnest until now
+
+`point_in_polygon` decides every zone assignment, so an error there is an error
+in every count downstream. It had 8 tests, all on one axis-aligned square.
+
+`test_geometry_properties.py` adds the check that mattered most: a **differential
+test against `cv2.pointPolygonTest`**, which `finblade/geometry.py` names as the
+semantics it matches, over several thousand points across squares, stars, plus
+shapes, random simple polygons and a real 1280×720 zone rectangle. The claim was
+load-bearing and untested — `services/inference/main.py` assigns zones with
+cv2's implementation while everything downstream of `finblade/zones.py` uses the
+pure-Python one, so a divergence would put the same person in different zones on
+two code paths. They agree.
+
+Also now covered: reversed winding (documented as supported, never tested),
+rays passing exactly through a vertex, horizontal edges lying on the ray, and
+degenerate bounding boxes.
+
+**Geometric fusion (ground plane, homography) has no tests because it does not
+exist.** See Part D and Part B of the fusion design.
 
 ### What automated tests cannot establish
 

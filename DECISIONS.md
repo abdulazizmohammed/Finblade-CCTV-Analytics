@@ -296,12 +296,9 @@ holding the complete database, on the latest version. PG 16 over PG 14 was their
 call. Nothing was migrated because nothing existed to migrate — both clusters'
 tables were empty, verified before anything was stopped; PG 14 held the same
 schema and had never taken a row.
-**CAVEAT FOR THE HUMAN — the one real regression.** PG 14 was systemd-managed
-and started at boot. This cluster is started by `pg_ctl` and is NOT persistent
-across a WSL restart, so after a reboot it must be started by hand before
-`start_stack.sh`, or the API refuses to boot against a dead server:
-    bash scripts/pg_dev.sh start
-A systemd unit for it would remove that ritual and has not been written.
+**REGRESSION SINCE CLOSED BY D-26.** PG 14 was systemd-managed and started at
+boot; this cluster was not, so it needed hand-starting after every reboot. It is
+now a service and does not.
 **Reverse:** `sudo systemctl enable --now postgresql` brings PG 14 back; it still
 has its data directory and its `finblade` schema untouched. Its packages were
 NOT purged. The port guard in pg_dev.sh will then refuse to start .pgdata on
@@ -309,3 +306,32 @@ NOT purged. The port guard in pg_dev.sh will then refuse to start .pgdata on
 **Verified:** full suite 1453 passed / 5 skipped with NO environment overrides —
 `pgfixture.py`'s hardcoded 5432 resolves correctly on its own again. API boots
 with PostgresStore + RedisStreamBus, `/api/v1/health` healthy.
+
+## D-26 — The dev cluster is a systemd service, not a hand-started daemon
+**Choice:** `deploy/finblade-postgres.service` + `scripts/install_pg_service.sh`,
+installed and enabled. `deploy/finblade-api.service` gained
+`After=`/`Wants=finblade-postgres.service`.
+**Why:** D-25 traded systemd management for a newer Postgres, which meant the
+database was gone after every WSL restart — and because the API connects eagerly
+when `DATABASE_URL` is set, a dead database presented as a broken application
+rather than as a stopped service. This gets both.
+**Two things in the unit that are not boilerplate:**
+`Type=forking` with `pg_ctl -w`, because `-w` does not return until the server
+accepts connections — that is what makes `After=` on this unit mean "the
+database is ready" instead of "the process was spawned", and without it the API
+starts first and dies. And `KillSignal=SIGINT`, because the postmaster reads
+systemd's default SIGTERM as a SMART shutdown that waits for every client to
+leave voluntarily; with the API holding a pool that never happens and every
+reboot ends in a stop timeout. SIGINT is fast shutdown.
+`Wants`, not `Requires`, on the API side: a host running a packaged or remote
+Postgres has no such unit, and `Requires` on a missing unit is a hard failure.
+**NOT FOR PRODUCTION.** The installer says so. This exists because the dev box's
+cluster came from `pgserver` test tooling never meant to outlive a Python
+process; a real host should run a packaged Postgres.
+**Verified:** enabled and symlinked into `multi-user.target.wants`; clean
+stop/start through systemd with 5432 released and re-bound; database intact
+afterwards (14 tables, 17 views). `redis-server` was already enabled at boot, so
+both halves of the stack return on their own.
+**NOT YET VERIFIED:** an actual `wsl --shutdown` and cold boot.
+**Reverse:** `sudo systemctl disable --now finblade-postgres` and delete
+`/etc/systemd/system/finblade-postgres.service`; `scripts/pg_dev.sh` still works.

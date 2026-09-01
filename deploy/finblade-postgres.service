@@ -1,0 +1,60 @@
+[Unit]
+# The dev cluster in .pgdata (PostgreSQL 16), started as a real service so it
+# survives a reboot.
+#
+# WHY THIS EXISTS. The cluster was installed by scripts/pg_local_install.sh via
+# the `pgserver` package, which is test tooling: it runs a postmaster only while
+# a Python process holds a handle. scripts/pg_dev.sh already works around that by
+# starting the same binary with pg_ctl as a daemon — but a daemon started by
+# hand is still gone after a WSL restart, and the API refuses to boot against a
+# dead server, so every reboot looked like the application had broken.
+#
+# This is the dev-box equivalent of the apt package's own unit. A production
+# host should use a real packaged Postgres and never install this.
+Description=FinBlade dev Postgres (PG 16, __REPO__/.pgdata)
+Documentation=file://__REPO__/docs/DEPLOY.md
+After=network.target
+
+[Service]
+# forking, not simple, because pg_ctl -w does not return until the server is
+# actually accepting connections. That is what makes After= on this unit mean
+# "the database is ready" rather than "the process has been spawned" — without
+# it the API starts first, finds nothing listening, and dies.
+Type=forking
+User=__USER__
+Group=__USER__
+WorkingDirectory=__REPO__
+PIDFile=__REPO__/.pgdata/postmaster.pid
+
+# The bundled build links against its own libs, not the system ones.
+Environment=LD_LIBRARY_PATH=__REPO__/.pgtest/pgserver/pginstall/lib
+
+# Same invocation as scripts/pg_dev.sh, deliberately: one mental model for how
+# this cluster is started, whichever route starts it. Listening on 127.0.0.1 as
+# well as the unix socket because a TCP DSN is unambiguous and the socket URI
+# form is not — see the note in pg_dev.sh.
+ExecStart=__REPO__/.pgtest/pgserver/pginstall/bin/pg_ctl -D __REPO__/.pgdata \
+          -l __REPO__/scripts/logs/pg_dev.log -w -t 60 \
+          -o "-k __REPO__/.pgdata -p 5432 -h 127.0.0.1" start
+ExecStop=__REPO__/.pgtest/pgserver/pginstall/bin/pg_ctl -D __REPO__/.pgdata \
+         -m fast -w -t 60 stop
+ExecReload=__REPO__/.pgtest/pgserver/pginstall/bin/pg_ctl -D __REPO__/.pgdata reload
+
+# Fast shutdown: disconnect clients and roll back, rather than systemd's default
+# SIGTERM, which the postmaster reads as SMART shutdown and which therefore
+# waits for every client to leave of its own accord. With the API pooling
+# connections that never happens and the stop times out on every reboot.
+KillSignal=SIGINT
+TimeoutStopSec=70
+
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=finblade-postgres
+
+[Install]
+WantedBy=multi-user.target

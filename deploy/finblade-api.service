@@ -4,6 +4,15 @@ Documentation=file://__REPO__/docs/DEPLOY.md
 After=network-online.target
 Wants=network-online.target
 
+# Order behind the dev Postgres when it is installed. With DATABASE_URL set the
+# API connects eagerly and refuses to start against a dead server, so on a box
+# where both are units the API must not race the database up.
+#
+# Wants, not Requires: on a host running a packaged or remote Postgres this unit
+# does not exist, and Requires on a missing unit is a hard start failure.
+After=finblade-postgres.service
+Wants=finblade-postgres.service
+
 [Service]
 Type=simple
 User=__USER__

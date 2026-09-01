@@ -37,7 +37,8 @@ whether a zone polygon sits on the floor. Anything downstream of the detector
 inherits that. Those capabilities are marked **Runs** and are qualified with what
 was measured (frames processed, detections per frame) rather than asserted as
 correct. Evidence for human review is written to `evidence/`. See the PRIME
-DIRECTIVE in [CLAUDE.md](../CLAUDE.md).
+DIRECTIVE in [CLAUDE.md](../CLAUDE.md). The manual checks that cover those
+capabilities are `TC-M-01`..`TC-M-10` in [TEST_CASES.md](TEST_CASES.md).
 
 ---
 
@@ -297,8 +298,10 @@ Facility occupancy has REST endpoints but **no dashboard consumer yet** — the
 | Cross-camera identity evaluation harness | Built | `scripts/eval_cross_camera.py` |
 | Secret scanning, credential-leak checks | Built | `scripts/secret_scan.sh` |
 
-**Test suite: 1453 passing, 5 skipped.** Runs headless against the in-memory
-store, and against a real Postgres where a cluster is reachable.
+**Test suite: 1499 passing, 5 skipped.** Runs headless against the in-memory
+store, and against a real Postgres where a cluster is reachable. Every API route
+is referenced by at least one test. What each capability is verified by — and
+what still needs a human — is in [TEST_CASES.md](TEST_CASES.md).
 
 ## 15. Not built
 

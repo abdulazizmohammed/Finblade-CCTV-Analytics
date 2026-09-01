@@ -279,9 +279,33 @@ with no output.
 running `start` will now REFUSE while systemd's Postgres holds 5432. That is
 intended — landing on an arbitrary port is the bug — but it means freeing 5432
 (`sudo systemctl disable --now postgresql`) or using `PGPORT=5433`.
-**STILL OUTSTANDING:** `tests/pgfixture.py:29` hardcodes
-`LOCAL_DSN = postgresql://postgres@127.0.0.1:5432/postgres`, so the suite still
-needs `FINBLADE_TEST_DSN=postgresql://postgres@127.0.0.1:5433/postgres` on this
-box. Teaching it to read the port from postmaster.pid would remove the env var;
-not done here because it is test infrastructure beyond the reported fault.
+**RESOLVED BY D-25:** the port split is gone, so `tests/pgfixture.py`'s hardcoded
+5432 is correct again and no `FINBLADE_TEST_DSN` is needed. The port check stays
+because it is what would catch the split recurring.
 **Reverse:** `git revert` the pg_dev.sh hunk.
+
+## D-25 — One Postgres on the dev box: PG 16 in .pgdata, on 5432
+**Choice:** stopped and disabled the apt-installed PG 14
+(`sudo systemctl disable --now postgresql`), and moved the project's PG 16.2
+cluster from 5433 onto 5432. Created the `finblade` database there and applied
+the full schema + all 17 analytics views with `scripts/pg_apply.py`.
+`.env` carries `DATABASE_URL=postgresql://postgres@127.0.0.1:5432/finblade`.
+**Why:** two servers on one box was the root cause of the whole
+`fe_sendauth: no password supplied` confusion, and the operator asked for one
+holding the complete database, on the latest version. PG 16 over PG 14 was their
+call. Nothing was migrated because nothing existed to migrate — both clusters'
+tables were empty, verified before anything was stopped; PG 14 held the same
+schema and had never taken a row.
+**CAVEAT FOR THE HUMAN — the one real regression.** PG 14 was systemd-managed
+and started at boot. This cluster is started by `pg_ctl` and is NOT persistent
+across a WSL restart, so after a reboot it must be started by hand before
+`start_stack.sh`, or the API refuses to boot against a dead server:
+    bash scripts/pg_dev.sh start
+A systemd unit for it would remove that ritual and has not been written.
+**Reverse:** `sudo systemctl enable --now postgresql` brings PG 14 back; it still
+has its data directory and its `finblade` schema untouched. Its packages were
+NOT purged. The port guard in pg_dev.sh will then refuse to start .pgdata on
+5432, which is the intended behaviour.
+**Verified:** full suite 1453 passed / 5 skipped with NO environment overrides —
+`pgfixture.py`'s hardcoded 5432 resolves correctly on its own again. API boots
+with PostgresStore + RedisStreamBus, `/api/v1/health` healthy.

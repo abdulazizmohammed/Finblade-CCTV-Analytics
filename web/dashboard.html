@@ -677,6 +677,24 @@ function facilitySub(f){
 
 function renderFacility(f){
   if(!f)return;
+  // FALLBACK: no door zones means the roster can never move, so the tile would
+  // read 0 for ever on a site that plainly has people in it. Show distinct
+  // people IN VIEW instead — the same de-duplicated figure the feeds use.
+  //
+  // This is a DIFFERENT MEASURE and the subtitle says so, because the two
+  // behave differently in the one case that matters: door-counted occupancy
+  // keeps counting someone who walks into a corridor no camera watches, and
+  // this does not — it drops to 0 the moment the last person leaves frame. An
+  // unlabelled substitution would make the tile mean two things depending on
+  // configuration, with nothing on screen to say which.
+  //
+  // Mirrors the Total-occupancy fallback to counts.live above.
+  const doors=(f.policy&&f.policy.doors)||[];
+  if(!doors.length&&LAST_COUNTS&&LAST_COUNTS.live!=null){
+    $('kFac').innerHTML=`${+LAST_COUNTS.live||0}<span class="u">people</span>`;
+    $('kFacSub').textContent='in view · no doors, not door-counted';
+    return;
+  }
   // Two small writes on a 3s timer — nothing like the innerHTML rebuilds the
   // signature guards exist for, so no guard here.
   $('kFac').innerHTML=`${+f.occupancy||0}<span class="u">people</span>`;

@@ -191,6 +191,18 @@ def test_a_site_with_no_doors_is_told_it_cannot_be_counted():
     assert "no door zones configured — cannot be counted" in _dashboard()
 
 
+def test_the_no_door_fallback_is_labelled_as_a_different_measure():
+    """With no doors the tile shows people IN VIEW, which is not the same thing
+    as door-counted occupancy: it drops to 0 when the last person leaves frame,
+    where the roster would keep counting them. Substituting one for the other
+    silently would make the tile mean two things with nothing on screen to say
+    which, so the label is the feature — guard it."""
+    src = _dashboard()
+    body = src[src.index("function renderFacility("):src.index("async function pollFacility")]
+    assert "LAST_COUNTS.live" in body
+    assert "not door-counted" in body
+
+
 def test_the_tile_polls_instead_of_riding_the_socket():
     """Facility counts must not be hung off /ws.
 

@@ -281,10 +281,14 @@ its 5s REST fallback carries zones and alerts only, so a socket-fed tile would g
 stale exactly when the socket dropped. The `/ws` payload is unchanged and still
 carries cameras, zones and alerts only.
 
-A site with no door zones configured is told the count is unavailable rather than
-shown a `0`, which would read as "the building is empty". Facility occupancy is
-labelled distinctly from zone occupancy throughout — they are different measures
-and are never shown as the same number.
+On a site with **no door zones configured** the roster can never move, so the
+tile falls back to distinct people *in view* (`GET /api/v1/identity/counts`,
+`live`) and labels itself `in view · no doors, not door-counted`. The label is
+load-bearing: door-counted occupancy keeps counting someone who walks into a
+corridor no camera watches, and the in-view figure does not — it drops to zero
+when the last person leaves frame. The two are never shown as the same number
+without saying which is on screen. If the counts endpoint is also unavailable
+the tile says the count cannot be produced rather than rendering a bare `0`.
 
 ## 13. Integrations
 

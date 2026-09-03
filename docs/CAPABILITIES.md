@@ -4,6 +4,10 @@ What this system can actually do, as of the last update below. One entry per
 capability, with the file that implements it so a claim here can be checked
 against code rather than taken on trust.
 
+For *what each capability is built out of* — library, version, and the
+deliberate non-choices (no pydantic, no ORM, no JS framework, no chart library)
+— see [TECH_STACK.md](TECH_STACK.md).
+
 **Last updated:** 2026-09-01
 
 ---

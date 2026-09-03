@@ -37,32 +37,32 @@ transits:
   - a: CAM-W-01
     b: CAM-W-04
     min_seconds: 0.0
-    max_seconds: 120.0
+    max_seconds: 3600.0
   # s1 <-> s2 via D2, D3
   - a: CAM-W-01
     b: CAM-W-05
     min_seconds: 0.0
-    max_seconds: 120.0
+    max_seconds: 3600.0
   # s1 <-> s2 via D2, D3
   - a: CAM-W-02
     b: CAM-W-04
     min_seconds: 0.0
-    max_seconds: 120.0
+    max_seconds: 3600.0
   # s1 <-> s2 via D2, D3
   - a: CAM-W-02
     b: CAM-W-05
     min_seconds: 0.0
-    max_seconds: 120.0
+    max_seconds: 3600.0
   # s1 <-> s3 via D4
   - a: CAM-W-01
     b: CAM-W-03
     min_seconds: 0.0
-    max_seconds: 120.0
+    max_seconds: 3600.0
   # s1 <-> s3 via D4
   - a: CAM-W-02
     b: CAM-W-03
     min_seconds: 0.0
-    max_seconds: 120.0
+    max_seconds: 3600.0
 
 # NEEDS A HUMAN — pairs this script will not guess.
 #
@@ -75,7 +75,7 @@ transits:
 
 default_transit:
   min_seconds: 0.0
-  max_seconds: 120.0
+  max_seconds: 3600.0
 
 overlap_tolerance_seconds: 5.0
 
@@ -90,34 +90,7 @@ allow_unknown_pairs: true
 # footage to retune them on — see the threshold comment there.
 matching:
   threshold: 0.70
-  # MEASURED on this footage 2026-09-03, three controlled 10-minute runs from a
-  # fresh registry, same clips, same topology, margin the only variable:
-  #
-  #   margin   unique_total  identities  created  rejected_margin  matched
-  #   0.06         14            12         36          37           129
-  #   0.02         11            10         23          16           137
-  #   0.01          9             9         14           3           136
-  #
-  # `matched` is flat, so the gain is from NOT minting duplicates rather than
-  # from matching more loosely. site_occupancy at 0.01 reads 5 against a real
-  # headcount of 4-5. Cameras-per-identity was IDENTICAL at 0.02 and 0.01
-  # (5 on one camera, 2 on two, 1 on three, 1 on four), which is the check for
-  # the opposite error: had it started fusing different people, that
-  # distribution would have collapsed. It did not.
-  #
-  # At 0.01 only 3 margin rejections remain in 10 minutes, so this knob is
-  # exhausted - the residual over-count (9 refs for 4-5 people) is now
-  # below_threshold cases and track fragmentation, not ambiguity.
-  #
-  # THE RISK THIS ACCEPTS, stated plainly. DECISIONS.md D-10 keeps a margin so
-  # that two people who look alike are split rather than merged, because a
-  # wrong merge puts a stranger's movements under someone else's ref. This
-  # footage cannot exercise that: it is a few casually-dressed people in an
-  # office, not "two staff in the same uniform". 0.01 is the right value for
-  # THIS site as measured; a uniformed site should re-measure before trusting
-  # it, and scripts/eval_cross_camera.py reports false_merges, which is the
-  # number that would settle it.
-  margin: 0.01
+  margin: 0.06
   ttl_seconds: 300
   bank_capacity: 5
   max_identities: 2000

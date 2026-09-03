@@ -103,6 +103,9 @@ Schema validation is deliberately hand-rolled rather than pydantic so
 | R-01/02/03/05/06/07/08/09 | Built | `finblade/rules.py` — `HysteresisLatch`, stdlib only |
 | R-10 fire/smoke rule | Built | `finblade/rules.py` `evaluate_hazard` — stdlib; the rule is provable without a model |
 | Fire/smoke detection | **Runs** | `models/fire_smoke_yolov8n.pt` (D-Fire, CC0-1.0) via `ultralytics`, in `services/inference/hazard_client.py` at 2 Hz. **AGPL-3.0 via YOLOv8 — see D-31 before commercial deployment.** Evaluation checkpoint, not a validated fire alarm |
+| R-11 PPE rule + state machine | Built | `finblade/ppe.py` + `finblade/rules.py` `evaluate_ppe` — stdlib; the five-state machine is provable without a model |
+| PPE item → person association | Built | `finblade/geometry.py` `associate_item` — stdlib, anatomical containment, no numpy/shapely |
+| PPE detection | **Runs** | `models/ppe_safetyvision_v2.pt` (`ayushgupta7777/safetyvision-yolov8` v2) via `ultralytics`, in `services/inference/ppe_client.py` at 2 Hz. **AGPL-3.0 via YOLOv8.** Evaluation checkpoint; weaker on vest/mask than hardhat — see D-32 |
 | Hysteresis + sustained-duration gate | Built | same class; separate on/off thresholds |
 | Wrong-way, group crossing | Built | `finblade/flowrules.py`, stdlib |
 | Alert ack / resolve / dismiss | Built | `services/api/service.py` + Postgres |

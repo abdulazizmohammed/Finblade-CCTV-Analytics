@@ -136,9 +136,16 @@ class TestSnapshotPolicy(unittest.TestCase):
         fire" without seeing the picture, and the alert is unreviewable
         without one. Unlike loitering it is rare and latched, so it cannot
         flood the directory — R-10 arms once per episode, not once per frame.
+
+        R-11 (PPE) was added the same day and passes the same test twice over.
+        An accusation that a NAMED worker was not wearing a hardhat is the one
+        alert in this system that most needs a picture behind it, because the
+        person it describes may reasonably dispute it. It is also transition-
+        driven — one OPEN per violation, not one per inference — so it cannot
+        flood either.
         """
         from services.inference.run_cpu import SNAPSHOT_RULES
-        self.assertEqual(SNAPSHOT_RULES, {"R-02", "R-06", "R-10"})
+        self.assertEqual(SNAPSHOT_RULES, {"R-02", "R-06", "R-10", "R-11"})
         # Still excluded, and for the original reason: these fire often and
         # nothing about them needs looking at.
         self.assertNotIn("R-05", SNAPSHOT_RULES)   # loitering
@@ -153,6 +160,8 @@ class TestSnapshotPolicy(unittest.TestCase):
         from services.inference.run_cpu import POST_EVENT_TYPES
         self.assertIn("HAZARD_FIRE", POST_EVENT_TYPES)
         self.assertIn("HAZARD_SMOKE", POST_EVENT_TYPES)
+        self.assertIn("PPE_VIOLATION", POST_EVENT_TYPES)
+        self.assertIn("PPE_COMPLIANT", POST_EVENT_TYPES)
 
 
 if __name__ == "__main__":

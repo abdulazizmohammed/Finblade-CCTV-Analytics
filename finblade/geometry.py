@@ -1,14 +1,16 @@
-"""Geometry primitives: foot point + point-in-polygon.
+"""Geometry primitives: foot point, point-in-polygon, and item->person association.
 
-Pure Python (no cv2) so it is testable headless. Semantics match OpenCV's
-``pointPolygonTest(..., measureDist=False) >= 0``: a point exactly on an edge or
-vertex counts as INSIDE. That matters for zone assignment at boundaries.
+Pure Python (no cv2, no numpy) so it is testable headless. Semantics match
+OpenCV's ``pointPolygonTest(..., measureDist=False) >= 0``: a point exactly on
+an edge or vertex counts as INSIDE. That matters for zone assignment at
+boundaries.
 """
 
-from typing import Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 Point = Tuple[float, float]
 Polygon = Sequence[Point]
+BBox = Tuple[float, float, float, float]      # x1, y1, x2, y2
 
 _EPS = 1e-9
 
@@ -64,3 +66,132 @@ def point_in_polygon(point: Point, polygon: Polygon) -> bool:
                 inside = not inside
         j = i
     return inside
+
+
+# --------------------------------------------------------------------------
+# Item -> person association
+# --------------------------------------------------------------------------
+#
+# WHY NOT PLAIN IoU AGAINST THE WHOLE PERSON BOX. A hardhat is a few percent of
+# a person's area at the very top; IoU between them is near zero however
+# perfectly it sits on their head, so IoU would reject every correct pairing.
+# Worse, IoU is symmetric and blind to WHERE the item sits: a hardhat lying on
+# a bench overlapping someone's shins would score the same as one on their
+# head. So the test is instead "does this item sit where this item BELONGS on a
+# body", which is what makes wrong-body and wrong-place associations fail.
+#
+# The regions are fractions of the person box's height, measured from its top.
+# They are generous rather than tight: a person bbox is produced by a detector
+# and wobbles, people bend and lean, and cameras look down from a height, all of
+# which move a hat away from the exact top of the box. Being too tight fails
+# silently — the item is dropped and the person looks like they are not wearing
+# it, which for PPE is the dangerous direction.
+#
+# GUESSES, and labelled as such: these bands are reasoned from anatomy, not
+# measured on this site's footage. They should be checked against real CCTV
+# before anyone treats an R-11 alert as calibrated.
+ANATOMY = {
+    # Head and a little shoulder. A hardhat can sit above the detector's box
+    # when someone tilts their head back, hence the small negative top.
+    "hardhat":     (-0.08, 0.40),
+    # Biased higher than the hat band: a mask is on the face, and allowing it
+    # down to the chest invites a chest logo or a hi-vis collar to match.
+    "mask":        (-0.05, 0.32),
+    # Torso. Starts below the head so a white hardhat cannot satisfy a vest
+    # requirement, ends above the knees.
+    "safety_vest": (0.15, 0.70),
+}
+# Applied when the item type is not in ANATOMY: the whole body, which reduces
+# the check to "inside this person" and is the honest fallback for an item
+# whose anatomy nobody has declared.
+_DEFAULT_BAND = (0.0, 1.0)
+
+
+def _area(b: BBox) -> float:
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+
+def _intersection(a: BBox, b: BBox) -> float:
+    iw = min(a[2], b[2]) - max(a[0], b[0])
+    ih = min(a[3], b[3]) - max(a[1], b[1])
+    return iw * ih if iw > 0 and ih > 0 else 0.0
+
+
+def containment(item: BBox, region: BBox) -> float:
+    """Fraction of ``item`` that lies inside ``region``.
+
+    Containment, not IoU, and the asymmetry is the point: a small item can be
+    100% inside a large region, which is exactly the relationship "this hat is
+    on that head" has. IoU would score the same pair near zero purely because
+    the boxes differ in size.
+    """
+    a = _area(item)
+    return (_intersection(item, region) / a) if a > 0 else 0.0
+
+
+def anatomical_region(person: BBox, item_type: str) -> BBox:
+    """The slice of a person box where ``item_type`` should appear."""
+    x1, y1, x2, y2 = person
+    h = y2 - y1
+    top_f, bot_f = ANATOMY.get(item_type, _DEFAULT_BAND)
+    return (x1, y1 + top_f * h, x2, y1 + bot_f * h)
+
+
+def associate_item(item: BBox, item_type: str, people: Dict[object, BBox],
+                   min_containment: float = 0.5,
+                   min_margin: float = 0.15) -> Tuple[Optional[object], float]:
+    """Which person is wearing/carrying this item? Returns (key, score).
+
+    ``people`` maps any hashable key (a track id) to that person's bbox.
+    Returns ``(None, score)`` when no association is confident enough.
+
+    TWO REFUSALS, both deliberate:
+
+      min_containment  the item must actually sit in the right region. Below
+                       this it is not associated at all - a hat on a shelf is
+                       nobody's hat, and inventing an owner for it would put a
+                       compliance verdict on a person who was never involved.
+
+      min_margin       the best candidate must beat the runner-up by this much.
+                       Two workers standing shoulder to shoulder produce
+                       overlapping head regions, and one hat cannot be
+                       arbitrated between them by geometry alone. Refusing is
+                       correct: the alternative is a coin toss that accuses
+                       whichever person sorted first.
+
+    This mirrors the threshold-plus-margin shape the identity matcher already
+    uses, and for the same reason - "I don't know" beats a confident guess.
+    """
+    scored: List[Tuple[float, object]] = []
+    for key, pbox in (people or {}).items():
+        score = containment(item, anatomical_region(pbox, item_type))
+        if score > 0:
+            scored.append((score, key))
+    if not scored:
+        return None, 0.0
+    # Sort by score, then by key for determinism: an arbitrary tie-break that
+    # varies between runs would make the tests flaky and the behaviour
+    # unreproducible on the same footage.
+    scored.sort(key=lambda sk: (-sk[0], str(sk[1])))
+    best_score, best_key = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0.0
+    if best_score < min_containment:
+        return None, best_score
+    if (best_score - runner_up) < min_margin:
+        return None, best_score
+    return best_key, best_score
+
+
+def associate_items(items: Sequence[Tuple[BBox, str]], people: Dict[object, BBox],
+                    min_containment: float = 0.5,
+                    min_margin: float = 0.15) -> List[Tuple[int, Optional[object], float]]:
+    """Associate several items at once.
+
+    Returns one (item_index, person_key_or_None, score) per input item. Items
+    are associated INDEPENDENTLY: two people can each be wearing a hardhat, and
+    one person can own a hat and a vest. What is prevented is the opposite
+    error - one item being credited to several people - which cannot happen
+    because each item resolves to at most one key.
+    """
+    return [(i, *associate_item(box, kind, people, min_containment, min_margin))
+            for i, (box, kind) in enumerate(items or ())]

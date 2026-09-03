@@ -66,10 +66,13 @@ from finblade.emission import DensityUpdateGate          # noqa: E402
 from finblade.events import (                            # noqa: E402
     CAMERA_HEARTBEAT, CAMERA_OFFLINE, CAMERA_ONLINE, CAMERA_RECOVERED,
     CAPACITY_WARNING, DENSITY_UPDATE, GROUP_CROSSING, HAZARD_FIRE,
-    HAZARD_SMOKE, LOITERING_END, LOITERING_START, RESTRICTED_ZONE_ENTRY,
-    RESTRICTED_ZONE_EXIT, WRONG_DIRECTION, ZONE_ENTRY, ZONE_EXIT,
-    ZONE_TRANSITION, new_event,
+    HAZARD_SMOKE, LOITERING_END, LOITERING_START, PPE_COMPLIANT,
+    PPE_VIOLATION, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
+    WRONG_DIRECTION, ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, new_event,
 )
+from finblade.geometry import associate_items                   # noqa: E402
+from finblade.ppe import (PPEThresholds, PPETracker,            # noqa: E402
+                          evidence_for as ppe_evidence_for)
 from finblade.crowding import (                           # noqa: E402
     CrowdEstimator, TrackingQualityMonitor, select_mode,
 )
@@ -89,6 +92,7 @@ from finblade.zones import in_ignored_region, zone_of        # noqa: E402
 from services.inference.camera_worker import CameraWorker, CameraState  # noqa: E402
 from services.inference.reid_client import ReIDResolver                 # noqa: E402
 from services.inference.hazard_client import HazardDetector             # noqa: E402
+from services.inference.ppe_client import PPEDetector                   # noqa: E402
 
 # Shared handle so the MJPEG server can drive the demo simulate/restore controls.
 _worker = {"ref": None}
@@ -336,7 +340,8 @@ POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE,
                     LOITERING_START, LOITERING_END,
                     # Hazards must reach the store or they cannot appear on the
                     # history page, which is the whole point of raising them.
-                    HAZARD_FIRE, HAZARD_SMOKE}
+                    HAZARD_FIRE, HAZARD_SMOKE,
+                    PPE_VIOLATION, PPE_COMPLIANT}
 # Alerts that get a saved snapshot: critical density (R-02) and restricted-zone
 # intrusion (R-06) ONLY.
 #
@@ -346,7 +351,7 @@ POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE,
 # the repo and the genuinely serious snapshots were buried in it. A snapshot is
 # only worth writing when someone must look at it: a red-band crowd density, or
 # a person somewhere they are not allowed to be.
-SNAPSHOT_RULES = {"R-02", "R-06", "R-10"}
+SNAPSHOT_RULES = {"R-02", "R-06", "R-10", "R-11"}
 
 _latest_jpeg = {"buf": None}
 # Raw frame + render context so the MJPEG stream can re-annotate per-request with
@@ -682,6 +687,32 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         enabled=bool(_hz_cfg.get("enabled", False)),
     )
     hazard.load()
+    # PPE compliance (R-11). Third model, same frame, same cadence discipline.
+    # Off unless the config asks. Zone-scoped: if no zone declares required_ppe
+    # there is nothing to judge and the model is not loaded at all, so a site
+    # that does not do PPE pays nothing for the feature existing.
+    _ppe_cfg = getattr(cfg, "ppe", None) or {}
+    _ppe_zones = {z.zone_id: list(getattr(z, "required_ppe", []) or [])
+                  for z in cfg.zones if getattr(z, "required_ppe", None)}
+    ppe = PPEDetector(
+        cfg.camera_id,
+        weights=_ppe_cfg.get("weights"),
+        device=str(_ppe_cfg.get("device", "0")),
+        interval_s=float(_ppe_cfg.get("interval_seconds", 0.5)),
+        conf_threshold=float(_ppe_cfg.get("conf_threshold", 0.35)),
+        imgsz=int(_ppe_cfg.get("imgsz", 640)),
+        enabled=bool(_ppe_cfg.get("enabled", False)) and bool(_ppe_zones),
+    )
+    ppe.load()
+    ppe_tracker = PPETracker(cfg.camera_id, PPEThresholds(
+        entry_grace_s=float(_ppe_cfg.get("entry_grace_seconds", 5.0)),
+        violation_confirm_s=float(_ppe_cfg.get("violation_confirm_seconds", 8.0)),
+        recovery_confirm_s=float(_ppe_cfg.get("recovery_confirm_seconds", 5.0)),
+        min_confidence=float(_ppe_cfg.get("min_confidence", 0.40)),
+        absence_weight=float(_ppe_cfg.get("absence_weight", 0.25))))
+    ppe_last_seen = {}          # track_id -> last tick, for the state machine's dt
+    if _ppe_zones:
+        log.info("camera %s: PPE zones %s", cfg.camera_id, _ppe_zones)
     reaper = TrackReaper(cfg.track_ttl_seconds)
     registry = TrackRegistry()
     completed_tracks = 0
@@ -1177,6 +1208,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             eng.drop_person(pr)
             prev_zone.pop(tid, None)
             restricted_since.pop(tid, None)
+            # PPE state follows the tracker's lifecycle, no separate identity.
+            # Without this the state dict grows without bound on a busy site,
+            # and a recycled ByteTrack id inherits a stranger's verdict.
+            ppe_tracker.drop_track(tid)
+            ppe_last_seen.pop(tid, None)
             done = registry.complete(tid)          # final per-track summary
             if done is not None:
                 completed_tracks += 1
@@ -1253,6 +1289,68 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                         pending_events.append(new_event(
                             CAPACITY_WARNING, cfg.camera_id, cfg.site_id, vnow,
                             zone_id=z.zone_id, occupancy=occ, capacity_pct=cap_pct))
+
+        # --- PPE compliance (R-11) -----------------------------------------
+        # Per TRACK, inside a compliance ZONE. Not a camera-level verdict: a
+        # violation belongs to a person, and an alert that cannot say who is
+        # not actionable.
+        if ppe.due(vnow) and _ppe_zones:
+            _dets = ppe.detect(frame, vnow)
+            # Only people currently standing in a PPE zone are judged.
+            _people = {}
+            for t in registry.active():
+                zid = t.current_zone_id
+                if zid in _ppe_zones:
+                    _people[t.track_id] = tuple(t.bbox)
+            # Associate every PPE detection to at most one of them. Items that
+            # cannot be attributed confidently are DROPPED, not guessed - see
+            # geometry.associate_item.
+            _items = [(d["bbox"], d["class_name"].replace("no_", ""))
+                      for d in _dets if d["class_name"] != "person"]
+            _owned = {}          # track_id -> [(class_name, conf), ...]
+            for idx, owner, _score in associate_items(_items, _people):
+                if owner is None:
+                    continue
+                d = [x for x in _dets if x["class_name"] != "person"][idx]
+                _owned.setdefault(owner, []).append(
+                    (d["class_name"], d["confidence"]))
+
+            for _tid, _pbox in _people.items():
+                _t = registry.get(_tid)
+                _zid = _t.current_zone_id
+                ppe_tracker.note_in_zone(_tid, _zid, vnow)
+                if ppe_tracker.in_grace(_tid, _zid, vnow):
+                    continue
+                _dt = vnow - ppe_last_seen.get(_tid, vnow - ppe.interval_s)
+                ppe_last_seen[_tid] = vnow
+                for _req in _ppe_zones[_zid]:
+                    _ev, _conf = ppe_evidence_for(_req, _owned.get(_tid, []))
+                    _new = ppe_tracker.observe(_tid, _req, _ev, _conf, vnow, _dt)
+                    if not _new:
+                        continue
+                    _st = ppe_tracker.state_of(_tid, _req)
+                    _al = eng.evaluate_ppe(cfg.camera_id, _zid, _tid, _req,
+                                           _new, _st, vnow,
+                                           person_ref=_t.person_ref)
+                    if _al is None:
+                        continue
+                    pending_alerts.append(_al.as_dict())
+                    if _al.kind == "FIRE":
+                        pending_events.append(new_event(
+                            PPE_VIOLATION, cfg.camera_id, cfg.site_id, vnow,
+                            zone_id=_zid, person_ref=_t.person_ref or "",
+                            ppe_type=_req, violation_type="missing_" + _req,
+                            first_seen=float(_st.first_seen or vnow),
+                            confirmed_at=float(_st.confirmed_at or vnow),
+                            track_id=int(_tid),
+                            evidence=_st.summary(),
+                            confidence=round(float(_conf), 4)))
+                    else:
+                        pending_events.append(new_event(
+                            PPE_COMPLIANT, cfg.camera_id, cfg.site_id, vnow,
+                            zone_id=_zid, person_ref=_t.person_ref or "",
+                            ppe_type=_req, track_id=int(_tid),
+                            evidence=_st.summary()))
 
         # --- fire / smoke (R-10) -------------------------------------------
         # Camera-scoped, not zone-scoped: a fire is a property of the picture,
@@ -1365,6 +1463,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # "ready, saw nothing" — otherwise a run with no fire alerts looks
         # identical whether the detector was working or was never loaded.
         "hazard": hazard.snapshot(),
+        # Same reasoning: "disabled" and "unavailable" must be distinguishable
+        # from "ran and everybody was compliant". A run with no PPE alerts
+        # looks identical either way without this.
+        "ppe": dict(ppe.snapshot(), zones=_ppe_zones,
+                    tracked_states=ppe_tracker.tracked()),
         # Zone sanity: a high outside fraction means occupancy will read low
         # even though people are being tracked.
         # Detections discarded by an UNMONITORED mask zone (reflections, screens,

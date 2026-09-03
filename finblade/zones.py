@@ -89,6 +89,14 @@ class Zone:
     # matching is least reliable — so it belongs where it is operationally
     # needed: controlled entrances, restricted corridors, security areas.
     reid: bool = False
+    # PPE required of anyone inside this zone (R-11). EMPTY MEANS NO PPE RULE
+    # APPLIES - compliance is opt-in per zone, so a corridor never accuses
+    # anyone of not wearing a hardhat.
+    #
+    # Requirements differ by zone and that is the point: a worker entering an
+    # assembly area without a mask is only in violation if THAT zone requires
+    # masks. Values are finblade.ppe PPE_TYPES: "hardhat", "safety_vest", "mask".
+    required_ppe: List[str] = field(default_factory=list)
 
     def contains(self, point: Point) -> bool:
         return point_in_polygon(point, self.polygon)
@@ -116,6 +124,7 @@ class Zone:
             "occupancy_threshold": self.occupancy_threshold,
             "group_threshold": self.group_threshold,
             "group_window_s": self.group_window_s,
+            "required_ppe": list(self.required_ppe),
             "colour": self.colour,
             "enabled": self.enabled,
             "polygon": [[x, y] for x, y in self.polygon],
@@ -167,6 +176,13 @@ def zone_from_dict(d: dict, frame_width: float = None, frame_height: float = Non
         group_threshold=int(d.get("group_threshold", 0) or 0),
         group_window_s=float(d.get("group_window_s", 3.0) or 3.0),
         reid=bool(d.get("reid", False)),
+        # Normalised on load: the config is written by humans, and "Hardhat",
+        # "hard hat" and "HARDHAT" all obviously mean the same thing to one.
+        # A typo that silently disabled a safety requirement would be the worst
+        # possible failure of this field, so unknown values are dropped LOUDLY
+        # by the config validator rather than silently accepted here.
+        required_ppe=[str(p).strip().lower().replace(" ", "_").replace("-", "_")
+                      for p in (d.get("required_ppe") or []) if str(p).strip()],
         colour=d.get("colour"),
         enabled=bool(d.get("enabled", True)),
     )

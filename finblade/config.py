@@ -37,6 +37,10 @@ class CameraConfig:
     # second always-on model per camera is a GPU-budget decision, so it is
     # opt-in per camera rather than defaulted on the way reid is.
     hazard: dict = field(default_factory=dict)
+    # PPE compliance (R-11). Optional; ABSENT MEANS OFF. Also inert unless at
+    # least one zone declares required_ppe — a site that does not do PPE pays
+    # nothing for the feature existing.
+    ppe: dict = field(default_factory=dict)
 
 
 def load_camera_config(path: str) -> CameraConfig:
@@ -69,4 +73,5 @@ def load_camera_config(path: str) -> CameraConfig:
         zones=[zone_from_dict(z, fw, fh) for z in cfg.get("zones", [])],
         reid=cfg.get("reid") or {},
         hazard=cfg.get("hazard") or {},
+        ppe=cfg.get("ppe") or {},
     )

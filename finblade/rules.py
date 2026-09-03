@@ -321,6 +321,43 @@ class RuleEngine:
                          zone_id=zone_id, camera_id=camera_id, kind="CLEAR")
         return None
 
+    # -- PPE compliance R-11 --
+    def evaluate_ppe(self, camera_id: str, zone_id: str, track_id, ppe_type: str,
+                     new_state: str, state, now: float,
+                     person_ref: Optional[str] = None) -> Optional[Alert]:
+        """Turn a confirmed PPE verdict into an alert. One per (track, zone, item).
+
+        THIS IS AN ABSENCE-OF-EVIDENCE RULE, not a presence-of-hazard one, and
+        the difference is where the clock starts. R-10 begins timing when it
+        first SEES fire. R-11 begins timing when the worker ENTERS THE ZONE —
+        because the thing being judged is something that is not there, and a
+        detector that reports nothing is indistinguishable from a detector that
+        is not looking. All of that timing lives in finblade/ppe.PPETracker;
+        this method only reacts to the transition it produces.
+
+        No HysteresisLatch here on purpose. The latch takes a scalar and this
+        consumes a five-state machine with asymmetric evidence weights, which is
+        not something a float threshold can express. The SHAPE is the same —
+        sustained evidence to arm, sustained contrary evidence to clear, and no
+        alert on a single frame — which is the property that mattered.
+        """
+        from .ppe import COMPLIANT, NONCOMPLIANT
+        if new_state == NONCOMPLIANT:
+            first = getattr(state, "first_seen", None)
+            held = (now - first) if first else 0.0
+            return Alert(
+                "R-11", SEV_AMBER,
+                f"{ppe_type} missing on track {track_id} in {zone_id} "
+                f"(sustained {held:.0f}s)", now,
+                zone_id=zone_id, camera_id=camera_id, person_ref=person_ref)
+        if new_state == COMPLIANT:
+            return Alert(
+                "R-11", SEV_INFO,
+                f"{ppe_type} compliance restored on track {track_id} in {zone_id}",
+                now, zone_id=zone_id, camera_id=camera_id,
+                person_ref=person_ref, kind="CLEAR")
+        return None
+
     # -- loitering R-05 --
     def evaluate_loiter(self, person_ref: str, zone_id: Optional[str], dwell_s: float,
                         now: float, threshold: float = None) -> Optional[Alert]:

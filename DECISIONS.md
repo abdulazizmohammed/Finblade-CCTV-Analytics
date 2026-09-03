@@ -542,3 +542,82 @@ episode, not once per frame, so it cannot flood the way loitering did.
 code change. To remove: delete `services/inference/hazard_client.py`, the
 `hazard` block in `finblade/config.py`, `evaluate_hazard` and the R-10
 thresholds in `rules.py`, the two event types, and `models/fire_smoke_yolov8n.pt`.
+
+## D-32 — PPE compliance (R-11): per-track, zone-scoped, and slow to accuse
+**Choice:** `ayushgupta7777/safetyvision-yolov8` `v2/best.pt` as a third model
+in the per-camera worker at 2 Hz, feeding a per-`(track, ppe_type)` state
+machine (`finblade/ppe.py`) and an anatomical association helper
+(`finblade/geometry.py`). Off by default, and additionally inert unless a zone
+declares `required_ppe`.
+
+**PER PERSON, NEVER PER CAMERA.** A PPE violation belongs to somebody. A
+camera-level "someone here has no hardhat" is not actionable — an operator
+cannot act on it, and it cannot be resolved when that person puts a hat on.
+The whole chain is camera → track → zone → associated detections → temporal
+state → alert.
+
+**WHY NOT IoU AGAINST THE PERSON BOX.** A hardhat is a few percent of a
+person's area at the very top, so IoU between them is near zero however
+perfectly it sits on their head — IoU would reject every correct pairing. It is
+also symmetric and blind to WHERE the item is: a hat on a bench overlapping
+someone's shins scores the same as one on their head. So the test is
+*containment within an anatomical band*: hardhat in the top −8%..40% of the
+person box, mask −5%..32%, vest 15%..70%. Containment is asymmetric, which is
+exactly the shape of "this small thing is on that large thing".
+
+**TWO REFUSALS IN THE ASSOCIATION, both deliberate.** An item must be ≥50%
+inside the band, and the best candidate must beat the runner-up by 0.15. Two
+workers shoulder to shoulder produce overlapping head regions and geometry
+cannot arbitrate one hat between them; refusing is correct, because the
+alternative is a coin toss that accuses whoever sorted first. Same
+threshold-plus-margin shape the identity matcher uses, for the same reason.
+
+**POSITIVE AND NEGATIVE EVIDENCE ARE NOT EQUALLY STRONG.** `NO-Hardhat` is the
+model asserting it looked at that head and saw no hat. A *missing* `Hardhat` is
+consistent with no hat, and equally consistent with occlusion, motion blur, a
+turned head or a bad crop. Absence can still convict — a model that has stopped
+emitting NO-Hardhat for a bare head is a real failure mode — but at
+`absence_weight` 0.25 it takes four times as long. Measured in the tests.
+
+**Slow to accuse, quicker to forgive.** `violation_confirm_seconds` 8 against
+`recovery_confirm_seconds` 5. Being slow to accuse is caution; being slow to
+forgive is just an alert outliving its cause.
+
+**Timer starts on ZONE ENTRY, not on a detection.** R-10 is presence-of-hazard
+and starts timing when it sees fire. R-11 is absence-of-evidence: the thing
+being judged is not there, and a detector reporting nothing is indistinguishable
+from one that is not looking. Hence `entry_grace_seconds` — a worker still
+pulling a hat on is not a violation, and the first seconds inside a zone are
+where the camera has the worst view of them.
+
+**No HysteresisLatch here.** The latch takes a scalar; this consumes a
+five-state machine with asymmetric evidence weights, which a float threshold
+cannot express. The *shape* is the same — sustained to arm, sustained contrary
+evidence to clear, nothing on a single frame — which is the property that
+mattered.
+
+**MODEL LIMITATION, recorded because it must not be discovered later.** This
+checkpoint's published performance is markedly **weaker for NO-Safety Vest and
+for Mask / NO-Mask than for Hardhat**. Do NOT compensate by lowering
+`min_confidence`: that converts a recall problem into a false-accusation
+problem, and a false PPE accusation lands on a named worker. Threshold tuning
+belongs to a validation phase on our own CCTV.
+
+**EVALUATION CHECKPOINT, NOT A CERTIFIED PPE SYSTEM.** Marked **Runs**. Every
+threshold — grace 5s, violation 8s, recovery 5s, min_confidence 0.40,
+absence_weight 0.25, and every anatomical band — is a GUESS, reasoned from
+anatomy and caution rather than measured on this site's footage. Same
+AGPL-3.0-via-Ultralytics dependency as D-31.
+
+**Observed on `media/PPEVideo.mp4`:** correct COMPLIANT on the worker in white
+hardhat and hi-vis; correct `missing_hardhat` on the worker in the red shirt at
+the bench. **Also observed, and unresolved:** distant/small people produce no
+PPE detections at all, so they accumulate absence evidence and would eventually
+be convicted on silence. `absence_weight` slows this but does not prevent it. A
+minimum person-box height gate is the obvious mitigation and is NOT implemented.
+
+**Reverse:** `ppe.enabled: false` (already the default), or simply declare no
+`required_ppe` on any zone. To remove: delete
+`services/inference/ppe_client.py`, `finblade/ppe.py`, the association block in
+`geometry.py`, `evaluate_ppe`, the two event types, `required_ppe` on Zone, and
+`models/ppe_safetyvision_v2.pt`.

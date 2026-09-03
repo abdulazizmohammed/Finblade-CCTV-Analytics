@@ -123,4 +123,56 @@ hazard:
   conf_threshold: 0.30
   imgsz: 640                 # the size this checkpoint was trained at
 
+# PPE compliance (R-11). A THIRD model on the same decoded frame.
+#
+# OFF by default, and additionally INERT unless at least one zone declares
+# required_ppe — a site that does not do PPE pays nothing for this existing.
+#
+# Compliance is per TRACKED PERSON inside a compliance ZONE, never camera-wide.
+# Set required_ppe on the zones that need it, e.g.
+#
+#   zones:
+#     - zone_id: ZONE-WELDING
+#       required_ppe: [hardhat, safety_vest]
+#     - zone_id: ZONE-CLEANROOM
+#       required_ppe: [hardhat, safety_vest, mask]
+#
+# A worker entering ZONE-WELDING without a mask is NOT in violation: masks are
+# not required there. Requirements differ by zone and that is the point.
+#
+# THE TIMERS ARE WHAT STOP A DETECTOR MISS BECOMING AN ACCUSATION.
+#   entry_grace_seconds        time after entering before anything is judged;
+#                              someone still pulling a hat on is not a
+#                              violation, and the first seconds inside a zone
+#                              are where the camera has the worst view of them.
+#   violation_confirm_seconds  sustained bad evidence before an alert.
+#   recovery_confirm_seconds   sustained good evidence before it clears. Shorter
+#                              than the violation timer on purpose: slow to
+#                              accuse is caution, slow to forgive is just an
+#                              alert outliving its cause.
+#   absence_weight             how much a SILENT tick counts toward a violation
+#                              relative to an explicit NO-Hardhat detection.
+#                              0.25 => absence convicts 4x more slowly. The
+#                              model asserting "no hat" is real evidence; the
+#                              model saying nothing might just be a missed
+#                              detection, and they must not weigh the same.
+#
+# THE CHECKPOINT IS AN EVALUATION MODEL, NOT A CERTIFIED PPE SYSTEM.
+# ayushgupta7777/safetyvision-yolov8 v2. Its published performance is markedly
+# WEAKER for NO-Safety Vest and for Mask / NO-Mask than for Hardhat. Do not
+# compensate by lowering min_confidence — that turns a recall problem into a
+# false-accusation problem. See DECISIONS.md D-32.
+ppe:
+  enabled: false
+  weights: models/ppe_safetyvision_v2.pt
+  device: "0"
+  interval_seconds: 0.5      # 2 Hz
+  conf_threshold: 0.35       # detector floor; the rule decides what alerts
+  imgsz: 640
+  entry_grace_seconds: 5.0
+  violation_confirm_seconds: 8.0
+  recovery_confirm_seconds: 5.0
+  min_confidence: 0.40
+  absence_weight: 0.25
+
 zones: []

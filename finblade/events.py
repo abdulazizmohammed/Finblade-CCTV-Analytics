@@ -39,13 +39,19 @@ FACILITY_EXIT = "FACILITY_EXIT"
 # camera with no zones drawn at all.
 HAZARD_FIRE = "HAZARD_FIRE"
 HAZARD_SMOKE = "HAZARD_SMOKE"
+# A specific tracked person, in a specific compliance zone, without a specific
+# required item (R-11). Person-scoped, unlike the hazards above: a PPE
+# violation belongs to somebody, and an alert that cannot say who is not
+# actionable.
+PPE_VIOLATION = "PPE_VIOLATION"
+PPE_COMPLIANT = "PPE_COMPLIANT"
 
 EVENT_TYPES = {
     ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE, CAPACITY_WARNING,
     RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT, LOITERING_START, LOITERING_END,
     CAMERA_HEARTBEAT, CAMERA_ONLINE, CAMERA_OFFLINE, CAMERA_RECOVERED,
     WRONG_DIRECTION, GROUP_CROSSING, FACILITY_ENTRY, FACILITY_EXIT,
-    HAZARD_FIRE, HAZARD_SMOKE,
+    HAZARD_FIRE, HAZARD_SMOKE, PPE_VIOLATION, PPE_COMPLIANT,
 }
 
 # Per-type required payload keys and their python types.
@@ -79,6 +85,15 @@ _SCHEMA = {
     # _OPTIONAL_SCHEMA below.
     HAZARD_FIRE: {"confidence": _NUM},
     HAZARD_SMOKE: {"confidence": _NUM},
+    # Who / where / what / when, which is what an operator needs to act. zone_id
+    # is REQUIRED here, unlike on a hazard: PPE requirements are a property of a
+    # zone, so a violation with no zone is not a claim anyone can check.
+    # ppe_type says WHICH item, so one worker missing both hat and vest produces
+    # two distinguishable events rather than one vague one.
+    PPE_VIOLATION: {"zone_id": str, "person_ref": str, "ppe_type": str,
+                    "violation_type": str, "first_seen": _NUM,
+                    "confirmed_at": _NUM},
+    PPE_COMPLIANT: {"zone_id": str, "person_ref": str, "ppe_type": str},
 }
 
 # Fields that are type-checked WHEN PRESENT but never required.
@@ -116,6 +131,12 @@ _OPTIONAL_SCHEMA = {
     # fire and twelve scattered reflections read very differently to a reviewer.
     HAZARD_FIRE: {"zone_id": str, "detections": int},
     HAZARD_SMOKE: {"zone_id": str, "detections": int},
+    # evidence is the counts behind the verdict (positive/negative/absent
+    # ticks). Carried so a reviewer can tell an alert built on explicit
+    # NO-Hardhat detections from one built on the model simply going quiet -
+    # the same claim, resting on very different ground.
+    PPE_VIOLATION: {"evidence": dict, "confidence": _NUM},
+    PPE_COMPLIANT: {"evidence": dict},
 }
 
 _NON_NEGATIVE = ("occupancy", "density", "occupancy_from", "density_from",

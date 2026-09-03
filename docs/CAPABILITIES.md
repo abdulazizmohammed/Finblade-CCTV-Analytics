@@ -210,6 +210,7 @@ appearance channel — a property of the sensor, not a gap in the code.
 | R-08 | occupancy report, scheduled and on demand | Built |
 | R-09 | head count above a per-zone threshold, area-independent | Built |
 | R-10 | sustained fire or smoke in view | **Runs** — see below |
+| R-11 | required PPE missing on a tracked person in a compliance zone | **Runs** — see below |
 
 Implemented in `finblade/rules.py`. Hysteresis (separate on/off thresholds) and
 a 10-second debounce apply to all density and capacity rules; R-06 is immediate
@@ -240,6 +241,36 @@ seconds of fire.
   operator trust.
 
 See [DECISIONS.md](../DECISIONS.md) D-31.
+
+**R-11 PPE compliance is likewise an EVALUATION capability**, marked **Runs**.
+
+- **Per tracked person, inside a compliance zone.** Never camera-wide: a
+  violation belongs to somebody, and an alert that cannot say who is not
+  actionable. Chain is camera → track → zone → associated detections →
+  temporal state → alert.
+- **Zone-scoped requirements.** `required_ppe` on a zone, e.g. `[hardhat,
+  safety_vest]`. A worker without a mask in a zone that does not require masks
+  is not in violation. Empty (the default) means no PPE rule applies.
+- **Association is anatomical, not IoU** (`finblade/geometry.py`): a hardhat
+  must sit in the top band of the person box, a vest in the torso band. It
+  refuses when containment is below 0.5 or when two people are too close to
+  arbitrate between — an unattributable item is dropped, never guessed onto
+  somebody.
+- **One missed detection is not a violation.** Evidence accumulates per
+  `(track, ppe_type)` through UNKNOWN → CANDIDATE → CONFIRMED, and an explicit
+  `NO-Hardhat` counts **four times** as strongly as the model simply going
+  quiet (`absence_weight`).
+- **Checkpoint:** `ayushgupta7777/safetyvision-yolov8` v2. Its published
+  performance is **markedly weaker for NO-Safety Vest and Mask/NO-Mask than for
+  Hardhat** — do not compensate by lowering confidence thresholds, which turns
+  a recall problem into a false-accusation problem against a named worker.
+- Same **AGPL-3.0 via Ultralytics** dependency as R-10.
+- **Known gap:** distant or small people produce no PPE detections, accumulate
+  absence evidence, and would eventually be convicted on silence. A minimum
+  person-box height gate is the obvious mitigation and is not implemented.
+
+See [DECISIONS.md](../DECISIONS.md) D-32. Manual validation:
+`scripts/ppe_check.py --source <video> --required hardhat,safety_vest`.
 
 | Capability | Status | Implementation |
 |---|---|---|

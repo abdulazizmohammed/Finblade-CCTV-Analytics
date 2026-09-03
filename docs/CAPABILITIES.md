@@ -75,8 +75,45 @@ not write to the database or the bus directly.
 
 **Privacy boundary.** Embeddings cross a process boundary exactly once, to
 `POST /api/v1/identity/resolve`, are held in RAM by `services/api/identity.py`,
-and are dropped on TTL. They are never persisted, logged, or returned. Every
-identifier leaving the system is an opaque salted hash.
+and are dropped on TTL. They are **never written to disk, a log, the database,
+`evidence/`, or any response body — in any mode.** Every identifier leaving the
+system is an opaque salted hash.
+
+**How long they are held has two modes. The default is unchanged.**
+
+| | Default | Extended |
+|---|---|---|
+| Enabled by | nothing — this is the default | `FINBLADE_REID_EXTENDED_RETENTION=ram` |
+| Held for | 300s, ceiling 1800s | up to **24h** (`FINBLADE_REID_EXTENDED_TTL`, hard-clamped) |
+| Stored as | the raw template | projected under a rotating epoch key |
+| Where | RAM | RAM — no datastore, no Redis, nothing on disk |
+
+Extended retention stores each template as `Qv` for a per-window random
+orthogonal `Q` (`finblade/cancelable.py`). Because `Q` is orthogonal, cosine
+similarity is preserved **exactly**, so matching accuracy is mathematically
+unchanged — validated in `tests/test_cancelable.py`, including an assertion
+that no pair crosses the 0.70 threshold.
+
+**What that does and does not give you.** It gives *key-dependent
+confidentiality with per-window unlinkability*: a memory dump without the key
+yields vectors in an unknown basis, and once a window's key is destroyed its
+templates cannot be re-projected, so dumps more than two windows apart cannot
+be correlated. It is **not non-invertible** — `Q⁻¹ = Qᵀ`, so anyone holding the
+epoch key recovers the template exactly. The one-way property in BioHashing
+comes from a quantisation step that costs matching accuracy; this deliberately
+does not do that, and so deliberately does not claim it.
+
+Two keys are live at once (12h epochs by default), so someone present at a
+window boundary is carried forward rather than dropped, and real retention is
+bounded at `2 × epoch`. Immediate erasure is `registry.erase_templates()`,
+which destroys the keys as well as the gallery.
+
+**Enabling it is an operational and legal decision, not a tuning knob.** It is
+off unless explicitly named, logs a warning at startup when on, and is reported
+in `/api/v1/identity/stats` and `/api/v1/health` — including a warning when the
+topology's transit windows are narrower than the retention window, which makes
+the mode inert. It requires the same documented sign-off as
+[DECISIONS.md](../DECISIONS.md) D-9 required for the current posture; see D-30.
 
 ## 3. Spatial model
 
@@ -313,7 +350,7 @@ the tile says the count cannot be produced rather than rendering a bare `0`.
 | Cross-camera identity evaluation harness | Built | `scripts/eval_cross_camera.py` |
 | Secret scanning, credential-leak checks | Built | `scripts/secret_scan.sh` |
 
-**Test suite: 1520 passing, 15 skipped.** Runs headless against the in-memory
+**Test suite: 1557 passing, 15 skipped.** Runs headless against the in-memory
 store, and against a real Postgres where a cluster is reachable. 10 of the skips
 are UI-behaviour tests that lift JavaScript out of `web/dashboard.html` and run
 it under node (`test_dashboard_sort.py`, `test_facility_tile.py`); they skip

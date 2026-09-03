@@ -11,14 +11,36 @@ logged, and never returned to any caller. Everything leaving this service is an
 opaque ``gp_`` ref. Keep it that way: the moment an embedding reaches the
 database or a log file, "we hold no biometric data" stops being true.
 
+HOW LONG THEY LIVE depends on one environment variable, and the default has not
+changed:
+
+  default (FINBLADE_REID_EXTENDED_RETENTION unset)
+      raw templates, in RAM, dropped after ttl_seconds (300s) bounded by
+      max_retention_seconds (1800s). Exactly as before.
+
+  extended (FINBLADE_REID_EXTENDED_RETENTION=ram)
+      templates held for up to 24h, still in RAM and still never written to
+      disk, and stored under a rotating per-window orthogonal projection
+      rather than raw. That gives KEY-DEPENDENT CONFIDENTIALITY WITH PER-WINDOW
+      UNLINKABILITY — it is NOT non-invertible; holding the epoch key recovers
+      the template. See finblade/cancelable.py, which says so at length, and
+      DECISIONS.md D-30.
+
+Extended retention is an operational and legal decision, not a tuning knob. It
+is off unless explicitly named, logs a warning on startup when on, and is
+reported in /api/v1/identity/stats and /api/v1/health.
+
 Framework-agnostic like IngestService, so it unit-tests without FastAPI.
 """
 
+import logging
 import math
 import os
 import sys
 import time
 from typing import List, Optional, Tuple
+
+_log = logging.getLogger("finblade.identity")
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _REPO_ROOT not in sys.path:
@@ -113,6 +135,37 @@ class IdentityService:
         "ttl_seconds": "FINBLADE_REID_TTL",
     }
 
+    # --- extended retention ------------------------------------------------
+    # OFF unless FINBLADE_REID_EXTENDED_RETENTION is exactly "ram". Not a
+    # truthy check: "0", "false" and a typo must all mean off, because the
+    # failure direction here is holding biometric templates for a day when
+    # nobody meant to. Only the value that names the mechanism enables it.
+    _ENV_EXTENDED = "FINBLADE_REID_EXTENDED_RETENTION"
+    _ENV_EXTENDED_TTL = "FINBLADE_REID_EXTENDED_TTL"
+    _ENV_EPOCH = "FINBLADE_REID_EPOCH_SECONDS"
+    _ENV_MAX_IDENTITIES = "FINBLADE_REID_MAX_IDENTITIES"
+
+    @classmethod
+    def _extended_config(cls, log=None) -> dict:
+        """Read the extended-retention env vars. Returns {} when off."""
+        mode = (os.environ.get(cls._ENV_EXTENDED) or "").strip().lower()
+        if mode != "ram":
+            return {}
+        from finblade.cancelable import (DEFAULT_EPOCH_SECONDS,
+                                         MAX_EXTENDED_RETENTION_SECONDS)
+        try:
+            ttl = float(os.environ.get(cls._ENV_EXTENDED_TTL)
+                        or MAX_EXTENDED_RETENTION_SECONDS)
+        except ValueError:
+            ttl = MAX_EXTENDED_RETENTION_SECONDS
+        try:
+            epoch = float(os.environ.get(cls._ENV_EPOCH) or DEFAULT_EPOCH_SECONDS)
+        except ValueError:
+            epoch = DEFAULT_EPOCH_SECONDS
+        return {"extended_max_retention_seconds": min(
+                    ttl, MAX_EXTENDED_RETENTION_SECONDS),
+                "epoch_seconds": epoch}
+
     def __init__(self, registry: Optional[GlobalIdentityRegistry] = None,
                  topology_path: Optional[str] = None,
                  journal: Optional[DecisionJournal] = None):
@@ -160,6 +213,17 @@ class IdentityService:
         # empty registry is falsy and `registry or ...` would silently discard
         # the caller's registry (and its topology) at startup, when it is
         # always empty.
+        extended = self._extended_config()
+        # max_identities is the REAL bound on a long window: at ~100 KB per
+        # held identity the default 2000 is reached long before 24 hours pass
+        # on any busy site, so extended retention without raising it would be
+        # "the last 2000 people", not "a day". Configurable for that reason.
+        try:
+            max_ids = int(os.environ.get(self._ENV_MAX_IDENTITIES)
+                          or tuning["max_identities"])
+        except ValueError:
+            max_ids = int(tuning["max_identities"])
+
         self.registry = (registry if registry is not None else
                          GlobalIdentityRegistry(
                              topology=topology,
@@ -167,7 +231,27 @@ class IdentityService:
                              margin=float(tuning["margin"]),
                              ttl_seconds=float(tuning["ttl_seconds"]),
                              bank_capacity=int(tuning["bank_capacity"]),
-                             max_identities=int(tuning["max_identities"])))
+                             max_identities=max_ids,
+                             **extended))
+
+        # LOUD on startup, and only when it is on. Enabling this is an
+        # operational and legal decision (DECISIONS.md D-9, D-30); a deployment
+        # that switched it on by copying an env file should find out here rather
+        # than from a regulator.
+        if extended:
+            hours = self.registry.extended_max_retention_seconds / 3600.0
+            _log.warning(
+                "EXTENDED ReID RETENTION IS ENABLED: appearance templates are "
+                "held in memory for up to %.1f hours (epoch %.1fh, two live "
+                "keys), not the usual %.0f seconds. Templates are stored under "
+                "a rotating orthogonal projection: key-dependent "
+                "confidentiality with per-window unlinkability, NOT "
+                "non-invertible — possession of the epoch key recovers the "
+                "template. Nothing is written to disk. Requires a documented "
+                "decision before use in a real deployment; see DECISIONS.md "
+                "D-30 and docs/CAPABILITIES.md.",
+                hours, self.registry._epoch_seconds / 3600.0,
+                self.registry.max_retention_seconds)
 
     # -- GET/POST /api/v1/identity/tuning --
     def get_tuning(self) -> dict:

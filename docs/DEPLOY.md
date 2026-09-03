@@ -520,3 +520,18 @@ Be clear-eyed before pointing anything real at it:
   never persisted or logged, and dropped on TTL expiry — but they now exist,
   where before they did not. See DECISIONS.md D-9; this is worth raising with
   whoever owns data protection before a real deployment.
+* **Extended ReID retention is OFF and should stay off** unless someone has
+  decided otherwise in writing. Setting `FINBLADE_REID_EXTENDED_RETENTION=ram`
+  holds those templates for up to 24 hours instead of 300 seconds. They remain
+  in RAM and still never touch disk, and they are stored under a rotating
+  orthogonal projection — key-dependent confidentiality with per-window
+  unlinkability, **not** non-invertibility: the key recovers the template.
+  Enabling it needs the same documented sign-off D-9 describes. See D-30 and
+  `docs/CAPABILITIES.md`. When on, the API logs a warning at startup and
+  reports it in `/api/v1/identity/stats` and `/api/v1/health`.
+* **Extended retention is inert without wider transit windows.** The topology's
+  `default_transit` max is 120s, and the physics gate refuses any candidate
+  older than that before appearance is scored — so a 24h gallery would match
+  nothing on unknown camera pairs. The API reports this as a warning rather
+  than widening the gate for you, because widening it means a stranger seen
+  eight hours ago becomes a match candidate.

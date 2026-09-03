@@ -415,7 +415,7 @@ Prefer `v_alerts`. Raw `status` is NULL until acted on. `kind` is `FIRE` or
 | **`global_ref`** | Cross-camera identity (`gp_…`), from appearance matching plus a topology gate. Survives track breaks and movement between cameras. NULL when unresolved. |
 | **`person_key`** | View-only. `global_ref`, else `camera_id:person_ref`. The safe thing to `COUNT(DISTINCT)`. |
 | **Canonical person identity** | Synonym for `global_ref`. There is no separate canonical-id table. |
-| **ReID** | OSNet appearance embeddings, matched in the API. Embeddings live in RAM only and are **never** stored — no table contains one. |
+| **ReID** | OSNet appearance embeddings, matched in the API. Embeddings live in RAM only and are **never** stored — no table contains one, in any configuration. How long they are held in memory varies (300s by default, up to 24h under extended retention), but nothing reaches the database either way. |
 | **Cross-camera identity** | The mechanism producing `global_ref`. |
 | **Occupancy** | Depends on scope — see §11. Unqualified, it usually means zone occupancy. |
 | **Zone occupancy** | Foot points inside one polygon on one frame. Self-correcting, blind to unmonitored floor. |

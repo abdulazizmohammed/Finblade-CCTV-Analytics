@@ -10,13 +10,22 @@ re-identifiable later. The rest of this system deliberately holds no such thing
 (see identity.py). The rules that keep that promise defensible:
 
   * embeddings live in RAM only — never written to disk, evidence/, logs or the
-    database;
+    database. This holds unconditionally, in every mode;
   * they are dropped when the track is reaped and when the gallery TTL expires;
   * nothing outside the process ever sees a vector — the identity service
     returns an opaque global ref, and that ref is what gets persisted.
 
 Breaking any of those turns a "we store no biometrics" product into one that
-does. See DECISIONS.md D-11.
+does. See DECISIONS.md D-9.
+
+HOW LONG "until the TTL expires" MEANS is configurable, and the default has not
+moved: 300s, ceilinged at 1800s. With FINBLADE_REID_EXTENDED_RETENTION=ram it
+becomes up to 24h, and the API-side gallery then stores templates projected
+under a rotating orthogonal key instead of raw — key-dependent confidentiality
+with per-window unlinkability, NOT non-invertibility. Nothing in THIS module
+changes under that mode: the worker-side banks here still hold raw vectors for
+the life of a track, because that is where they are produced. See
+finblade/cancelable.py and DECISIONS.md D-30.
 
 PERFORMANCE — measured, not assumed. boxmot's crop preprocessing is CPU-bound
 and scales linearly with crop count (~6ms/crop on this box; 1 crop 19.6ms,

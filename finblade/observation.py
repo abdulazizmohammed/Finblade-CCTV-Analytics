@@ -43,6 +43,11 @@ dropped on TTL. Putting a vector in an observation would move biometric data
 into the database, and "we hold no biometric data" would stop being true. The
 validator below rejects that outright rather than trusting callers.
 
+None of that changes under extended ReID retention. That mode alters how LONG
+templates are held in memory and stores them projected rather than raw; it
+adds no path to disk, and this validator's refusal is unconditional either
+way. See finblade/cancelable.py.
+
 Pure stdlib, no numpy, no yaml, no cv2 — testable headless like the rest of
 finblade/.
 """

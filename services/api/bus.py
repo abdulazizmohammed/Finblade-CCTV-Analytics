@@ -90,7 +90,16 @@ class RedisStreamBus:  # pragma: no cover - requires redis-server + redis-py
                 out.append((entry_id.decode(), json.loads(fields[b"data"])))
         return out
 
-    def set_person_embedding_ttl(self, person_ref: str, value: str, ttl_seconds: int) -> None:
-        """UC-56: store a transient per-person key that auto-expires. We keep no
-        appearance data long-term; the TTL is the enforced privacy boundary."""
-        self._r.set(f"fb:emb:{person_ref}", value, ex=ttl_seconds)
+# REMOVED: set_person_embedding_ttl (the old UC-56).
+#
+# It wrote `fb:emb:{person_ref}` with a TTL and was never called from anywhere
+# in this repo — dead code that nonetheless read as a sanctioned path for
+# putting appearance data in Redis. Two things were wrong with it: the key name
+# embedded a person identifier, so the keyspace alone leaked who was present and
+# when; and no embedding ever travelled that way, so the docstring's privacy
+# claim described a mechanism that did not exist.
+#
+# Extended ReID retention is now in-process only — finblade/cancelable.py and
+# GlobalIdentityRegistry — with no datastore at all. A 24h gallery is ~100 KB
+# per identity, which does not justify a network hop or the key-custody problem
+# that persisting the epoch keys would create. See DECISIONS.md D-30.

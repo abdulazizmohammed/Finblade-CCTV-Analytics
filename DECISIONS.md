@@ -384,3 +384,72 @@ cramped. At max-width that is roughly 268px per tile; the longest subtitle
 `kOccSub` already does today.
 **Reverse:** `grid-template-columns:repeat(auto-fit,minmax(220px,1fr))`, which
 wraps to 3+2 instead. One line.
+
+## D-30 — Extended ReID retention: in-process, off by default, epoch-projected
+**Choice:** an optional mode holding appearance templates for up to 24h instead
+of 300s, gated on `FINBLADE_REID_EXTENDED_RETENTION=ram`. Templates stay in
+RAM, are stored projected under a rotating per-window random orthogonal matrix
+(`finblade/cancelable.py`), and are dropped when their epoch key is destroyed.
+Default behaviour is byte-for-byte unchanged.
+
+**No datastore, and that was the main design decision.** The brief specified
+Redis with TTLs. Measured cost is ~100 KB per held identity — a 24h gallery is
+0.2-5 GB depending on footfall, which fits in RAM — so Redis would have added a
+network hop, a serialisation format and a failure mode to store something the
+process already holds. Worse, it forces the key-custody problem: if the epoch
+key dies with the process, Redis contents are unrecoverable junk after a
+restart, so a persistent store only earns its place if the key is ALSO
+persisted, and then key and ciphertext sit on the same host. Choosing Redis
+would have been choosing to persist the key. We chose neither.
+
+**What the transform gives, stated precisely.** For orthogonal Q, cos(Qa,Qb) =
+cos(a,b) exactly, so matching accuracy is mathematically unchanged (asserted in
+`tests/test_cancelable.py`, including that no pair crosses the 0.70 threshold).
+The property is **key-dependent confidentiality with per-window
+unlinkability**, NOT non-invertibility: Q⁻¹ = Qᵀ, so the key recovers the
+template. The one-way property in BioHashing comes from a quantisation step
+that costs accuracy; we do not do it, so we do not claim it. The original brief
+asked for "non-invertible"; that word is wrong for this construction and is not
+used anywhere in the code or docs.
+
+**The tradeoff, visible rather than buried:** exact accuracy XOR genuine
+one-wayness. We took exact accuracy. A dump taken now contains both live keys
+and can link across the current and previous window — two live keys is what
+stops matching breaking at a boundary, and the cost is that the unlinkability
+boundary is 2 epochs, not 1.
+
+**Two keys, 12h epochs.** A single key rotated on a fixed boundary would break
+matching for everyone present when it turned over. Keeping the previous key
+means an identity is re-projected forward the next time it is seen; only
+someone unseen for a whole epoch is dropped. Real retention is therefore
+[epoch, 2*epoch], which is why 12h epochs give the 24h ceiling.
+
+**A gap found during implementation, not designed away.** Retention decides how
+long a template EXISTS; the topology's transit window decides whether a
+candidate that old is scored at all. They are independent, and
+`default_transit` max is 120s — so extended retention on an unsurveyed site
+holds templates for a day and refuses every candidate over two minutes old,
+looking healthy while doing nothing. `extended_retention_warnings()` reports
+this in `/stats` and `/health` rather than widening the physics gate
+automatically: widening it means a stranger seen eight hours ago becomes a
+match candidate, which is a real decision belonging to whoever owns the
+topology file.
+
+**Also fixed here:** `retention_for()` takes ttl_seconds as its FLOOR, so
+raising only the ceiling left retention at 300s and the mode inert. Both bounds
+move under extended retention.
+
+**NEEDS SIGN-OFF BEFORE USE.** D-9 said the current RAM-only posture was a
+posture change needing sign-off. This is strictly more exposed. Building and
+shipping it defaulted-off does not need that; enabling it anywhere real does.
+Startup logs a warning, `/stats` and `/health` report the mode, and the
+guarantee string says "NOT non-invertible" in the response body.
+
+**BIPA line untouched:** no face or hand geometry is extracted anywhere, and
+the OSNet path is unchanged. This mode consumes the same templates the matcher
+already produced; it does not alter detection or feature extraction.
+
+**Reverse:** unset the env var — the default path never constructs a keyring
+and never projects anything. To remove entirely: delete
+`finblade/cancelable.py`, the `extended_*` fields on `GlobalIdentityRegistry`,
+and `tests/test_cancelable.py` / `tests/test_extended_retention.py`.

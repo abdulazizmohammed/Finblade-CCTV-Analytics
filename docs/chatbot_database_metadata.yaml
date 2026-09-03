@@ -597,7 +597,10 @@ business_terms:
   global_ref: Cross-camera identity (gp_...). Survives track breaks and movement between cameras. NULL when unresolved.
   canonical_person_identity: Synonym for global_ref. No separate table exists.
   cross_camera_identity: The mechanism producing global_ref — OSNet appearance matching plus a camera-topology gate.
-  reid: Appearance re-identification. Embeddings live in RAM only and are never stored.
+  reid: Appearance re-identification. Embeddings live in RAM only and are never
+    stored in any table, in any configuration. Time held in memory varies by
+    mode (300s default, up to 24h under extended retention); nothing reaches
+    the database either way.
   person_key: View-only column. global_ref, else camera_id:person_ref. The safe thing to COUNT(DISTINCT).
   occupancy: Scope-dependent. Unqualified it usually means zone occupancy.
   zone_occupancy: Foot points inside one polygon on one frame. Self-correcting, blind to unmonitored floor.

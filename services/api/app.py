@@ -1517,6 +1517,16 @@ def _dependency_checks() -> dict:
         svc.counts_stats(),
         ok=(svc.counts_errors == 0 and _loop_errors["counts"] == 0),
         loop_errors=_loop_errors["counts"])
+    # How long appearance templates are held, always reported. A deployment
+    # holding biometric templates for a day must not be indistinguishable from
+    # one holding them for five minutes — that is the whole reason this is in
+    # /health and not only in a log line nobody reads twice.
+    #
+    # ok is False when the mode is on AND the topology cannot support it: the
+    # templates are being held and nothing can match them, which is the worst
+    # of both and is otherwise invisible.
+    _ret = id_svc.registry.retention_snapshot()
+    checks["reid_retention"] = dict(_ret, ok=not _ret.get("warnings"))
     checks["ts"] = now
     return checks
 

@@ -29,8 +29,28 @@ restricted-zone alert — actively harmful.
 PRIVACY: feature banks live here in RAM only and are dropped on TTL expiry.
 The ``global_ref`` handed back is opaque and salted per session, exactly like
 person_ref in identity.py. No vector is ever persisted or returned to a client.
+Both of those hold in every mode, including extended retention — nothing here
+ever reaches disk, a log, the database or a response body.
 
-Pure stdlib — unit-testable without torch, cv2 or a camera.
+RETENTION HAS TWO MODES, and the default is unchanged:
+
+  default    raw templates, dropped after ttl_seconds (300) bounded by
+             max_retention_seconds (1800). extended_retention is False, no
+             epoch keyring exists, and nothing is projected.
+
+  extended   extended_max_retention_seconds is set (up to 24h). Templates are
+             stored projected under a rotating orthogonal epoch key, giving
+             key-dependent confidentiality with per-window unlinkability — NOT
+             non-invertibility, since the key recovers the template. Two keys
+             are live at once so a person present at a window boundary is
+             carried forward rather than dropped; someone unseen for a whole
+             epoch is dropped when their key is destroyed.
+
+See finblade/cancelable.py for the transform and what it does and does not
+promise, and DECISIONS.md D-30 for why the mode exists and what enabling it
+costs. Extended retention needs numpy; the default path does not.
+
+Pure stdlib on the default path — unit-testable without torch, cv2 or a camera.
 """
 
 import hashlib
@@ -114,6 +134,10 @@ class GlobalIdentity:
     # Bank size when this identity last re-tried a match. See
     # GlobalIdentityRegistry.resolve()'s deferred re-match.
     retry_at_n: int = 0
+    # Which epoch key this identity's stored templates are projected under.
+    # None when extended retention is off — the default — in which case the
+    # bank holds raw vectors exactly as it always has. See finblade/cancelable.py.
+    epoch_id: Optional[int] = None
 
     def note_seen(self, camera_id: str, now: float,
                   zone_id: Optional[str] = None) -> None:
@@ -183,6 +207,15 @@ class GlobalIdentityRegistry:
         max_identities: int = 2000,
         bank_capacity: int = 5,
         session_salt: Optional[str] = None,
+        # --- extended retention: OFF unless explicitly enabled -------------
+        # A SEPARATE ceiling, deliberately not max_retention_seconds above.
+        # That field's guarantee — "a mistyped transit window cannot stretch a
+        # five-minute privacy bound into an all-day one" — is the exact thing
+        # this feature does on purpose, so it must not be the same knob.
+        # None keeps today's behaviour byte for byte.
+        extended_max_retention_seconds: Optional[float] = None,
+        epoch_seconds: Optional[float] = None,
+        embedding_dim: int = 512,
     ):
         if not 0.0 < threshold <= 1.0:
             raise ValueError("threshold must be in (0, 1]")
@@ -195,6 +228,31 @@ class GlobalIdentityRegistry:
         self.transit_grace = max(1.0, float(transit_grace))
         self.max_retention_seconds = max(float(ttl_seconds),
                                          float(max_retention_seconds))
+        # Extended retention. The keyring is built lazily on first use so a
+        # registry constructed with the mode on still imports and constructs
+        # without numpy present; only actually holding a template needs it.
+        self.extended_retention = extended_max_retention_seconds is not None
+        self.extended_max_retention_seconds = None
+        self._keyring = None
+        self._epoch_seconds = None
+        self._embedding_dim = int(embedding_dim)
+        if self.extended_retention:
+            from .cancelable import (DEFAULT_EPOCH_SECONDS,
+                                     MAX_EXTENDED_RETENTION_SECONDS)
+            # Clamped at both ends. The floor is the ordinary ceiling — asking
+            # for LESS than the short-TTL path already allows would be a
+            # configuration mistake that silently reduced matching.
+            self.extended_max_retention_seconds = max(
+                self.max_retention_seconds,
+                min(float(extended_max_retention_seconds),
+                    MAX_EXTENDED_RETENTION_SECONDS))
+            # Two keys are live, so retention spans [epoch, 2*epoch]. Deriving
+            # the epoch from the ceiling keeps that relationship true whatever
+            # ceiling is configured, instead of leaving 12h hard-coded next to
+            # a 24h bound and hoping they stay consistent.
+            self._epoch_seconds = float(epoch_seconds) if epoch_seconds else max(
+                60.0, self.extended_max_retention_seconds / 2.0)
+            _ = DEFAULT_EPOCH_SECONDS   # documented default; see cancelable.py
         self.retry_min_bank = int(retry_min_bank)
         self.max_identities = max_identities
         self.bank_capacity = bank_capacity
@@ -274,11 +332,208 @@ class GlobalIdentityRegistry:
         Bounded on BOTH sides. ttl_seconds is the floor and
         max_retention_seconds the ceiling, so a mistyped transit window cannot
         silently stretch how long a biometric template survives in memory.
+
+        WHEN EXTENDED RETENTION IS ON both bounds move, not just the ceiling.
+        Raising the ceiling alone does nothing: the floor is ttl_seconds and
+        the topology term is zero for any pair nobody surveyed, so retention
+        would stay at 300s and the mode would be inert. The point of the mode
+        is to hold everyone for the operational day so a handover hours later
+        can still match, so the extended window becomes the FLOOR as well.
+
+        A SECOND, INDEPENDENT BOUND applies underneath this one: an identity
+        whose epoch key has been destroyed is dropped by roll_epoch() whatever
+        this returns. With two live keys that caps real retention at
+        2 x epoch_seconds. The default epoch is half the configured ceiling so
+        the two agree; configuring a shorter epoch makes the key bound win,
+        which is the safe direction.
+
+        This is a separately-configured mode. See finblade/cancelable.py and
+        DECISIONS.md D-30.
         """
+        if self.extended_retention:
+            return min(self.extended_max_retention_seconds,
+                       max(self.extended_max_retention_seconds,
+                           self.topology.longest_transit_from(camera_id)
+                           * self.transit_grace))
         return min(self.max_retention_seconds,
                    max(self.ttl_seconds,
                        self.topology.longest_transit_from(camera_id)
                        * self.transit_grace))
+
+    # ---- extended retention: epoch keys -----------------------------------
+    # All of this is inert unless extended_max_retention_seconds was supplied.
+    # The default path never constructs a keyring and never projects anything.
+
+    def _ring(self, now: float):
+        """The keyring, built on first use so numpy is only needed when a
+        template is actually about to be held under the extended mode."""
+        if not self.extended_retention:
+            return None
+        if self._keyring is None:
+            from .cancelable import EpochKeyring
+            self._keyring = EpochKeyring(self._embedding_dim,
+                                         epoch_seconds=self._epoch_seconds,
+                                         now=now)
+        return self._keyring
+
+    def roll_epoch(self, now: float) -> List[str]:
+        """Advance the window if due, and drop whatever it stranded.
+
+        An identity still projected under the retired key cannot be compared
+        or re-projected — its templates are unrecoverable by construction.
+        Keeping the record would leave dead weight that can never match again,
+        so it is forgotten here rather than waiting for the TTL.
+        """
+        ring = self._ring(now)
+        if ring is None:
+            return []
+        retired = ring.maybe_roll(now)
+        if retired is None:
+            return []
+        stranded = [ref for ref, i in self._identities.items()
+                    if i.epoch_id is not None and not ring.has(i.epoch_id)]
+        for ref in stranded:
+            self._forget(ref)
+        self.stats["epoch_stranded"] = self.stats.get("epoch_stranded", 0) + len(stranded)
+        return stranded
+
+    def _store_vectors(self, ident: "GlobalIdentity", vectors, camera_id: str,
+                       now: float) -> None:
+        """Add views to an identity's bank, projected when the mode is on.
+
+        Also carries the identity forward into the current epoch: a person seen
+        again after a rollover has their existing templates re-projected, which
+        is exact (both bases are orthogonal) and is what stops anyone present
+        at a boundary being silently dropped.
+        """
+        ring = self._ring(now)
+        if ring is None:
+            for v in vectors:
+                ident.bank.add(v, source=camera_id)
+            return
+        cur = ring.current_epoch
+        if ident.epoch_id is not None and ident.epoch_id != cur:
+            if ring.has(ident.epoch_id):
+                moved = [ring.reproject(v, ident.epoch_id, cur)
+                         for v in ident.bank.vectors]
+                sources = list(ident.bank.sources)
+                ident.bank.clear()
+                for v, s in zip(moved, sources):
+                    ident.bank.add(v, source=s)
+                self.stats["epoch_reprojected"] = \
+                    self.stats.get("epoch_reprojected", 0) + 1
+            else:
+                # Key already gone: nothing recoverable. Start clean rather
+                # than mixing bases, which would score as a stranger.
+                ident.bank.clear()
+        ident.epoch_id = cur
+        for v in vectors:
+            ident.bank.add(ring.project(v, cur), source=camera_id)
+
+    def _probe_for(self, ident: "GlobalIdentity", bank: TrackFeatureBank,
+                   now: float) -> TrackFeatureBank:
+        """The incoming bank, expressed in the candidate's basis.
+
+        Workers post raw vectors and know nothing about epochs. Comparison has
+        to happen in one basis; projecting the probe is cheaper than
+        un-projecting a whole gallery entry, and never puts a raw template
+        back into storage.
+        """
+        ring = self._ring(now)
+        if ring is None or ident.epoch_id is None or not ring.has(ident.epoch_id):
+            return bank
+        probe = TrackFeatureBank(capacity=bank.capacity)
+        for v, s in zip(bank.vectors, bank.sources):
+            probe.add(ring.project(v, ident.epoch_id), source=s)
+        return probe
+
+    def extended_retention_warnings(self) -> List[str]:
+        """Configuration that makes extended retention inert or self-defeating.
+
+        THE ONE THAT MATTERS. Retention decides how long a template EXISTS;
+        the topology's transit window decides whether a candidate that old is
+        even scored. They are independent, and the default window is
+        (0.0, 120.0) — so a registry holding templates for 24 hours will refuse
+        every candidate last seen more than two minutes ago, before appearance
+        is scored at all. Nothing errors. The gallery fills, `rejected_topology`
+        climbs, and the feature does nothing while looking healthy.
+
+        That is the same failure mode topology.py's own default_transit comment
+        warns about, arriving through a different door — so it is reported
+        rather than silently worked around, and NOT fixed by quietly widening
+        the physics gate here. Widening it is a real decision with a real cost
+        (a stranger seen eight hours later becomes a match candidate), and it
+        belongs to whoever owns the topology file.
+        """
+        out: List[str] = []
+        if not self.extended_retention:
+            return out
+        ceiling = self.extended_max_retention_seconds
+        _, default_max = self.topology.default_transit
+        if default_max < ceiling:
+            out.append(
+                "topology default_transit max is %.0fs but templates are held "
+                "for %.0fs: any candidate last seen more than %.0fs ago is "
+                "refused on physics before appearance is scored, so extended "
+                "retention will have no effect on unknown camera pairs. Widen "
+                "the transit windows deliberately, or the feature is inert."
+                % (default_max, ceiling, default_max))
+        if self.topology.same_camera_max_s < ceiling:
+            out.append(
+                "topology same_camera_max_s is %.0fs but templates are held "
+                "for %.0fs: someone returning to the SAME camera after a long "
+                "absence will be treated as a fresh visitor."
+                % (self.topology.same_camera_max_s, ceiling))
+        if self._epoch_seconds and (2.0 * self._epoch_seconds) < ceiling:
+            out.append(
+                "epoch_seconds %.0fs gives a real retention bound of %.0fs "
+                "(two live keys), below the configured ceiling of %.0fs. The "
+                "key bound wins; the ceiling is not what you will observe."
+                % (self._epoch_seconds, 2.0 * self._epoch_seconds, ceiling))
+        return out
+
+    def _compare_identities(self, ref_a: str, ref_b: str) -> float:
+        """Similarity between two GALLERY entries.
+
+        Both are stored, so both may be in different epoch bases — and two
+        different orthogonal bases make one person score like a stranger. The
+        consolidation path asks "are these two records the same person?", so
+        getting this wrong would defeat exactly the check that stops the
+        gallery fragmenting. Returns 0.0 when they cannot be compared, which
+        the caller reads as "not a duplicate" — the safe direction, since
+        splitting is recoverable and a wrong merge is not.
+        """
+        a = self._identities.get(ref_a)
+        b = self._identities.get(ref_b)
+        if a is None or b is None:
+            return 0.0
+        if not self.extended_retention or self._keyring is None:
+            return a.bank.similarity(b.bank)
+        if a.epoch_id == b.epoch_id:
+            return a.bank.similarity(b.bank)
+        ring = self._keyring
+        if (a.epoch_id is None or b.epoch_id is None
+                or not ring.has(a.epoch_id) or not ring.has(b.epoch_id)):
+            return 0.0
+        moved = TrackFeatureBank(capacity=b.bank.capacity)
+        for v, s in zip(b.bank.vectors, b.bank.sources):
+            moved.add(ring.reproject(v, b.epoch_id, a.epoch_id), source=s)
+        return a.bank.similarity(moved)
+
+    def erase_templates(self) -> dict:
+        """Immediate erasure of every held template.
+
+        Destroying the epoch keys is the mechanism: it is atomic, cannot miss
+        an entry, and leaves nothing recoverable even from a heap dump taken a
+        moment later. The banks are cleared too so the projected vectors do not
+        linger as unreadable noise.
+        """
+        n_ident = len(self._identities)
+        for ref in list(self._identities):
+            self._forget(ref)
+        keys = self._keyring.destroy_all() if self._keyring is not None else 0
+        self._keyring = None
+        return {"identities_dropped": n_ident, "epoch_keys_destroyed": keys}
 
     def in_transit(self, now: float) -> List[str]:
         """Refs currently UNOBSERVED: held, but on no camera right now.
@@ -310,11 +565,16 @@ class GlobalIdentityRegistry:
         rather than one constant — see retention_for() — so this stays a bound,
         just a differently-shaped one.
         """
+        # The window turns over here rather than on a timer: expire() is
+        # already called on every stats/counts request and by the offline
+        # monitor, so the rollover cannot be missed by a loop that died.
+        stranded = self.roll_epoch(now)
         stale = [ref for ref, ident in self._identities.items()
                  if (now - ident.last_seen) > self.retention_for(ident.last_camera)
                  and not ident.active]
         for ref in stale:
             self._forget(ref)
+        stale.extend(stranded)
         self.stats["expired"] += len(stale)
         return stale
 
@@ -401,11 +661,10 @@ class GlobalIdentityRegistry:
             ident = self._identities[existing]
             self._seen_pairs.add((camera_id, existing))
             ident.note_seen(camera_id, now, zone_id)
-            for v in bank.vectors[-1:]:          # keep the signature fresh
-                # Stamped with the camera, so this steady drip from whichever
-                # camera holds the binding cannot crowd every other viewpoint
-                # out of the bank. See TrackFeatureBank._evict.
-                ident.bank.add(v, source=camera_id)
+            # Stamped with the camera, so this steady drip from whichever
+            # camera holds the binding cannot crowd every other viewpoint
+            # out of the bank. See TrackFeatureBank._evict.
+            self._store_vectors(ident, bank.vectors[-1:], camera_id, now)
             # DEFERRED RE-MATCH. Sticky binding is right for a track's own
             # continuity - re-deciding every frame would make refs flicker -
             # but it also freezes the very first guess, taken on the fewest
@@ -478,9 +737,12 @@ class GlobalIdentityRegistry:
             if not ok:
                 topo_rejected += 1
                 continue
-            # Gate 3: appearance.
+            # Gate 3: appearance. Under extended retention the gallery entry is
+            # stored in its epoch's basis, so the probe is projected into that
+            # basis first — orthogonal, therefore the score is identical to
+            # what the raw comparison would have produced.
             considered += 1
-            score = bank.similarity(ident.bank)
+            score = self._probe_for(ident, bank, now).similarity(ident.bank)
             scored.append({"ref": ref, "score": round(score, 4),
                            "dt": round(now - ident.last_seen, 2),
                            "from": ident.last_camera, "gate": reason})
@@ -505,8 +767,7 @@ class GlobalIdentityRegistry:
                 self.merge(ref, retry_ref)
                 self.stats["rematched"] += 1
             ident = self._identities[ref]
-            for v in bank.vectors:
-                ident.bank.add(v, source=camera_id)
+            self._store_vectors(ident, bank.vectors, camera_id, now)
             ident.note_seen(camera_id, now, zone_id)
             ident.active.add(binding)
             self._note_co_present(ref, camera_id)
@@ -547,8 +808,7 @@ class GlobalIdentityRegistry:
             # put a stranger's movements under someone else's ref.
             if (runner_up_ref is not None and runner_up_ref in self._identities
                     and not self._are_exclusive(best_ref, runner_up_ref)):
-                twin = self._identities[best_ref].bank.similarity(
-                    self._identities[runner_up_ref].bank)
+                twin = self._compare_identities(best_ref, runner_up_ref)
                 if twin >= self.threshold:
                     self.merge(best_ref, runner_up_ref)
                     self.stats["consolidated"] += 1
@@ -583,11 +843,13 @@ class GlobalIdentityRegistry:
                                unknown_pairs=unknown_pairs, gallery=gallery_size)
 
         ref = self._mint_ref()
-        new_bank = TrackFeatureBank(capacity=self.bank_capacity)
-        for v in bank.vectors:
-            new_bank.add(v, source=camera_id)
-        ident = GlobalIdentity(global_ref=ref, bank=new_bank, first_seen=now,
-                               last_seen=now, last_camera=camera_id)
+        ident = GlobalIdentity(global_ref=ref,
+                               bank=TrackFeatureBank(capacity=self.bank_capacity),
+                               first_seen=now, last_seen=now,
+                               last_camera=camera_id)
+        # Projected on the way in when the mode is on, so a raw template is
+        # never what sits in the gallery.
+        self._store_vectors(ident, bank.vectors, camera_id, now)
         ident.note_seen(camera_id, now, zone_id)
         ident.active.add(binding)
         self._identities[ref] = ident
@@ -649,8 +911,25 @@ class GlobalIdentityRegistry:
         # Carry the source labels across, or a merge would erase the viewpoint
         # diversity the two records had between them — which is usually the
         # most useful thing about a merged pair.
+        #
+        # Under extended retention the two records may sit in DIFFERENT epoch
+        # bases. Concatenating them unprojected would mix bases inside one
+        # bank, and every later comparison against it would be scoring a
+        # rotation rather than a person. Move the dropped record into the
+        # survivor's basis first; if its key is already gone its templates are
+        # unrecoverable and are discarded rather than added as noise.
         drop_sources = drop.bank.sources or [None] * len(drop.bank.vectors)
-        for v, src in zip(drop.bank.vectors, drop_sources):
+        vectors = list(drop.bank.vectors)
+        if (self.extended_retention and self._keyring is not None
+                and drop.epoch_id != keep.epoch_id):
+            ring = self._keyring
+            if (drop.epoch_id is not None and keep.epoch_id is not None
+                    and ring.has(drop.epoch_id) and ring.has(keep.epoch_id)):
+                vectors = [ring.reproject(v, drop.epoch_id, keep.epoch_id)
+                           for v in vectors]
+            else:
+                vectors, drop_sources = [], []
+        for v, src in zip(vectors, drop_sources):
             keep.bank.add(v, source=src)
         keep.first_seen = min(keep.first_seen, drop.first_seen)
         if drop.last_seen > keep.last_seen:
@@ -774,7 +1053,36 @@ class GlobalIdentityRegistry:
             "unique_by_camera": self.unique_by_camera(),
             "live_by_camera": self.live_by_camera(),
             "stats": dict(self.stats),
+            # ALWAYS present, both states. A system holding biometric templates
+            # for a day must not look identical to one holding them for five
+            # minutes — that is the whole point of surfacing it here.
+            "retention": self.retention_snapshot(),
         }
+
+    def retention_snapshot(self) -> dict:
+        body = {
+            "extended": self.extended_retention,
+            "ttl_seconds": self.ttl_seconds,
+            "max_retention_seconds": self.max_retention_seconds,
+        }
+        if not self.extended_retention:
+            body["mode"] = "ram_short_ttl"
+            return body
+        body["mode"] = "ram_extended"
+        body["extended_max_retention_seconds"] = self.extended_max_retention_seconds
+        body["transform"] = "orthogonal_epoch_projection"
+        # Said in full every time it is asked. An operator reading this should
+        # not have to find a design document to learn that the key recovers the
+        # template — see finblade/cancelable.py.
+        body["guarantee"] = ("key-dependent confidentiality with per-window "
+                             "unlinkability; NOT non-invertible")
+        body["keyring"] = (self._keyring.snapshot() if self._keyring is not None
+                           else {"state": "not_yet_initialised"})
+        # Reported, not hidden: a mode that is enabled but cannot work because
+        # the transit windows refuse every aged candidate must be visible here,
+        # or it looks identical to one that is working.
+        body["warnings"] = self.extended_retention_warnings()
+        return body
 
     def __len__(self) -> int:
         return len(self._identities)

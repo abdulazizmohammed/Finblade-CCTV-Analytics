@@ -98,6 +98,17 @@ run against real footage. **They are working code. Do not strip them out.**
   `gp_` ref per person by `finblade/globalid.py` behind
   `services/api/identity.py`. See `tests/test_globalid.py`,
   `tests/test_identity_transit.py`, `tests/test_cross_camera_dedup.py`.
+
+  **Embeddings never reach disk, a log, the database or a response body — in
+  any mode.** How long they live in RAM is the one thing that varies, and the
+  default has not changed: 300s, ceilinged at 1800s. Setting
+  `FINBLADE_REID_EXTENDED_RETENTION=ram` holds them for up to 24h and stores
+  them projected under a rotating orthogonal epoch key
+  (`finblade/cancelable.py`). That gives **key-dependent confidentiality with
+  per-window unlinkability — NOT non-invertibility**: whoever holds the epoch
+  key recovers the template exactly. Do not describe it as one-way, hashed, or
+  anonymised. It is off by default, logs a warning when on, and enabling it in
+  a real deployment needs a documented decision (DECISIONS.md D-9, D-30).
 - **Physical areas.** `physical_area_id` on a zone plus `finblade/areas.py` —
   the "two cameras watch one room" abstraction that stops occupancy being
   double-counted. Symbolic, not metric: it says two polygons are the same room,

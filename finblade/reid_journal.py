@@ -2,10 +2,12 @@
 
 WHY THIS EXISTS. Embeddings are never persisted — RAM only, cleared on track
 reap, dropped at TTL. That is the privacy property the system rests on, and it
-is not negotiable. The cost is that the matcher CANNOT BE REPLAYED: with no
-vectors on disk, "would threshold 0.65 have matched that hop?" can only be
-answered by walking the building again. Every tuning decision costs a walk, and
-a walk is twenty minutes of somebody's day plus a quiet building.
+is not negotiable; extended retention changes how long they live in memory and
+nothing about them reaching disk. The cost is that the matcher CANNOT BE
+REPLAYED: with no vectors on disk, "would threshold 0.65 have matched that
+hop?" can only be answered by walking the building again. Every tuning decision
+costs a walk, and a walk is twenty minutes of somebody's day plus a quiet
+building.
 
 So record the decisions instead of the inputs. A similarity score is a float,
 not a biometric: it says how alike two crops looked, and it cannot be inverted

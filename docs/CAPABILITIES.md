@@ -91,8 +91,15 @@ system is an opaque salted hash.
 Extended retention stores each template as `Qv` for a per-window random
 orthogonal `Q` (`finblade/cancelable.py`). Because `Q` is orthogonal, cosine
 similarity is preserved **exactly**, so matching accuracy is mathematically
-unchanged — validated in `tests/test_cancelable.py`, including an assertion
-that no pair crosses the 0.70 threshold.
+unchanged.
+
+Validated three ways: the property itself and threshold safety in
+`tests/test_cancelable.py` (cosine drift < 1e-9, zero pairs crossing 0.70 over
+400 trials), registry-level decision equivalence in
+`tests/test_extended_retention.py`, and end to end through
+`scripts/eval_cross_camera.py --extended-retention` — 400 frames producing an
+identical report with the transform on and off, down to a byte-identical
+`registry_stats` (`evidence/tier3_baseline.json`, `evidence/tier3_extended.json`).
 
 **What that does and does not give you.** It gives *key-dependent
 confidentiality with per-window unlinkability*: a memory dump without the key

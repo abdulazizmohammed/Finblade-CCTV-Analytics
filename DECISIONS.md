@@ -449,6 +449,31 @@ guarantee string says "NOT non-invertible" in the response body.
 the OSNet path is unchanged. This mode consumes the same templates the matcher
 already produced; it does not alter detection or feature extraction.
 
+**VALIDATION, all three tiers, done.**
+  * Tier 1 (property, `tests/test_cancelable.py`): QᵀQ = I to 1e-10; cosine
+    drift < 1e-9 on random, near-identical and near-orthogonal pairs and
+    through `TrackFeatureBank.similarity` itself.
+  * Tier 2 (precision): zero pairs cross the 0.70 threshold over 400 trials;
+    norm preserved; cross-epoch re-projection exact.
+  * Tier 3 (end to end, `scripts/eval_cross_camera.py --extended-retention`):
+    400 frames of WiseNET set 1, same crops and ground truth through both a
+    raw and an epoch-projected registry. **Every decision metric identical** —
+    tracks 5/4, ground-truth pairs 6, matched 2, match_rate 0.333,
+    false_merges 0, identities_created 7, and a byte-identical
+    `registry_stats`. Evidence: `evidence/tier3_baseline.json` and
+    `evidence/tier3_extended.json`; the extended run's report carries its
+    keyring snapshot, so the transform is provably engaged rather than
+    silently skipped. fps differed (17.9 vs 22.6) — detector run-to-run
+    variance, not the transform.
+
+    That harness's own caveat still applies: camera B is a transformed copy of
+    camera A, so its ABSOLUTE numbers do not predict real two-camera accuracy.
+    For this validation that does not matter — the claim under test is that
+    the transform changes nothing, and identical inputs producing identical
+    outputs is exactly that claim. The 0.333 match rate is the matcher's
+    existing behaviour on this footage, present in both runs and unrelated to
+    this change.
+
 **Reverse:** unset the env var — the default path never constructs a keyring
 and never projects anything. To remove entirely: delete
 `finblade/cancelable.py`, the `extended_*` fields on `GlobalIdentityRegistry`,

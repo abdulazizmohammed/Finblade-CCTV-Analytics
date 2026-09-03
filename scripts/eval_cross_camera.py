@@ -103,6 +103,16 @@ def main():
     ap.add_argument("--gt-iou", type=float, default=0.5)
     ap.add_argument("--min-samples", type=int, default=2)
     ap.add_argument("--out", default="evidence/cross_camera_eval.json")
+    # TIER 3 of the extended-retention validation (DECISIONS.md D-30). Runs the
+    # SAME crops, banks and ground truth through a registry that stores every
+    # template projected under a rotating orthogonal epoch key instead of raw.
+    # The transform is exactly similarity-preserving, so a correct
+    # implementation must produce an IDENTICAL report — this is a null-result
+    # check, and any difference means the transform is not doing what
+    # finblade/cancelable.py claims.
+    ap.add_argument("--extended-retention", action="store_true",
+                    help="store templates epoch-projected (validation of D-30)")
+    ap.add_argument("--epoch-seconds", type=float, default=43200.0)
     args = ap.parse_args()
 
     if not os.path.exists(args.source):
@@ -202,8 +212,19 @@ def main():
     # --- resolve both streams into one registry ---------------------------
     # Overlapping pair: the two cameras see the same floor at the same instant.
     topo = CameraTopology(overlapping=[("CAM-A", "CAM-B")])
+    extended = {}
+    if args.extended_retention:
+        # Dimension is taken from a real bank rather than assumed 512, so this
+        # keeps working if the ReID backbone is ever changed.
+        dim = next((b.vectors[0].__len__()
+                    for cam in ("A", "B") for b in banks[cam].values()
+                    if b.vectors), 512)
+        extended = {"extended_max_retention_seconds": 86400.0,
+                    "epoch_seconds": args.epoch_seconds,
+                    "embedding_dim": dim}
     reg = GlobalIdentityRegistry(topology=topo, threshold=args.threshold,
-                                 margin=args.margin, ttl_seconds=10_000.0)
+                                 margin=args.margin, ttl_seconds=10_000.0,
+                                 **extended)
     refs = {"A": {}, "B": {}}
     # Interleave by first appearance so the order resembles a live run.
     order = ([("A", t) for t in banks["A"]] + [("B", t) for t in banks["B"]])
@@ -262,7 +283,9 @@ def main():
         "seconds": round(elapsed, 1),
         "fps": round(n / elapsed, 2) if elapsed else 0.0,
         "params": {"threshold": args.threshold, "margin": args.margin,
-                   "gt_iou": args.gt_iou, "min_samples": args.min_samples},
+                   "gt_iou": args.gt_iou, "min_samples": args.min_samples,
+                   "extended_retention": bool(args.extended_retention)},
+        "retention": reg.retention_snapshot(),
         "tracks": {"cam_a": len(refs["A"]), "cam_b": len(refs["B"])},
         "ground_truth_pairs": len(gt_pairs),
         "matched_pairs": len(matched),

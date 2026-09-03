@@ -273,4 +273,18 @@ body {
   --fb-overlay-foot:       #f0a029;  /* ground-contact point  */
   --fb-overlay-zone:       #4fdce0;  /* monitored zone edge   */
   --fb-overlay-restricted: #e0479e;  /* no-go zone edge       */
+
+  /* Hazards (R-10). These follow rule 2 above rather than inventing a new
+     vocabulary: fire is something wrong RIGHT NOW, so it takes the critical
+     red, solid. Smoke takes the warning amber — it is the earlier and less
+     certain signal (steam, dust and exhaust all read as smoke), and ranking it
+     below fire in colour is the same judgement that makes its alert AMBER
+     while fire's is RED.
+
+     Smoke shares its hue with --fb-overlay-foot, which is deliberate rather
+     than an oversight: a foot point is a 3px dot and a smoke region is a large
+     rectangle, so they never read as the same mark. Both are "attention, not
+     alarm", which is what the amber means. */
+  --fb-overlay-fire:       #ef4b4b;  /* fire  — critical, solid */
+  --fb-overlay-smoke:      #f0a029;  /* smoke — warning         */
 }

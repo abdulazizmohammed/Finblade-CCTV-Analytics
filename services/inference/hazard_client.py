@@ -57,6 +57,17 @@ class HazardDetector:
         self._model = None
         self._names: Dict[int, str] = {}
         self._last_run = 0.0
+        # Boxes from the most recent run, for the annotator: a fire alert whose
+        # saved frame has no box on the fire is far weaker evidence — for smoke
+        # especially, a reviewer otherwise cannot tell WHAT the model keyed on.
+        # Held rather than returned so the rule-feeding path stays a plain
+        # {class: (conf, count)} dict and did not have to change shape.
+        # [(x1, y1, x2, y2, class_name, confidence), ...]
+        self.last_boxes = []
+        # Which frame those boxes belong to. The detector runs at 2 Hz while the
+        # loop annotates every frame, so without this the overlay would keep
+        # drawing a stale box for half a second after the fire left view.
+        self.last_boxes_ts = 0.0
         self.stats = {"runs": 0, "detections": 0, "errors": 0,
                       "fire_frames": 0, "smoke_frames": 0}
 
@@ -136,20 +147,41 @@ class HazardDetector:
             log.exception("camera %s: hazard inference failed", self.camera_id)
             return out
         self.stats["runs"] += 1
+        self.last_boxes = []
+        self.last_boxes_ts = now
         if res.boxes is None or len(res.boxes) == 0:
             return out
-        for cls_i, conf in zip(res.boxes.cls.tolist(), res.boxes.conf.tolist()):
+        xyxy = res.boxes.xyxy.tolist()
+        for box, cls_i, conf in zip(xyxy, res.boxes.cls.tolist(),
+                                    res.boxes.conf.tolist()):
             name = self._names.get(int(cls_i))
             if name is None:
                 continue
             best, count = out.get(name, (0.0, 0))
             out[name] = (max(best, float(conf)), count + 1)
+            self.last_boxes.append((float(box[0]), float(box[1]),
+                                    float(box[2]), float(box[3]),
+                                    name, float(conf)))
             self.stats["detections"] += 1
         if out.get("fire", (0.0, 0))[1]:
             self.stats["fire_frames"] += 1
         if out.get("smoke", (0.0, 0))[1]:
             self.stats["smoke_frames"] += 1
         return out
+
+    def boxes_for(self, now: float, max_age_s: float = 1.0):
+        """Boxes from the last run, if they are still current.
+
+        The detector runs at 2 Hz; the loop annotates every frame. Returning
+        the cached boxes unconditionally would leave a fire rectangle painted
+        on screen after the fire had gone, which is exactly the kind of stale
+        overlay that makes a reviewer distrust the whole picture. max_age_s
+        defaults to twice the 0.5s interval so a box survives its own sampling
+        gap and no longer.
+        """
+        if not self.last_boxes or (now - self.last_boxes_ts) > max_age_s:
+            return []
+        return list(self.last_boxes)
 
     def snapshot(self) -> dict:
         return {"status": self.status, "enabled": self.enabled,

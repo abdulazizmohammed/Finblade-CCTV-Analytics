@@ -284,6 +284,8 @@ BGR_CRITICAL   = (75, 75, 239)    # #ef4b4b live intrusion (red)
 BGR_WARNING    = (41, 160, 240)   # #f0a029 loitering highlight (amber)
 BGR_TEXT       = (240, 236, 220)  # #dcecf0
 BGR_IGNORED    = (128, 128, 128)  # muted grey — detection mask, not a status
+BGR_FIRE       = (75, 75, 239)    # #ef4b4b fire  — critical, solid
+BGR_SMOKE      = (41, 160, 240)   # #f0a029 smoke — warning
 
 def _stamp_zone_occupancy(events, occupancy, zones) -> None:
     """Add the resulting occupancy/density to movement events, in place.
@@ -406,14 +408,40 @@ def _draw_dashed_poly(frame, pts, color, thickness=2, dash=14):
 
 # Overlay layers the live stream can toggle on/off (evidence always draws all).
 OVERLAY_DEFAULT = {"zones": True, "boxes": True, "ids": True, "feet": True,
-                   "dwell": True, "gid": True}
+                   "dwell": True, "gid": True, "hazards": True}
 
 
-def annotate(frame, zones, tracks, occupancy, track_meta=None, overlay=None):
+def _draw_hazards(frame, hazards):
+    """Fire/smoke boxes. Drawn FIRST so person boxes sit on top of them.
+
+    A hazard region is usually large — a smoke plume can cover a third of the
+    frame — so drawing it last would bury the people underneath it. Thicker
+    stroke than a track box because it is the reason the frame was saved.
+    """
+    for x1, y1, x2, y2, name, conf in hazards or ():
+        colour = BGR_FIRE if name == "fire" else BGR_SMOKE
+        p1 = (int(x1), int(y1))
+        p2 = (int(x2), int(y2))
+        cv2.rectangle(frame, p1, p2, colour, 3)
+        label = "%s %.2f" % (name.upper(), conf)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        # Label INSIDE the box when it would otherwise fall off the top edge —
+        # a smoke box often starts at y=0 and the text would be clipped away.
+        ty = p1[1] - 8 if p1[1] > th + 12 else p1[1] + th + 8
+        cv2.rectangle(frame, (p1[0], ty - th - 6), (p1[0] + tw + 8, ty + 4),
+                      colour, -1)
+        cv2.putText(frame, label, (p1[0] + 4, ty),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (16, 16, 16), 2)
+
+
+def annotate(frame, zones, tracks, occupancy, track_meta=None, overlay=None,
+             hazards=None):
     track_meta = track_meta or {}
     o = dict(OVERLAY_DEFAULT)
     if overlay:
         o.update(overlay)
+    if o.get("hazards", True):
+        _draw_hazards(frame, hazards)
     if o["zones"]:
         for z in zones:
             pts = [(int(x), int(y)) for x, y in z.polygon]
@@ -1254,14 +1282,17 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             "loiter": (t.person_ref, t.current_zone_id) in loiter_started,
             "gref": reid.global_ref(t.track_id),   # None until ReID resolves it
         } for t in registry.active()}
-        annotated = annotate(frame.copy(), cfg.zones, tracks, occupancy, track_meta)
+        _hz_boxes = hazard.boxes_for(vnow)
+        annotated = annotate(frame.copy(), cfg.zones, tracks, occupancy,
+                             track_meta, hazards=_hz_boxes)
         okj, buf = cv2.imencode(".jpg", annotated)
         if okj:
             with _lock:
                 _latest_jpeg["buf"] = buf.tobytes()
                 # snapshot raw context for toggle-aware re-annotation in the stream
                 _render.update(frame=frame, zones=cfg.zones, tracks=list(tracks),
-                               occ=dict(occupancy), meta=track_meta)
+                               occ=dict(occupancy), meta=track_meta,
+                               hazards=_hz_boxes)
 
         # Snapshot only critical density + restricted intrusion — not loitering,
         # density-warning, capacity, or movement events.
@@ -1380,7 +1411,8 @@ def _serve(port=8080):
                         r = dict(_render)
                     if r.get("frame") is not None:
                         img = annotate(r["frame"].copy(), r["zones"], r["tracks"],
-                                       r["occ"], r["meta"], overlay=ov)
+                                       r["occ"], r["meta"], overlay=ov,
+                                       hazards=r.get("hazards"))
                         okj, enc = cv2.imencode(".jpg", img)
                         if okj:
                             buf = enc.tobytes()

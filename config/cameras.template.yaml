@@ -108,7 +108,15 @@ reid:
 # YOLOv8 — commercial deployment needs the approved Ultralytics licensing
 # arrangement. See DECISIONS.md D-31.
 hazard:
-  enabled: false
+  # Enabled 2026-09-03 for demonstration on the PPE/fire training clip.
+  #
+  # NOTE THIS IS THE SHARED TEMPLATE: every UI-provisioned camera reads it, so
+  # turning this on turns a second model on for ALL of them, not just the one
+  # you had in mind. Measured cost is small (16.6 ms warm, 32 MiB, ~33 ms of
+  # GPU per second per camera at 2 Hz) but it is per camera, and this box has
+  # a history of PCIe faults under sustained multi-model GPU load. Set it back
+  # to false before running a large camera bank.
+  enabled: true
   weights: models/fire_smoke_yolov8n.pt
   device: "0"
   interval_seconds: 0.5      # 2 Hz

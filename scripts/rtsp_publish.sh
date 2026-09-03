@@ -11,11 +11,28 @@
 #   scripts/rtsp_publish.sh --stop-all                      # publishers + server
 #
 # Options:
+#   --speed N       playback rate. 0.5 = half speed, 2 = double. Default 1.
+#                   For demonstrating a detector: at native rate a detection
+#                   can appear and vanish inside a second and be unwatchable.
 #   --transcode     re-encode to H.264 instead of copying the original stream.
 #                   Only needed when the source codec cannot ride RTSP or the
 #                   consumer cannot decode it. Costs real CPU - see below.
 #   --no-loop       play once and exit instead of looping forever
 #   --port N        RTSP port (default 8554)
+#
+# HOW --speed WORKS, AND WHAT IT DOES NOT DO. ffmpeg's -readrate would be the
+# obvious tool but that needs >= 5.1 and this box has 4.4.2, so this uses
+# -itsscale, which rescales the INPUT timestamps before -re paces off them.
+# Delivery slows while -c:v copy still applies, so there is no re-encode and
+# the detector sees the original pixels.
+#
+# It changes the RATE frames arrive, not their content. A camera worker reading
+# the stream sees roughly half as many frames per second, which is usually the
+# point of a demo. It does NOT make a detector more accurate: a detection that
+# was marginal at full rate is equally marginal here, only visible for longer.
+# It also does not slow the timestamps the WORKER stamps on its own events -
+# those come from its wall clock, so a rule with a time window still measures
+# real seconds, not video seconds.
 #
 # WHY -c:v copy IS THE DEFAULT. Re-encoding a 1280x720 stream costs a core per
 # camera and changes the pixels the detector sees, which quietly invalidates any
@@ -37,6 +54,7 @@ set -uo pipefail
 PORT=8554
 TRANSCODE=0
 LOOP=1
+SPEED=1
 ACTION="publish"
 TARGET=""
 RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}/fb-rtsp"
@@ -48,6 +66,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --transcode) TRANSCODE=1 ;;
     --no-loop)   LOOP=0 ;;
+    --speed)     SPEED="$2"; shift ;;
+    --speed=*)   SPEED="${1#*=}" ;;
     --port)      PORT="$2"; shift ;;
     --port=*)    PORT="${1#*=}" ;;
     --status)    ACTION="status" ;;
@@ -61,6 +81,13 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$RUN_DIR"
+
+# Validate --speed HERE, before anything else uses it. A typo like `--speed 0`
+# or `--speed abc` would otherwise reach ffmpeg as a divide-by-zero or a silent
+# no-op, and the symptom would be a stream that never advances - which looks
+# like a broken pipeline rather than a bad argument.
+SCALE="$(awk -v s="$SPEED" 'BEGIN{ if (s+0 <= 0) exit 1; printf "%.6f", 1.0/s }')" || {
+  echo "[BLOCKER] --speed must be a positive number, got '$SPEED'" >&2; exit 2; }
 
 # ------------------------------------------------------- find mediamtx ---
 # Deliberately searched rather than hard-coded: this box has one binary under
@@ -199,9 +226,17 @@ CODEC="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,wi
          -of csv=p=0 "$VIDEO" 2>/dev/null)"
 echo "[rtsp] source : $VIDEO"
 echo "[rtsp] stream : $CODEC"
+if [ "$SPEED" != "1" ] && [ "$SPEED" != "1.0" ]; then
+  echo "[rtsp] speed  : ${SPEED}x (itsscale $SCALE) — frames arrive at ${SPEED}x native rate"
+fi
 
 FF=(ffmpeg -nostdin -hide_banner -loglevel error -re)
 [ "$LOOP" = 1 ] && FF+=(-stream_loop -1)
+# -itsscale must come BEFORE -i: it is an input option, and after -i it is
+# silently ignored, which looks exactly like the feature not working.
+if [ "$SPEED" != "1" ] && [ "$SPEED" != "1.0" ]; then
+  FF+=(-itsscale "$SCALE")
+fi
 FF+=(-i "$VIDEO" -an)
 if [ "$TRANSCODE" = 1 ]; then
   FF+=(-c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p)

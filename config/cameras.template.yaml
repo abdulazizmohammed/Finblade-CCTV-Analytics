@@ -85,4 +85,34 @@ reid:
   min_crop_height: 64
   min_crop_confidence: 0.5
 
+# Fire / smoke detection (R-10). A SECOND MODEL on the same decoded frame.
+#
+# OFF by default, and that is a GPU-budget decision rather than caution about
+# the feature. Phase 1 measured a second always-on detector at ~21ms/frame:
+# VRAM is a non-issue (~37 MiB marginal, because the CUDA context is shared
+# within the worker process) but GPU COMPUTE roughly doubles, and one camera at
+# 1080p drops from ~24fps to ~10fps if it runs per frame.
+#
+# interval_seconds is what makes it affordable: at 2 Hz the second model costs
+# roughly 13% of its per-frame price. A fire that matters persists for seconds;
+# sub-second flicker is the false-positive generator, not the signal.
+#
+# conf_threshold is DELIBERATELY BELOW the rule's arming thresholds
+# (fire_on 0.60, smoke_on 0.65 in finblade/rules.py). This floor decides what
+# is reported; the rule decides what alerts. Raise it to the rule's bar and the
+# rule's hysteresis has nothing to clear against.
+#
+# THE CHECKPOINT IS AN EVALUATION MODEL, NOT A VALIDATED FIRE ALARM.
+# rabahdev/fire-smoke-yolov8n, trained on D-Fire (CC0-1.0), classes
+# {0: smoke, 1: fire}. It carries an AGPL-3.0 dependency via Ultralytics
+# YOLOv8 — commercial deployment needs the approved Ultralytics licensing
+# arrangement. See DECISIONS.md D-31.
+hazard:
+  enabled: false
+  weights: models/fire_smoke_yolov8n.pt
+  device: "0"
+  interval_seconds: 0.5      # 2 Hz
+  conf_threshold: 0.30
+  imgsz: 640                 # the size this checkpoint was trained at
+
 zones: []

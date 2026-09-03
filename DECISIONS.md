@@ -478,3 +478,67 @@ already produced; it does not alter detection or feature extraction.
 and never projects anything. To remove entirely: delete
 `finblade/cancelable.py`, the `extended_*` fields on `GlobalIdentityRegistry`,
 and `tests/test_cancelable.py` / `tests/test_extended_retention.py`.
+
+## D-31 — Fire/smoke detection (R-10): an EVALUATION checkpoint, and an AGPL dependency
+**Choice:** `rabahdev/fire-smoke-yolov8n` / `best.pt` wired as a second model in
+the per-camera worker at 2 Hz, driving a new R-10 rule. Off by default
+(`hazard.enabled: false`).
+
+**PROVENANCE, which is why this one was accepted and others were not.** Trained
+on D-Fire, which is documented and released **CC0-1.0**; the checkpoint
+publishes held-out test metrics. Three earlier candidates were refused because
+they had no stated licence, no documented training set and no published
+evaluation — an unvalidated third-party model deciding whether to raise a fire
+alarm in a client system is not a thing to adopt on a maintainer's judgement.
+The operator sanctioned this specific checkpoint.
+
+**LICENSING DEPENDENCY — READ BEFORE ANY COMMERCIAL DEPLOYMENT.** The dataset
+is CC0, but the checkpoint is built on **Ultralytics YOLOv8 and inherits
+AGPL-3.0**. Production or commercial use must be covered by the approved
+Ultralytics commercial licensing arrangement, or otherwise satisfy AGPL.
+This is a *distribution* question, not a runtime one — it does not affect
+whether the code works, only whether it may be shipped. Note the same
+dependency already exists via `ultralytics` itself and `models/yolo11s.pt`;
+this makes it explicit rather than introducing it.
+
+**IT IS NOT A VALIDATED FIRE ALARM, and must not be described as one.** It is
+an evaluation checkpoint: good enough to integrate against and measure, not
+qualified to be the thing a building relies on. No fire footage has been run
+through this system, so every threshold in `RuleThresholds` (`fire_on 0.60`,
+`smoke_on 0.65`, `hazard_sustain_seconds 3.0`) is a GUESS and is labelled as
+one in the source. Marked **Runs**, never **Built**.
+
+**Fire is RED, smoke is AMBER, and smoke has a higher bar (0.65 vs 0.60).**
+Smoke is greyish and low-saturation; steam, dust, exhaust and low sun all read
+as smoke. An amber that turns out to be a kettle costs less operator trust than
+a red one. Smoke is not suppressed — it is the earlier warning — only ranked
+below fire.
+
+**3-second sustain, not the 10-second density debounce.** A fire alert that
+waits ten seconds to arm is ten seconds of fire. Three is still long enough
+that single-frame flicker cannot arm it, which is the job the gate is doing.
+
+**2 Hz, not per frame.** Measured warm: 16.6 ms mean (p50 13.2, p95 20.4),
+32 MiB VRAM. At 2 Hz that is ~33 ms of GPU per second per camera. Per frame it
+would roughly double GPU inference for a signal that persists for seconds and
+whose sub-second flicker is the false-positive generator, not the evidence.
+
+**CLASS ORDER IS READ FROM THE CHECKPOINT.** This model is
+`{0: 'smoke', 1: 'fire'}` — smoke first, the opposite of the obvious guess.
+Hard-coding indices would have swapped every fire alert for a smoke one and
+produced a system that looked like it worked. `HazardDetector` reads
+`model.names` and refuses a checkpoint containing neither class.
+
+**A DEAD DETECTOR RETURNS NOTHING, NOT ZERO.** "I looked and saw no fire" is a
+reading and must reach the latch; "I am not looking" is not, and feeding it as
+0.0 would let a failed model silently CLEAR a live fire alert. `observe()`
+returns `{}` when unavailable so the rule is not called and the latch holds.
+
+**R-10 added to SNAPSHOT_RULES.** An operator cannot act on "there is a fire"
+without seeing the picture. Safe to add because R-10 latches — it arms once per
+episode, not once per frame, so it cannot flood the way loitering did.
+
+**Reverse:** `hazard.enabled: false` (already the default) disables it with no
+code change. To remove: delete `services/inference/hazard_client.py`, the
+`hazard` block in `finblade/config.py`, `evaluate_hazard` and the R-10
+thresholds in `rules.py`, the two event types, and `models/fire_smoke_yolov8n.pt`.

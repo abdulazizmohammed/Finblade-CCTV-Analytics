@@ -34,12 +34,18 @@ GROUP_CROSSING = "GROUP_CROSSING"
 # describe a polygon; these describe the building.
 FACILITY_ENTRY = "FACILITY_ENTRY"
 FACILITY_EXIT = "FACILITY_EXIT"
+# Fire or smoke seen in a zone (R-10). NOT person-scoped: a hazard is a
+# property of the picture, so these carry no person_ref and can be raised by a
+# camera with no zones drawn at all.
+HAZARD_FIRE = "HAZARD_FIRE"
+HAZARD_SMOKE = "HAZARD_SMOKE"
 
 EVENT_TYPES = {
     ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE, CAPACITY_WARNING,
     RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT, LOITERING_START, LOITERING_END,
     CAMERA_HEARTBEAT, CAMERA_ONLINE, CAMERA_OFFLINE, CAMERA_RECOVERED,
     WRONG_DIRECTION, GROUP_CROSSING, FACILITY_ENTRY, FACILITY_EXIT,
+    HAZARD_FIRE, HAZARD_SMOKE,
 }
 
 # Per-type required payload keys and their python types.
@@ -65,6 +71,14 @@ _SCHEMA = {
     # figure AFTER the crossing, so the series is reconstructable from events.
     FACILITY_ENTRY: {"door_zone_id": str, "person_ref": str, "occupancy": int},
     FACILITY_EXIT: {"door_zone_id": str, "person_ref": str, "occupancy": int},
+    # confidence is REQUIRED here, unlike on the movement events where it is
+    # optional. A hazard claim an operator is expected to act on must carry the
+    # number it was made on: "there is a fire" and "there is a fire, 0.61" are
+    # different assertions, and only the second can be reviewed or retuned.
+    # zone_id is deliberately absent from the required set - see the note on
+    # _OPTIONAL_SCHEMA below.
+    HAZARD_FIRE: {"confidence": _NUM},
+    HAZARD_SMOKE: {"confidence": _NUM},
 }
 
 # Fields that are type-checked WHEN PRESENT but never required.
@@ -93,9 +107,19 @@ _OPTIONAL_SCHEMA = {
     # which could be hours.
     CAMERA_ONLINE: {"zone_occupancy": dict},
     CAMERA_RECOVERED: {"zone_occupancy": dict},
+    # zone_id is OPTIONAL on a hazard, which is the one place it differs from
+    # every other zone-scoped event. A fire is a property of the picture, not
+    # of a polygon: a camera watching a yard with no zones drawn must still be
+    # able to report one, and requiring zone_id would silently make hazards
+    # unreportable on exactly the unzoned cameras most likely to be outdoors.
+    # detections is how many boxes of that class were in the frame - one large
+    # fire and twelve scattered reflections read very differently to a reviewer.
+    HAZARD_FIRE: {"zone_id": str, "detections": int},
+    HAZARD_SMOKE: {"zone_id": str, "detections": int},
 }
 
-_NON_NEGATIVE = ("occupancy", "density", "occupancy_from", "density_from", "count")
+_NON_NEGATIVE = ("occupancy", "density", "occupancy_from", "density_from",
+                 "count", "detections")
 
 # Fields valid on ANY person-scoped event, checked when present.
 #

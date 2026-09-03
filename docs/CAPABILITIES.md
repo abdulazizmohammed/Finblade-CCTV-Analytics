@@ -160,13 +160,14 @@ detection into shared world coordinates yet.
 
 ## 5. Events
 
-17 types, one envelope, one validator shared by the pipeline and the API
+19 types, one envelope, one validator shared by the pipeline and the API
 (`finblade/events.py`, reused via `services/api/schema.py`).
 
 `ZONE_ENTRY` `ZONE_EXIT` `ZONE_TRANSITION` `DENSITY_UPDATE` `CAPACITY_WARNING`
 `RESTRICTED_ZONE_ENTRY` `RESTRICTED_ZONE_EXIT` `LOITERING_START` `LOITERING_END`
 `CAMERA_HEARTBEAT` `CAMERA_ONLINE` `CAMERA_OFFLINE` `CAMERA_RECOVERED`
 `WRONG_DIRECTION` `GROUP_CROSSING` `FACILITY_ENTRY` `FACILITY_EXIT`
+`HAZARD_FIRE` `HAZARD_SMOKE`
 
 | Capability | Status | Implementation |
 |---|---|---|
@@ -208,13 +209,41 @@ appearance channel — a property of the sensor, not a gap in the code.
 | R-07 | camera silent longer than 30s; clears on recovery | Built |
 | R-08 | occupancy report, scheduled and on demand | Built |
 | R-09 | head count above a per-zone threshold, area-independent | Built |
+| R-10 | sustained fire or smoke in view | **Runs** — see below |
 
 Implemented in `finblade/rules.py`. Hysteresis (separate on/off thresholds) and
 a 10-second debounce apply to all density and capacity rules; R-06 is immediate
-by design but still one alert per visit.
+by design but still one alert per visit. R-10 uses the same `HysteresisLatch`
+with a **3-second** sustain — a fire alert that waits ten seconds to arm is ten
+seconds of fire.
+
+**R-10 fire/smoke is an EVALUATION capability, not a fire alarm.** It is marked
+**Runs**, and the distinction matters more here than anywhere else in this file:
+
+- **Checkpoint:** `rabahdev/fire-smoke-yolov8n`, trained on D-Fire (**CC0-1.0**,
+  documented, with published held-out metrics). Classes `{0: smoke, 1: fire}` —
+  read from the checkpoint at load, never assumed.
+- **LICENSING:** the checkpoint is built on Ultralytics YOLOv8 and inherits
+  **AGPL-3.0**. Commercial or production deployment must be covered by the
+  approved Ultralytics commercial licensing arrangement, or otherwise satisfy
+  AGPL. The same dependency already applies to `ultralytics` and
+  `models/yolo11s.pt`; this states it rather than adding it.
+- **No fire footage has been run through this system.** Every threshold
+  (`fire_on 0.60`, `smoke_on 0.65`, 3s sustain) is a guess, labelled as one in
+  the source, and must be retuned against real detections before an R-10 alert
+  is treated as calibrated.
+- **Off by default** — `hazard.enabled: false`. A second always-on model is a
+  per-camera GPU decision. Measured cost: 16.6 ms warm, 32 MiB VRAM, ~33 ms of
+  GPU per second per camera at 2 Hz.
+- Fire is RED, smoke AMBER with a higher arming bar, because steam, dust and
+  exhaust read as smoke and a red alert that turns out to be a kettle costs
+  operator trust.
+
+See [DECISIONS.md](../DECISIONS.md) D-31.
 
 | Capability | Status | Implementation |
 |---|---|---|
+| Fire / smoke detection, 2 Hz second model | **Runs** | `services/inference/hazard_client.py` + `models/fire_smoke_yolov8n.pt` |
 | Wrong-way movement against a declared route | Built | `finblade/flowrules.py` `WrongWayDetector` |
 | Group crossing — N distinct people through one boundary | Built | `flowrules.py` `GroupCrossingDetector` |
 | Alert acknowledge / resolve, with incident frames | Built | `services/api/service.py` |

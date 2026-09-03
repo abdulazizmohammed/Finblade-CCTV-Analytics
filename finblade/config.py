@@ -33,6 +33,10 @@ class CameraConfig:
     # Cross-camera ReID settings (optional block; absent = defaults, disabled
     # only if reid.enabled is explicitly false or the weights are missing).
     reid: dict = field(default_factory=dict)
+    # Fire/smoke detection (R-10). Optional block; ABSENT MEANS OFF. Adding a
+    # second always-on model per camera is a GPU-budget decision, so it is
+    # opt-in per camera rather than defaulted on the way reid is.
+    hazard: dict = field(default_factory=dict)
 
 
 def load_camera_config(path: str) -> CameraConfig:
@@ -64,4 +68,5 @@ def load_camera_config(path: str) -> CameraConfig:
         offline_seconds=float(cfg.get("offline_seconds", 30.0)),
         zones=[zone_from_dict(z, fw, fh) for z in cfg.get("zones", [])],
         reid=cfg.get("reid") or {},
+        hazard=cfg.get("hazard") or {},
     )

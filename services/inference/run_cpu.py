@@ -65,9 +65,10 @@ from finblade.debounce import BoundaryDebouncer          # noqa: E402
 from finblade.emission import DensityUpdateGate          # noqa: E402
 from finblade.events import (                            # noqa: E402
     CAMERA_HEARTBEAT, CAMERA_OFFLINE, CAMERA_ONLINE, CAMERA_RECOVERED,
-    CAPACITY_WARNING, DENSITY_UPDATE, GROUP_CROSSING, LOITERING_END,
-    LOITERING_START, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
-    WRONG_DIRECTION, ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, new_event,
+    CAPACITY_WARNING, DENSITY_UPDATE, GROUP_CROSSING, HAZARD_FIRE,
+    HAZARD_SMOKE, LOITERING_END, LOITERING_START, RESTRICTED_ZONE_ENTRY,
+    RESTRICTED_ZONE_EXIT, WRONG_DIRECTION, ZONE_ENTRY, ZONE_EXIT,
+    ZONE_TRANSITION, new_event,
 )
 from finblade.crowding import (                           # noqa: E402
     CrowdEstimator, TrackingQualityMonitor, select_mode,
@@ -87,6 +88,7 @@ from finblade.tracks import TrackRegistry                # noqa: E402
 from finblade.zones import in_ignored_region, zone_of        # noqa: E402
 from services.inference.camera_worker import CameraWorker, CameraState  # noqa: E402
 from services.inference.reid_client import ReIDResolver                 # noqa: E402
+from services.inference.hazard_client import HazardDetector             # noqa: E402
 
 # Shared handle so the MJPEG server can drive the demo simulate/restore controls.
 _worker = {"ref": None}
@@ -329,7 +331,10 @@ BOOKMARKS_DIR = os.path.join(EVIDENCE, "bookmarks")   # saved frame per event/al
 ZONE_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION}
 POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE,
                     CAPACITY_WARNING, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
-                    LOITERING_START, LOITERING_END}
+                    LOITERING_START, LOITERING_END,
+                    # Hazards must reach the store or they cannot appear on the
+                    # history page, which is the whole point of raising them.
+                    HAZARD_FIRE, HAZARD_SMOKE}
 # Alerts that get a saved snapshot: critical density (R-02) and restricted-zone
 # intrusion (R-06) ONLY.
 #
@@ -339,7 +344,7 @@ POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE,
 # the repo and the genuinely serious snapshots were buried in it. A snapshot is
 # only worth writing when someone must look at it: a red-band crowd density, or
 # a person somewhere they are not allowed to be.
-SNAPSHOT_RULES = {"R-02", "R-06"}
+SNAPSHOT_RULES = {"R-02", "R-06", "R-10"}
 
 _latest_jpeg = {"buf": None}
 # Raw frame + render context so the MJPEG stream can re-annotate per-request with
@@ -634,6 +639,21 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         min_crop_confidence=float(_reid_cfg.get("min_crop_confidence", 0.5)),
     )
     reid.load()
+    # Fire/smoke: a second model on the SAME decoded frame, sampled at 2 Hz
+    # rather than per frame (see hazard_client for the measured reason). Off
+    # unless the config asks for it, and it disables itself loudly rather than
+    # faking a reading if the weights are missing.
+    _hz_cfg = getattr(cfg, "hazard", None) or {}
+    hazard = HazardDetector(
+        cfg.camera_id,
+        weights=_hz_cfg.get("weights"),
+        device=str(_hz_cfg.get("device", "0")),
+        interval_s=float(_hz_cfg.get("interval_seconds", 0.5)),
+        conf_threshold=float(_hz_cfg.get("conf_threshold", 0.30)),
+        imgsz=int(_hz_cfg.get("imgsz", 640)),
+        enabled=bool(_hz_cfg.get("enabled", False)),
+    )
+    hazard.load()
     reaper = TrackReaper(cfg.track_ttl_seconds)
     registry = TrackRegistry()
     completed_tracks = 0
@@ -1206,6 +1226,27 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                             CAPACITY_WARNING, cfg.camera_id, cfg.site_id, vnow,
                             zone_id=z.zone_id, occupancy=occ, capacity_pct=cap_pct))
 
+        # --- fire / smoke (R-10) -------------------------------------------
+        # Camera-scoped, not zone-scoped: a fire is a property of the picture,
+        # and a camera with no polygons drawn must still be able to raise one.
+        # zone_id stays None and the rule keys on the camera instead.
+        #
+        # Fed ONLY when the detector actually ran, but fed with a reading for
+        # EVERY class including 0.0 — that zero is what lets the latch clear.
+        # Skipping the call on a quiet tick would latch the alert on for ever.
+        if hazard.due(vnow):
+            for _cls, (_conf, _n) in hazard.observe(frame, vnow).items():
+                _ha = eng.evaluate_hazard(None, _cls, _conf, vnow,
+                                          camera_id=cfg.camera_id)
+                if _ha is None:
+                    continue
+                pending_alerts.append(_ha.as_dict())
+                if _ha.kind == "FIRE":
+                    pending_events.append(new_event(
+                        HAZARD_FIRE if _cls == "fire" else HAZARD_SMOKE,
+                        cfg.camera_id, cfg.site_id, vnow,
+                        confidence=round(float(_conf), 4), detections=int(_n)))
+
         # --- annotate once, then bookmark this moment if anything happened ---
         # per-track dwell + loiter flags for the feed overlay (Req 13/20)
         track_meta = {t.track_id: {
@@ -1288,6 +1329,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # Counts only — never vectors. "status" says whether cross-camera
         # identity actually ran this session or was unavailable.
         "reid": reid.snapshot(),
+        # Whether fire/smoke was actually being watched this run. "disabled"
+        # and "unavailable: FileNotFoundError" must be distinguishable from
+        # "ready, saw nothing" — otherwise a run with no fire alerts looks
+        # identical whether the detector was working or was never loaded.
+        "hazard": hazard.snapshot(),
         # Zone sanity: a high outside fraction means occupancy will read low
         # even though people are being tracked.
         # Detections discarded by an UNMONITORED mask zone (reflections, screens,

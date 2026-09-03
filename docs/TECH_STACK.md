@@ -101,6 +101,8 @@ Schema validation is deliberately hand-rolled rather than pydantic so
 | Capability | Status | Technology |
 |---|---|---|
 | R-01/02/03/05/06/07/08/09 | Built | `finblade/rules.py` — `HysteresisLatch`, stdlib only |
+| R-10 fire/smoke rule | Built | `finblade/rules.py` `evaluate_hazard` — stdlib; the rule is provable without a model |
+| Fire/smoke detection | **Runs** | `models/fire_smoke_yolov8n.pt` (D-Fire, CC0-1.0) via `ultralytics`, in `services/inference/hazard_client.py` at 2 Hz. **AGPL-3.0 via YOLOv8 — see D-31 before commercial deployment.** Evaluation checkpoint, not a validated fire alarm |
 | Hysteresis + sustained-duration gate | Built | same class; separate on/off thresholds |
 | Wrong-way, group crossing | Built | `finblade/flowrules.py`, stdlib |
 | Alert ack / resolve / dismiss | Built | `services/api/service.py` + Postgres |

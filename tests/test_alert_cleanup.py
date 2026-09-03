@@ -124,16 +124,35 @@ class TestFrameDeletion(unittest.TestCase):
 
 
 class TestSnapshotPolicy(unittest.TestCase):
-    def test_only_critical_density_and_restricted_intrusion(self):
-        # The whole point of the change: loitering fires continuously, and on a
-        # looping clip it wrote 7,741 frames / 944 MB, burying the snapshots
-        # that actually matter.
+    def test_snapshots_are_reserved_for_alerts_someone_must_look_at(self):
+        """A snapshot is worth writing only when a human must SEE the moment.
+
+        The rule that shaped this: loitering fires continuously, and on a
+        looping clip it wrote 7,741 frames / 944 MB, burying the snapshots that
+        actually mattered. So the set stays deliberately small.
+
+        R-10 (fire/smoke) was added 2026-09-03. It earns a frame on the same
+        test every other member passes: an operator cannot act on "there is a
+        fire" without seeing the picture, and the alert is unreviewable
+        without one. Unlike loitering it is rare and latched, so it cannot
+        flood the directory — R-10 arms once per episode, not once per frame.
+        """
         from services.inference.run_cpu import SNAPSHOT_RULES
-        self.assertEqual(SNAPSHOT_RULES, {"R-02", "R-06"})
+        self.assertEqual(SNAPSHOT_RULES, {"R-02", "R-06", "R-10"})
+        # Still excluded, and for the original reason: these fire often and
+        # nothing about them needs looking at.
         self.assertNotIn("R-05", SNAPSHOT_RULES)   # loitering
         self.assertNotIn("R-01", SNAPSHOT_RULES)   # density warning (amber)
         self.assertNotIn("R-03", SNAPSHOT_RULES)   # capacity
         self.assertNotIn("R-07", SNAPSHOT_RULES)   # camera offline
+        self.assertNotIn("R-09", SNAPSHOT_RULES)   # head-count threshold
+
+    def test_hazard_events_reach_the_store(self):
+        """Without this the history page cannot show them, which is the whole
+        point of raising a hazard alert."""
+        from services.inference.run_cpu import POST_EVENT_TYPES
+        self.assertIn("HAZARD_FIRE", POST_EVENT_TYPES)
+        self.assertIn("HAZARD_SMOKE", POST_EVENT_TYPES)
 
 
 if __name__ == "__main__":

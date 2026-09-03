@@ -58,6 +58,22 @@ class RuleThresholds:
     loiter_seconds: float = 30.0
     offline_seconds: float = 30.0
     debounce_seconds: float = 10.0
+    # --- R-10 fire / smoke ------------------------------------------------
+    # Separate per class, because the two are not equally trustworthy. Fire has
+    # a strong signature; smoke is greyish, low-saturation and is confused by
+    # steam, dust, exhaust and low sun, so it gets a higher bar to arm and a
+    # lower severity. GUESSES, both of them: no fire footage has been measured
+    # on this system, and these must be re-tuned against real detections before
+    # anyone treats them as calibrated.
+    fire_on: float = 0.60
+    fire_off: float = 0.35
+    smoke_on: float = 0.65
+    smoke_off: float = 0.40
+    # Shorter than the 10s density debounce ON PURPOSE. A fire alert that waits
+    # ten seconds to arm is ten seconds of fire. Three seconds is still long
+    # enough that a single-frame flicker - the classic false positive - cannot
+    # arm it, which is the job the sustain gate is actually doing here.
+    hazard_sustain_seconds: float = 3.0
 
 
 # --- sustained-duration hysteresis latch -----------------------------------
@@ -149,6 +165,9 @@ class RuleEngine:
         self._red: Dict[str, HysteresisLatch] = {}
         self._cap: Dict[str, HysteresisLatch] = {}
         self._occ: Dict[str, HysteresisLatch] = {}   # R-09 head-count threshold
+        # R-10, keyed "(zone|camera)::class" so fire and smoke latch
+        # independently and cannot clear one another.
+        self._hazard: Dict[str, HysteresisLatch] = {}
         self._loiter_fired: set = set()      # (person_ref, zone_id)
         self._intrusion_active: set = set()  # (person_ref, zone_id)
         self.camera = CameraOfflineMonitor(self.t.offline_seconds)
@@ -242,6 +261,66 @@ class RuleEngine:
                          now, zone_id=zone_id, kind="CLEAR")
         return None
 
+    # -- fire / smoke R-10 --
+    HAZARD_FIRE = "fire"
+    HAZARD_SMOKE = "smoke"
+    HAZARD_CLASSES = (HAZARD_FIRE, HAZARD_SMOKE)
+
+    def evaluate_hazard(self, zone_id: Optional[str], hazard_class: str,
+                        confidence: float, now: float,
+                        camera_id: Optional[str] = None) -> Optional[Alert]:
+        """Sustained fire or smoke presence in a zone (or on a camera).
+
+        ``confidence`` is the HIGHEST confidence among this tick's detections
+        of ``hazard_class`` in this zone, or 0.0 when there were none.
+
+        FEED IT EVERY TICK, INCLUDING ZERO. The latch clears on a sustained
+        LOW reading, so a caller that only calls this when something is
+        detected gives it nothing to clear on, and the alert latches on for
+        ever. That is the single easiest way to get this wrong, and it fails in
+        the direction where an operator stops believing the fire alarm.
+
+        Presence-of-hazard, so the timer starts on the first detection and the
+        shape is the same as R-01/R-02: one HysteresisLatch per (zone, class),
+        armed on a sustained high reading and cleared on a sustained low one.
+        Fire and smoke get their own latch so a smoke reading cannot clear a
+        fire alert, or arm one.
+
+        Severity is deliberately asymmetric. Fire is RED. Smoke is AMBER,
+        because it is the more false-positive-prone signal (steam, dust,
+        exhaust, low sun) and an amber that turns out to be a kettle costs less
+        trust than a red one. Smoke is still the earlier warning, so it is not
+        suppressed - only ranked below fire.
+        """
+        if hazard_class not in self.HAZARD_CLASSES:
+            return None
+        # A camera with no zones drawn must still be able to raise a fire
+        # alert: a hazard is a property of the picture, not of a polygon.
+        # zone_id None is therefore legal and keys on the camera instead.
+        key = f"{zone_id or camera_id or '?'}::{hazard_class}"
+        if hazard_class == self.HAZARD_FIRE:
+            on, off, sev = self.t.fire_on, self.t.fire_off, SEV_RED
+        else:
+            on, off, sev = self.t.smoke_on, self.t.smoke_off, SEV_AMBER
+
+        latch = self._hazard.get(key)
+        if latch is None:
+            latch = HysteresisLatch(on, off, self.t.hazard_sustain_seconds)
+            self._hazard[key] = latch
+
+        where = zone_id or camera_id or "view"
+        verdict = latch.update(float(confidence or 0.0), now)
+        if verdict == "FIRE":
+            return Alert("R-10", sev,
+                         f"{hazard_class.upper()} detected in {where} "
+                         f"(confidence {float(confidence):.2f})", now,
+                         zone_id=zone_id, camera_id=camera_id)
+        if verdict == "CLEAR":
+            return Alert("R-10", SEV_INFO,
+                         f"{hazard_class} cleared in {where}", now,
+                         zone_id=zone_id, camera_id=camera_id, kind="CLEAR")
+        return None
+
     # -- loitering R-05 --
     def evaluate_loiter(self, person_ref: str, zone_id: Optional[str], dwell_s: float,
                         now: float, threshold: float = None) -> Optional[Alert]:
@@ -298,6 +377,11 @@ class RuleEngine:
         self._amber.clear()
         self._red.clear()
         self._cap.clear()
+        self._occ.clear()
+        # A fire latched before a stream gap must re-arm on the new footage
+        # rather than stay armed on evidence from before the gap - and equally
+        # must not stay armed if the fire is out.
+        self._hazard.clear()
         self._loiter_fired.clear()
         self._intrusion_active.clear()
 

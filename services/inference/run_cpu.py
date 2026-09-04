@@ -482,14 +482,32 @@ def annotate(frame, zones, tracks, occupancy, track_meta=None, overlay=None,
         dwell = meta.get("dwell", 0.0)
         loiter = meta.get("loiter", False)
         in_restricted = zone_of((fx, fy), zones) in restricted_ids
-        # Priority: restricted intrusion (red) > loitering (amber) > normal (teal).
+        # PPE verdict for this track, if compliance is being judged at all.
+        # "missing" is a list of items; empty means compliant, None means the
+        # person is not assessable (too small in frame) or PPE is off here.
+        ppe_missing = meta.get("ppe_missing")
+        # Priority: restricted intrusion (red) > loitering (amber) >
+        # PPE violation (amber) > not assessable (grey) > normal (teal).
+        #
+        # Intrusion outranks PPE because it is an incident and PPE is a state;
+        # an operator seeing one box should be told the more urgent thing about
+        # it. Not-assessable is drawn in the same muted grey as a masked
+        # detection, because it means the same thing: present, deliberately not
+        # being judged. Teal stays chrome and only ever means "nothing to say".
         if in_restricted:
             box_color, tag = BGR_CRITICAL, "INTRUSION"
         elif loiter:
             box_color, tag = BGR_WARNING, "LOITERING"
+        elif ppe_missing:
+            box_color = BGR_WARNING
+            tag = "NO " + "/".join(
+                {"hardhat": "HAT", "safety_vest": "VEST",
+                 "mask": "MASK"}.get(m, m.upper()) for m in ppe_missing)
+        elif ppe_missing is None and meta.get("ppe_judged") is False:
+            box_color, tag = BGR_IGNORED, "PPE n/a"
         else:
             box_color, tag = BGR_TRACK, ""
-        thick = 3 if (in_restricted or loiter) else 2
+        thick = 3 if (in_restricted or loiter or ppe_missing) else 2
         if o["boxes"]:
             cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), box_color, thick)
         if o["feet"]:
@@ -709,8 +727,15 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         violation_confirm_s=float(_ppe_cfg.get("violation_confirm_seconds", 8.0)),
         recovery_confirm_s=float(_ppe_cfg.get("recovery_confirm_seconds", 5.0)),
         min_confidence=float(_ppe_cfg.get("min_confidence", 0.40)),
-        absence_weight=float(_ppe_cfg.get("absence_weight", 0.25))))
+        absence_weight=float(_ppe_cfg.get("absence_weight", 0.25)),
+        min_person_height_px=float(_ppe_cfg.get("min_person_height_px", 120.0))))
     ppe_last_seen = {}          # track_id -> last tick, for the state machine's dt
+    # Per-zone people counts, refreshed on each PPE tick and read by the
+    # zone-state payload. Held between ticks because the detector runs at 2 Hz
+    # while zone state is posted every 5s — without this the counts would be
+    # whatever happened to be true on the exact frame the post landed on.
+    ppe_zone_counts = {}
+    ppe_roll = []
     if _ppe_zones:
         log.info("camera %s: PPE zones %s", cfg.camera_id, _ppe_zones)
     reaper = TrackReaper(cfg.track_ttl_seconds)
@@ -1238,6 +1263,23 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             # block — density events, zone-state posts, heartbeats and rule
             # evaluation — runs at the processing rate instead of every 5s.
             agg.mark(vnow)
+            # PPE counts are rebuilt HERE, from the same registry snapshot the
+            # occupancy below is computed from — not carried over from the last
+            # 2 Hz detector tick.
+            #
+            # Caching them across ticks broke the invariant this payload
+            # promises: the counts described who was in the zone up to 5s ago
+            # while `occupancy` described who is in it now, and the two
+            # disagreed whenever anyone moved. Observed as 6+2+0=8 against an
+            # occupancy of 7. The VERDICTS are persistent per track and can be
+            # stale without harm; the MEMBERSHIP cannot.
+            ppe_zone_counts = {}
+            if _ppe_zones:
+                ppe_zone_counts = ppe_tracker.zone_summary([
+                    (t.track_id, t.current_zone_id,
+                     ppe_tracker.assessable(t.bbox))
+                    for t in registry.active()
+                    if t.current_zone_id in _ppe_zones])
             eng.camera.heartbeat(cfg.camera_id, vnow)
             heartbeat_event = new_event(CAMERA_HEARTBEAT, cfg.camera_id, cfg.site_id, vnow)
             for z in cfg.zones:
@@ -1272,6 +1314,20 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     "occupants": sorted(zone_occupants.get(z.zone_id, ())),
                     "physical_area_id": z.physical_area_id,
                     "ts": vnow, **roll,
+                    # PPE compliance as STATE, not as an event. The alert feed
+                    # records transitions and structurally cannot answer "how
+                    # many with hardhats, how many without" - one worker
+                    # missing two items is two alerts and a compliant worker is
+                    # none. These counts are PEOPLE and satisfy
+                    #   compliant + non_compliant + not_assessable == occupancy
+                    # while `violations` is per ITEM and will sum higher.
+                    # Absent entirely on zones with no required_ppe.
+                    **({"ppe_required": _ppe_zones[z.zone_id],
+                        **{("ppe_" + k): v for k, v in
+                           ppe_zone_counts.get(z.zone_id, {
+                               "compliant": 0, "non_compliant": 0,
+                               "not_assessable": 0, "violations": {}}).items()}}
+                       if z.zone_id in _ppe_zones else {}),
                 })
                 # Head-count threshold (REQ-21). Independent of area and
                 # capacity, so it works in a small space that has neither
@@ -1295,6 +1351,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # violation belongs to a person, and an alert that cannot say who is
         # not actionable.
         if ppe.due(vnow) and _ppe_zones:
+            ppe_roll = []
             _dets = ppe.detect(frame, vnow)
             # Only people currently standing in a PPE zone are judged.
             _people = {}
@@ -1315,11 +1372,17 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 _owned.setdefault(owner, []).append(
                     (d["class_name"], d["confidence"]))
 
+            ppe_roll = []        # (track, zone, assessable) for the zone counts
             for _tid, _pbox in _people.items():
                 _t = registry.get(_tid)
                 _zid = _t.current_zone_id
                 ppe_tracker.note_in_zone(_tid, _zid, vnow)
-                if ppe_tracker.in_grace(_tid, _zid, vnow):
+                # THE HEIGHT GATE. Too small to judge means NOT JUDGED - not
+                # judged as absent, which would drift them into a violation on
+                # the detector's blindness rather than their behaviour.
+                _ok = ppe_tracker.assessable(_pbox)
+                ppe_roll.append((_tid, _zid, _ok))
+                if not _ok or ppe_tracker.in_grace(_tid, _zid, vnow):
                     continue
                 _dt = vnow - ppe_last_seen.get(_tid, vnow - ppe.interval_s)
                 ppe_last_seen[_tid] = vnow
@@ -1375,10 +1438,27 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
 
         # --- annotate once, then bookmark this moment if anything happened ---
         # per-track dwell + loiter flags for the feed overlay (Req 13/20)
+        # PPE verdict per track for the overlay. Confirmed violations only —
+        # the box must agree with the alert feed, so a track mid-timer is not
+        # yet marked. ppe_judged False means the height gate excluded them.
+        _ppe_meta = {}
+        if _ppe_zones:
+            _assessable = {tid: ok for tid, _z, ok in ppe_roll}
+            for t in registry.active():
+                if t.current_zone_id not in _ppe_zones:
+                    continue
+                if not _assessable.get(t.track_id, True):
+                    _ppe_meta[t.track_id] = {"ppe_missing": None,
+                                             "ppe_judged": False}
+                    continue
+                miss = [r for r in _ppe_zones[t.current_zone_id]
+                        if ppe_tracker.verdict(t.track_id, r) == "NONCOMPLIANT"]
+                _ppe_meta[t.track_id] = {"ppe_missing": miss, "ppe_judged": True}
         track_meta = {t.track_id: {
             "dwell": t.dwell_time,
             "loiter": (t.person_ref, t.current_zone_id) in loiter_started,
             "gref": reid.global_ref(t.track_id),   # None until ReID resolves it
+            **_ppe_meta.get(t.track_id, {}),
         } for t in registry.active()}
         _hz_boxes = hazard.boxes_for(vnow)
         annotated = annotate(frame.copy(), cfg.zones, tracks, occupancy,

@@ -238,11 +238,17 @@ CREATE TABLE IF NOT EXISTS zones (
     adjacency_list         TEXT,
     updated_at             DOUBLE PRECISION,  -- epoch seconds, UTC
     physical_area_id       TEXT,
+    -- JSON array of PPE required inside this zone (R-11), e.g.
+    -- ["hardhat","safety_vest"]. Empty/NULL means no PPE rule applies, which
+    -- is the default: compliance is opt-in per zone so a corridor never
+    -- accuses anyone.
+    required_ppe           TEXT,
     PRIMARY KEY (camera_id, zone_id)
 );
 
 -- Bring an EXISTING database up to the schema above. Every
 -- statement is idempotent; on a current database all are no-ops.
+ALTER TABLE zones ADD COLUMN IF NOT EXISTS required_ppe TEXT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS rule_id TEXT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS severity TEXT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS message TEXT;

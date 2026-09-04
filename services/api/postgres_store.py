@@ -117,9 +117,21 @@ class PostgresStore(Store):
              float(evt.get("timestamp", 0)), evt.get("frame"), json.dumps(evt)))
 
     def save_zone_state(self, s: dict, history: bool = True) -> None:
+        # WHITELIST, not passthrough — anything not named here is dropped
+        # silently. That is deliberate (the payload is worker-controlled and
+        # this bounds what reaches the database) but it is also the third place
+        # today where a new field was added upstream and lost here, after
+        # zones.physical_area_id and zones.required_ppe. If you add a field to
+        # the zone-state payload and it does not appear on the dashboard, look
+        # here first.
         extra = {k: s[k] for k in ("net_flow", "inflow_5m", "outflow_5m",
                                    "inflow_15m", "outflow_15m",
-                                   "capacity_max", "area_sqm") if k in s}
+                                   "capacity_max", "area_sqm",
+                                   # PPE compliance counts (R-11). People, not
+                                   # violations; ppe_violations is per item.
+                                   "ppe_required", "ppe_compliant",
+                                   "ppe_non_compliant", "ppe_not_assessable",
+                                   "ppe_violations") if k in s}
         with self._pool.connection() as conn:
             if history:
                 conn.execute(
@@ -603,8 +615,16 @@ class PostgresStore(Store):
                     # zone edit silently dropped the room mapping - two cameras on
                     # one reception went back to counting it twice, and the editor
                     # showed "none" as though nobody had ever set it.
-                    "adjacency_list,physical_area_id,updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    # required_ppe went the same way on its first outing: the
+                    # Zone dataclass and the config-file loader knew about it
+                    # while this INSERT did not, so a PPE requirement set
+                    # through the API reported saved:true and vanished. Exactly
+                    # the physical_area_id bug above, one release later. If you
+                    # add a Zone field, it needs FOUR edits here: the CREATE,
+                    # an ALTER, this INSERT (columns, placeholders, params AND
+                    # the ON CONFLICT clause) and the SELECT in list_zones.
+                    "adjacency_list,physical_area_id,required_ppe,updated_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                     "ON CONFLICT (camera_id,zone_id) DO UPDATE SET "
                     "zone_name=excluded.zone_name, zone_type=excluded.zone_type, "
                     "restricted=excluded.restricted, capacity_max=excluded.capacity_max, "
@@ -615,6 +635,7 @@ class PostgresStore(Store):
                     "normalized_polygon=excluded.normalized_polygon, "
                     "polygon=excluded.polygon, adjacency_list=excluded.adjacency_list, "
                     "physical_area_id=excluded.physical_area_id, "
+                    "required_ppe=excluded.required_ppe, "
                     "updated_at=excluded.updated_at",
                     (camera_id, z.get("zone_id"), z.get("zone_name"),
                      z.get("zone_type", "MONITORED"),
@@ -626,7 +647,8 @@ class PostgresStore(Store):
                      json.dumps(z.get("normalized_polygon") or []),
                      json.dumps(z.get("polygon") or []),
                      json.dumps(z.get("adjacency_list") or []),
-                     z.get("physical_area_id"), time.time()))
+                     z.get("physical_area_id"),
+                     json.dumps(z.get("required_ppe") or []), time.time()))
 
     def list_zones(self, camera_id: str = None) -> List[dict]:
         q = ("SELECT camera_id,zone_id,zone_name,zone_type,restricted,capacity_max,"
@@ -634,7 +656,7 @@ class PostgresStore(Store):
              "colour,enabled,normalized_polygon,polygon,adjacency_list,"
              # Missing from the SELECT as well as the INSERT, so the editor
              # could not even display a mapping set by hand in SQL.
-             "physical_area_id,updated_at "
+             "physical_area_id,required_ppe,updated_at "
              "FROM zones")
         p = []
         if camera_id is not None:
@@ -644,7 +666,8 @@ class PostgresStore(Store):
         for r in rows:
             r["restricted"] = bool(r["restricted"])
             r["enabled"] = bool(r["enabled"])
-            for k in ("normalized_polygon", "polygon", "adjacency_list"):
+            for k in ("normalized_polygon", "polygon", "adjacency_list",
+                      "required_ppe"):
                 try:
                     r[k] = json.loads(r[k]) if r[k] else []
                 except Exception:                       # noqa: BLE001

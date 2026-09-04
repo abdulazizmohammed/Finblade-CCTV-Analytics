@@ -117,6 +117,20 @@ body{
 .spark{width:100%;height:24px;display:block;}
 .spark.ph{height:24px;background:repeating-linear-gradient(90deg,var(--fb-line) 0 1px,transparent 1px 6px);opacity:.4;border-radius:2px;}
 .spark polyline{fill:none;stroke:var(--fb-text-muted);stroke-width:1.3;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round;}
+/* PPE compliance — a STATE line, not an event.
+   Colours follow the theme's semantics rather than convention. Compliant takes
+   --fb-ok grey, NOT the usual success hue: calm has to be visually silent so
+   amber and red carry all the urgency. Violations take amber to match R-11's
+   AMBER severity — not red, because a missing hardhat is a compliance state
+   and red is reserved for "wrong right now". n/a is fainter than either,
+   because it is an absence of information rather than a finding. */
+.ppe{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;margin-top:10px;
+  padding-top:9px;border-top:1px solid var(--fb-line);
+  font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:11.5px;}
+.ppe .k{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);}
+.ppe .ok{color:var(--fb-ok);}
+.ppe .bad{color:var(--fb-warning);}
+.ppe .na{color:var(--fb-text-faint);}
 .flow{display:flex;justify-content:space-between;margin-top:10px;}
 .flow .f{display:flex;flex-direction:column;gap:2px;}
 .flow .k{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--fb-text-faint);font-family:var(--fb-font-data);}
@@ -525,6 +539,37 @@ function spark(id,val){
   return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}"/></svg>`;
 }
 
+// PPE compliance for one zone card. Rendered only where the zone actually
+// requires PPE — a corridor must not sprout a compliance line saying "0 of 0".
+//
+// The counts are PEOPLE. `ppe_violations` is per ITEM and will sum higher than
+// the headcount when one worker is missing two things, so it is shown as a
+// breakdown and never added up into a total. That confusion is exactly what
+// makes the alert feed unusable for this question: 39 alerts, ~15 people.
+//
+// `not assessable` is shown rather than hidden. Someone too far from the camera
+// for the model to judge is neither compliant nor in violation, and quietly
+// filing them under either would make the line authoritative about something it
+// does not know.
+function ppeLine(z){
+  const req = z.ppe_required;
+  if(!Array.isArray(req) || !req.length) return '';
+  const ok = +z.ppe_compliant||0, bad = +z.ppe_non_compliant||0,
+        na = +z.ppe_not_assessable||0;
+  const v = z.ppe_violations || {};
+  const NAME = {hardhat:'hardhat', safety_vest:'vest', mask:'mask'};
+  const parts = [`<span class="k">PPE</span>`,
+                 `<span class="ok">${ok} ok</span>`];
+  // Order the breakdown by the zone's own requirement list, so two cards with
+  // different requirements do not shuffle their columns relative to each other.
+  req.forEach(r=>{ if(+v[r]>0) parts.push(
+    `<span class="bad">${+v[r]} no ${esc(NAME[r]||r)}</span>`); });
+  if(!bad && !na && !Object.keys(v).length)
+    parts.push('<span class="na">all compliant</span>');
+  if(na) parts.push(`<span class="na" title="too far from the camera for the model to judge — counted as neither compliant nor in violation">${na} n/a</span>`);
+  return `<div class="ppe">${parts.join('')}</div>`;
+}
+
 function renderZones(zones){
   const host=$('zones');
   if(!zones.length){host.innerHTML='<span class="empty">no zone data</span>';return;}
@@ -545,6 +590,7 @@ function renderZones(zones){
         <span class="of" title="occupancy trend" style="margin-left:auto">${trend} <span class="fb-num">${peak}</span></span></div>
       <div class="zrow"><span class="fb-num">${(+z.density||0).toFixed(2)} /m²</span><span>${z.restricted?'no-go zone':cap.toFixed(0)+'% capacity'}</span></div>
       <div class="meter" data-s="${z.restricted?'':st}"><span style="width:${cap}%"></span></div>
+      ${ppeLine(z)}
       <div class="flow">
         <div class="f"><span class="k">Inflow</span><span class="v">${(+z.inflow_per_min||0).toFixed(1)}/min</span></div>
         <div class="f"><span class="k">Outflow</span><span class="v">${(+z.outflow_per_min||0).toFixed(1)}/min</span></div>
@@ -726,7 +772,12 @@ const SIG={cams:null, zones:null, alerts:null};
 const sigCams=c=>JSON.stringify((c||[]).map(x=>[x.camera_id,x.effective_state,x.stream_url]));
 const sigZones=z=>JSON.stringify((z||[]).map(x=>[x.zone_id,x.camera_id,x.zone_name,x.occupancy,
   x.density,x.status,x.trend,x.peak_occupancy,x.avg_occupancy,x.capacity_pct,
-  x.inflow_per_min,x.outflow_per_min,x.net_flow,x.restricted]));
+  x.inflow_per_min,x.outflow_per_min,x.net_flow,x.restricted,
+  // Without these the compliance line would freeze: the signature guard skips
+  // the re-render when nothing it watches has changed, and a zone whose
+  // occupancy is steady while its PPE counts move would show stale numbers.
+  x.ppe_compliant,x.ppe_non_compliant,x.ppe_not_assessable,
+  JSON.stringify(x.ppe_violations||{})]));
 const sigAlerts=a=>JSON.stringify((a||[]).map(x=>[x.alert_id,x.status,x.severity,x.message,x.frame]));
 
 function apply(d){

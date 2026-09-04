@@ -43,6 +43,12 @@ COMPLIANT_CANDIDATE = "COMPLIANT_CANDIDATE"
 COMPLIANT = "COMPLIANT"
 NONCOMPLIANT_CANDIDATE = "NONCOMPLIANT_CANDIDATE"
 NONCOMPLIANT = "NONCOMPLIANT"
+# Distinct from UNKNOWN, and the distinction is the point. UNKNOWN means "not
+# decided yet"; this means "cannot be decided, and pretending otherwise would
+# be a claim we cannot support". A worker 40px tall produces no PPE detections
+# whatever they are wearing, so feeding that silence to the state machine would
+# convict them on the detector's blindness rather than on their behaviour.
+NOT_ASSESSABLE = "NOT_ASSESSABLE"
 
 # --- evidence --------------------------------------------------------------
 EV_POSITIVE = "positive"     # e.g. Hardhat detected on this person
@@ -64,7 +70,8 @@ class PPEThresholds:
                  violation_confirm_s: float = 8.0,
                  recovery_confirm_s: float = 5.0,
                  min_confidence: float = 0.40,
-                 absence_weight: float = 0.25):
+                 absence_weight: float = 0.25,
+                 min_person_height_px: float = 120.0):
         # Time after entering a compliance zone before anything is judged. A
         # worker walking in while still pulling their hat on is not a violation,
         # and the first seconds inside a zone are also where the detector has
@@ -82,6 +89,20 @@ class PPEThresholds:
         # explicit NO- detection. 0.25 means absence takes 4x as long to
         # convict. 0.0 would mean only explicit NO- can ever convict.
         self.absence_weight = float(absence_weight)
+        # Below this person-box height in pixels, PPE is NOT JUDGED AT ALL.
+        #
+        # The most important guard in the module. A distant worker yields no
+        # hardhat detection whether or not they are wearing one, and absence is
+        # evidence in this rule — so without a floor the system convicts people
+        # for standing far from the camera. Observed directly on
+        # media/PPEVideo.mp4 before this existed: tracks with no PPE detections
+        # of any kind drifting to NONCOMPLIANT on silence alone.
+        #
+        # 120px is a GUESS, of the same order as ReID's min_crop_height (96px)
+        # and for the same reason: below some size there is not enough detail
+        # for the model to hold an opinion worth recording. Measure it on real
+        # CCTV before trusting it.
+        self.min_person_height_px = float(min_person_height_px)
 
 
 class PPEState:
@@ -162,8 +183,57 @@ class PPETracker:
             del self._entered[k]
         return len(doomed)
 
+    def assessable(self, person_bbox) -> bool:
+        """Is this person big enough in frame for a PPE verdict to mean anything?
+
+        Called BEFORE any evidence is folded in. A track that fails this is not
+        fed at all — not fed "absent", which would drift it toward a violation.
+        The distinction between "no hat" and "too far away to tell" has to be
+        made here, because once silence reaches the state machine it is
+        indistinguishable from a bare head.
+        """
+        if not person_bbox or len(person_bbox) < 4:
+            return False
+        return (float(person_bbox[3]) - float(person_bbox[1])) >= \
+            self.t.min_person_height_px
+
     def state_of(self, track_id: object, ppe_type: str) -> Optional[PPEState]:
         return self._states.get((track_id, ppe_type))
+
+    def zone_summary(self, track_zone_ppe) -> dict:
+        """Per-zone people counts for the UI.
+
+        ``track_zone_ppe`` is [(track_id, zone_id, assessable_bool), ...] for
+        everyone currently in a PPE zone.
+
+        COUNTS ARE PEOPLE, NOT VIOLATIONS, and the two differ. One worker
+        missing both hardhat and vest is ONE non-compliant person and TWO
+        entries in `violations`. A UI that sums `violations` to get a headcount
+        will over-report, which is precisely the mistake the alert feed already
+        invites — hence the invariant asserted in the tests:
+
+            compliant + non_compliant + not_assessable == occupancy
+
+        `not_assessable` is reported rather than folded into either bucket. A
+        count that quietly buries "we could not tell" inside "compliant" or
+        "non-compliant" is a worse lie than admitting the gap.
+        """
+        out = {}
+        for track_id, zone_id, ok in track_zone_ppe or ():
+            z = out.setdefault(zone_id, {"compliant": 0, "non_compliant": 0,
+                                         "not_assessable": 0, "violations": {}})
+            if not ok:
+                z["not_assessable"] += 1
+                continue
+            bad = [ppe for (tid, ppe), st in self._states.items()
+                   if tid == track_id and st.state == NONCOMPLIANT]
+            if bad:
+                z["non_compliant"] += 1
+                for ppe in bad:
+                    z["violations"][ppe] = z["violations"].get(ppe, 0) + 1
+            else:
+                z["compliant"] += 1
+        return out
 
     def verdict(self, track_id: object, ppe_type: str) -> str:
         st = self._states.get((track_id, ppe_type))

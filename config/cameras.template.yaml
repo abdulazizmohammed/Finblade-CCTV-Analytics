@@ -163,7 +163,17 @@ hazard:
 # compensate by lowering min_confidence — that turns a recall problem into a
 # false-accusation problem. See DECISIONS.md D-32.
 ppe:
-  enabled: false
+  # Enabled 2026-09-03 for demonstration on the PPE/fire training clip.
+  #
+  # SHARED TEMPLATE: this turns a THIRD model on for every UI-provisioned
+  # camera, not just the one you had in mind. With one camera that is fine;
+  # with a bank of five it is three models x five workers on a GPU that has a
+  # history of PCIe faults under sustained multi-model load. Set back to false
+  # before running a large bank.
+  #
+  # Still inert on any camera whose zones declare no required_ppe, so enabling
+  # it here does not silently start judging cameras nobody configured.
+  enabled: true
   weights: models/ppe_safetyvision_v2.pt
   device: "0"
   interval_seconds: 0.5      # 2 Hz
@@ -174,5 +184,18 @@ ppe:
   recovery_confirm_seconds: 5.0
   min_confidence: 0.40
   absence_weight: 0.25
+  # THE MOST IMPORTANT KNOB HERE. Below this person-box height in pixels, PPE
+  # is not judged at all — the worker is reported as "not assessable" rather
+  # than counted as compliant or in violation.
+  #
+  # Without it the system convicts people for standing far from the camera: a
+  # distant worker produces no hardhat detection whether or not they are
+  # wearing one, and absence is evidence in this rule. Observed directly on
+  # media/PPEVideo.mp4 before this existed.
+  #
+  # 120 is a GUESS, same order as ReID's min_crop_height (96) and for the same
+  # reason. Raise it if you see violations on people too small to judge by eye;
+  # lower it only with evidence that the model still resolves PPE at that size.
+  min_person_height_px: 120.0
 
 zones: []

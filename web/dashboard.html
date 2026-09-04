@@ -63,10 +63,26 @@ body{
 .ovlbar .ovllbl{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--fb-text-faint);}
 .ovlbar label{display:flex;align-items:center;gap:6px;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);cursor:pointer;}
 .ovlbar input{accent-color:var(--fb-teal);cursor:pointer;}
-/* feeds (uses the theme .fb-bracket corner motif) */
-.feeds{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+/* feeds (uses the theme .fb-bracket corner motif)
+
+   SIZED BY HOW MANY CAMERAS THERE ARE, not by a fixed two-up grid. The grid was
+   `1fr 1fr` unconditionally, so a site with one camera got a half-width tile
+   with an empty column beside it — the smallest the video can be drawn, next to
+   nothing at all. auto-fit collapses the empty track, so one camera fills the
+   panel and the frame roughly doubles in each direction.
+
+   The 360px floor is what keeps a multi-camera bank two-up: at the panel widths
+   this dashboard runs at, two 360px tracks fit and three do not. min(100%,360px)
+   stops the floor exceeding the container on a phone, which would overflow the
+   page sideways. */
+.feeds{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:12px;}
 @media(max-width:640px){.feeds{grid-template-columns:1fr;}}
-.feed{position:relative;aspect-ratio:16/10;border-radius:var(--fb-r-lg);overflow:hidden;display:flex;align-items:center;justify-content:center;
+/* 16/9 MATCHES THE SOURCE. The tile was 16/10 against 1920x1080 cameras, and
+   object-fit:contain honours the video's own ratio — so every frame was drawn
+   letterboxed, losing ~10% of the tile's height to black bars above and below.
+   Matching the ratio hands that back as picture. Cameras that are not 16:9 letterbox
+   as before, which is correct: contain never crops away part of the scene. */
+.feed{position:relative;aspect-ratio:16/9;border-radius:var(--fb-r-lg);overflow:hidden;display:flex;align-items:center;justify-content:center;
   background:repeating-linear-gradient(0deg,rgba(0,0,0,.18) 0 1px,transparent 1px 3px),radial-gradient(120% 90% at 50% 40%,var(--fb-surface-2),var(--fb-void) 75%);}
 .feed img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--fb-void);}
 .feed .scan{position:absolute;inset:0;height:40%;background:linear-gradient(180deg,transparent,var(--fb-teal-ghost) 50%,transparent);animation:scan 6s linear infinite;pointer-events:none;}
@@ -406,12 +422,22 @@ function renderFeeds(cameras){
       t=feedTiles[c.camera_id]={tile,img,streamUrl:null,snapBusy:false};
     }
     t.tile.querySelector('.cap').textContent=`${c.camera_id}${c.name?' · '+c.name:''}`;
-    // Live / cumulative-unique for THIS camera, from the identity counts.
+    // Live / cumulative-unique for THIS camera.
+    //
+    // "live" comes from the camera's own people_in_view, NOT from the identity
+    // counts, for the reason spelled out above inViewTotal: counts.live is a
+    // tally of identity BINDINGS, which outlive the people they describe once a
+    // worker has been restarted. This badge sits directly under the video, so a
+    // viewer can count heads against it — it has to be the frame's number, and
+    // it has to agree with the In-facility tile, which now uses the same source.
+    //
+    // "unique" stays on the identity counts: cumulative footfall is exactly what
+    // identity is for, and it has no liveness problem — it only ever grows.
     const cnt=t.tile.querySelector('[data-cnt]');
     const pc=(LAST_COUNTS&&LAST_COUNTS.per_camera||[]).find(p=>p.camera_id===c.camera_id);
     if(pc){
       cnt.hidden=false;
-      cnt.innerHTML=`<span><span class="k">live</span> <b>${pc.live}</b></span>`
+      cnt.innerHTML=`<span><span class="k">live</span> <b>${+c.people_in_view||0}</b></span>`
                    +`<span><span class="k">unique</span> <b>${pc.unique}</b></span>`;
     }else{cnt.hidden=true;}
     const ph=t.tile.querySelector('.ph');
@@ -728,11 +754,38 @@ function facilitySub(f){
   return parts.join(' · ');
 }
 
+// People in view right now, summed over the cameras that are actually ONLINE.
+//
+// WHY NOT identity counts.live, WHICH THIS USED TO USE. counts.live is the
+// number of live IDENTITY BINDINGS, not the number of people visible. A binding
+// is created when a track is resolved and released when that track dies — but
+// a worker killed abruptly releases nothing, expire() deliberately skips any
+// identity that is still bound, and the offline monitor only reclaims a camera
+// it has SEEN go offline. Bindings therefore accumulate across worker restarts.
+// Measured on this site: the tile read 13 while eight people were in frame, and
+// stopping the camera released all 13 at once. From a clean start the two agree
+// to within ±1, so the drift is stale bindings, not a live miscount.
+//
+// people_in_view has none of that history. The worker recomputes it from the
+// current frame's tracks — zone-independent and ReID-independent, a median over
+// a short window so a one-frame miss does not make the tile twitch. It cannot
+// outlive the people it counts.
+//
+// It DOES double-count anyone visible to two cameras at once, which the zone
+// path de-duplicates via occupants refs. Nothing here can fix that: the
+// de-duplicated figure is precisely the one that is unreliable. So the count is
+// honest and the subtitle says how many cameras it came from, rather than
+// implying a site-wide distinct-person total this cannot deliver.
+function inViewTotal(cams){
+  return (cams||[]).reduce((n,c)=>
+    n + (c && c.effective_state==='ONLINE' ? (+c.people_in_view||0) : 0), 0);
+}
+
 function renderFacility(f){
   if(!f)return;
   // FALLBACK: no door zones means the roster can never move, so the tile would
-  // read 0 for ever on a site that plainly has people in it. Show distinct
-  // people IN VIEW instead — the same de-duplicated figure the feeds use.
+  // read 0 for ever on a site that plainly has people in it. Show people IN
+  // VIEW instead.
   //
   // This is a DIFFERENT MEASURE and the subtitle says so, because the two
   // behave differently in the one case that matters: door-counted occupancy
@@ -740,12 +793,15 @@ function renderFacility(f){
   // this does not — it drops to 0 the moment the last person leaves frame. An
   // unlabelled substitution would make the tile mean two things depending on
   // configuration, with nothing on screen to say which.
-  //
-  // Mirrors the Total-occupancy fallback to counts.live above.
   const doors=(f.policy&&f.policy.doors)||[];
-  if(!doors.length&&LAST_COUNTS&&LAST_COUNTS.live!=null){
-    $('kFac').innerHTML=`${+LAST_COUNTS.live||0}<span class="u">people</span>`;
-    $('kFacSub').textContent='in view · no doors, not door-counted';
+  if(!doors.length){
+    const online=(LAST_CAMS||[]).filter(c=>c&&c.effective_state==='ONLINE');
+    $('kFac').innerHTML=`${inViewTotal(LAST_CAMS)}<span class="u">people</span>`;
+    // Above one camera the figure is a sum and may count someone twice. Say so
+    // on screen rather than letting it read as a distinct-person total.
+    $('kFacSub').textContent = online.length>1
+      ? `in view · ${online.length} cameras, not de-duplicated`
+      : 'in view · no doors, not door-counted';
     return;
   }
   // Two small writes on a 3s timer — nothing like the innerHTML rebuilds the

@@ -199,8 +199,75 @@ def test_the_no_door_fallback_is_labelled_as_a_different_measure():
     which, so the label is the feature — guard it."""
     src = _dashboard()
     body = src[src.index("function renderFacility("):src.index("async function pollFacility")]
-    assert "LAST_COUNTS.live" in body
+    assert "inViewTotal(LAST_CAMS)" in body
     assert "not door-counted" in body
+
+
+def test_the_fallback_does_not_use_identity_binding_counts():
+    """REGRESSION. The tile used to render LAST_COUNTS.live, which is a count of
+    identity BINDINGS rather than of people. A binding is released when its
+    track dies, but a worker killed abruptly releases nothing and expire()
+    deliberately skips any identity that is still bound — so bindings survive
+    worker restarts and the figure only ever drifts upward. Measured on the
+    factory camera: the tile read 13 while eight people were in frame, and
+    stopping the camera released all 13 at once.
+
+    people_in_view is rebuilt from the current frame's tracks every time, so it
+    cannot outlive the people it counts. Guard the source, because the two names
+    read almost identically at a glance and the wrong one looks plausible."""
+    src = _dashboard()
+    body = src[src.index("function renderFacility("):src.index("async function pollFacility")]
+    assert "LAST_COUNTS.live" not in body, (
+        "the In-facility fallback is back on identity binding counts")
+
+    # The per-camera badge under each feed has to agree with the tile — they sit
+    # on the same screen and a viewer counts heads against both.
+    feeds = src[src.index("// Live / cumulative-unique for THIS camera"):]
+    feeds = feeds[:feeds.index("}else{cnt.hidden=true;}")]
+    assert "c.people_in_view" in feeds
+    assert "pc.live" not in feeds
+
+
+@node
+def test_in_view_total_counts_only_online_cameras(tmp_path):
+    """An OFFLINE camera's last known people_in_view is stale by definition —
+    nobody is looking. Counting it would keep phantom people in the tile for as
+    long as the camera stayed down, which is the exact failure being fixed."""
+    script = tmp_path / "iv.js"
+    script.write_text(
+        subtitle_source()
+        + "\nconst cams=JSON.parse(process.argv[2]);"
+          "console.log(String(inViewTotal(cams)));\n",
+        encoding="utf-8")
+
+    cams = [{"effective_state": "ONLINE", "people_in_view": 8},
+            {"effective_state": "ONLINE", "people_in_view": 3},
+            {"effective_state": "OFFLINE", "people_in_view": 99},
+            {"effective_state": "DISABLED", "people_in_view": 99}]
+    out = subprocess.run(["node", str(script), json.dumps(cams)],
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "11"
+
+
+@node
+def test_in_view_total_survives_a_camera_that_reports_nothing(tmp_path):
+    """A worker that has not posted a health record yet has no people_in_view at
+    all. It must read as 0, not NaN — a NaN here paints "NaN people" across the
+    headline strip."""
+    script = tmp_path / "iv2.js"
+    script.write_text(
+        subtitle_source()
+        + "\nconst cams=JSON.parse(process.argv[2]);"
+          "console.log(String(inViewTotal(cams)));\n",
+        encoding="utf-8")
+
+    cams = [{"effective_state": "ONLINE"},
+            {"effective_state": "ONLINE", "people_in_view": None},
+            {"effective_state": "ONLINE", "people_in_view": 4},
+            None]
+    out = subprocess.run(["node", str(script), json.dumps(cams)],
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "4"
 
 
 def test_the_tile_polls_instead_of_riding_the_socket():

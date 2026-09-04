@@ -102,6 +102,66 @@ oppositely (dt≈0 is expected, not suspicious).
 
 ---
 
+## B-6 — Identity bindings outlive the people they count  [MEDIUM]
+
+**What:** `registry.site_occupancy()` — served as `live` by
+`GET /api/v1/identity/counts` and as `site_occupancy` by `/identity/stats` — is
+`len(active_refs())`, i.e. a count of live **bindings**, not of visible people.
+It drifts upward and does not come back down.
+
+**Evidence, measured on CAM-F-01:** the In-facility tile read 13 while
+`people_in_view` was 8. Stopping the camera returned
+`{"identity_bindings_released": 13}` in one go. Restarted clean, bindings then
+tracked `people_in_view` within ±1 across a 150s watch (6/5, 8/8, 9/8, 7/8, 7/8,
+9/8) — so this is not a fast leak, it is stale bindings accumulating across
+worker restarts.
+
+**Why it happens:** a binding is released when its track dies
+(`reid.drop` → `POST /identity/release`), or wholesale by `release_camera` when
+the API *notices* a camera stop or go offline. A worker killed abruptly releases
+nothing, and `expire()` deliberately skips any identity that is still bound — so
+orphaned bindings pin their identities permanently. `release_camera`'s own
+docstring already records an earlier instance of exactly this ("a site total of
+6 people while the only two running cameras reported 1 each").
+
+**Worked around, NOT fixed.** The dashboard no longer renders this figure: the
+In-facility tile and the per-camera live badge both use `people_in_view` from
+the camera heartbeat, which is rebuilt from each frame's tracks and cannot
+outlive anyone. The underlying count is still wrong for any other consumer.
+
+**What it needs:** a liveness signal on the binding itself, so `expire()` can
+reclaim one whose worker is gone. Identity `last_seen` is NOT that signal —
+ReID resolve is budgeted to a subset of crops per frame, so a person standing in
+plain view can have a `last_seen` of 50s+ (observed: six identities at exactly
+51.0s while all six were on screen). Filtering on it would under-count. The
+honest fix is probably for the camera heartbeat to carry its live track ids, and
+for the registry to drop bindings no heartbeat has claimed for one offline
+window.
+
+---
+
+## B-7 — No JavaScript runtime: dashboard behaviour tests cannot execute  [LOW]
+
+**What:** `node` is absent from WSL and from the Windows host, and nothing else
+(`qjs`, `d8`, `deno`, `bun`) is present either.
+
+**Why it matters:** `tests/test_facility_tile.py` lifts `facilityWindow`,
+`facilitySub` and `inViewTotal` verbatim out of `web/dashboard.html` and runs
+them under node, so they exercise shipped code rather than a copy. Without a
+runtime those 12 tests skip and only the static source guards run. The
+In-facility arithmetic committed today is therefore **guarded but unexecuted**.
+
+**What I did instead:** re-implemented `inViewTotal`'s exact semantics
+(`+v||0` coercion, ONLINE filter) in Python and ran the same three cases plus
+the live `/api/v1/cameras` payload — offline/disabled excluded, missing and null
+fields coerce to 0 rather than NaN, empty list gives 0. That validates the
+logic, not the JavaScript.
+
+**What it needs:** `apt install nodejs` (no-download rule, so not attempted).
+One command, and 12 real tests start running.
+
+---
+
 ## B-1 — Vision pipeline cannot execute (detection deps + weights absent)  [RESOLVED]
 
 > RESOLVED in a later session once the human authorised installs: bootstrapped

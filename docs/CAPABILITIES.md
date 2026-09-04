@@ -402,13 +402,25 @@ stale exactly when the socket dropped. The `/ws` payload is unchanged and still
 carries cameras, zones and alerts only.
 
 On a site with **no door zones configured** the roster can never move, so the
-tile falls back to distinct people *in view* (`GET /api/v1/identity/counts`,
-`live`) and labels itself `in view · no doors, not door-counted`. The label is
-load-bearing: door-counted occupancy keeps counting someone who walks into a
-corridor no camera watches, and the in-view figure does not — it drops to zero
-when the last person leaves frame. The two are never shown as the same number
-without saying which is on screen. If the counts endpoint is also unavailable
-the tile says the count cannot be produced rather than rendering a bare `0`.
+tile falls back to people *in view* — `people_in_view` from the camera
+heartbeat, summed over the cameras that are ONLINE — and labels itself
+`in view · no doors, not door-counted`. The label is load-bearing: door-counted
+occupancy keeps counting someone who walks into a corridor no camera watches,
+and the in-view figure does not — it drops to zero when the last person leaves
+frame. The two are never shown as the same number without saying which is on
+screen. If the counts endpoint is also unavailable the tile says the count
+cannot be produced rather than rendering a bare `0`.
+
+**Not `GET /api/v1/identity/counts` `live`, which this used until 2026-09-04.**
+That figure counts live identity *bindings*, and bindings survive a worker being
+killed — measured at 13 while eight people were in frame (BLOCKERS.md B-6).
+`people_in_view` is rebuilt from each frame's tracks, so it cannot outlive the
+people it counts. The trade is that summing it across cameras double-counts
+anyone visible to two at once, so above one online camera the subtitle reads
+`in view · N cameras, not de-duplicated` rather than implying a site-wide
+distinct-person total. The per-camera `live` badge under each feed uses the same
+source for the same reason; the `unique` badge beside it stays on identity,
+where cumulative footfall has no liveness problem.
 
 ## 13. Integrations
 

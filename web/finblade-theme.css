@@ -50,10 +50,23 @@
   --fb-critical:    #ef4b4b;   /* red    — density > 4.0/m2  */
   --fb-restricted:  #e0479e;   /* magenta — no-go zone       */
   --fb-ok:          #7d9aa5;   /* normal = muted, not green  */
+  /* PPE compliance (R-11). A FIFTH status, because it is a different kind of
+     thing from the four above: amber and red are measurements crossing a
+     threshold, magenta is a policy about a PLACE, and this is a policy about a
+     PERSON. Sharing amber with density made "the room is filling up" and
+     "someone has no hardhat" indistinguishable at a glance, and they want
+     different responses.
+
+     Violet sits next to the restricted magenta because both are policy rather
+     than incident, while staying clearly separable from it in hue — and it is
+     nowhere near the brand teal, which is chrome and must never read as
+     status. */
+  --fb-compliance:  #7b6ef0;   /* violet — person-based policy */
 
   --fb-warning-ghost:    rgba(240, 160, 41, 0.14);
   --fb-critical-ghost:   rgba(239, 75, 75, 0.14);
   --fb-restricted-ghost: rgba(224, 71, 158, 0.12);
+  --fb-compliance-ghost: rgba(123, 110, 240, 0.14);
 
   /* --- type: system stacks only.
          FinBlade deploys on-prem and air-gapped; a dashboard that
@@ -242,6 +255,7 @@ body {
 .fb-pill--warning    { color: var(--fb-warning);    background: var(--fb-warning-ghost); }
 .fb-pill--critical   { color: var(--fb-critical);   background: var(--fb-critical-ghost); }
 .fb-pill--restricted { color: var(--fb-restricted); background: var(--fb-restricted-ghost); }
+.fb-pill--compliance { color: var(--fb-compliance); background: var(--fb-compliance-ghost); }
 
 /* Live indicator — a slow pulse, not a blink. Reads as "receiving"
    rather than "alarming". */

@@ -206,13 +206,22 @@ class PostgresStore(Store):
     def save_alert(self, a: dict) -> str:
         # RETURNING, because Postgres has no lastrowid.
         return str(self._one(
+            # NO free-form payload column here, unlike events — every field an
+            # alert carries needs a column and four edits (CREATE, ALTER,
+            # this INSERT, and the SELECT in list_alerts). track_id was the
+            # fourth field lost this way in one day, after
+            # zones.physical_area_id, zones.required_ppe and the
+            # zone_live.extra whitelist. If an alert field is not reaching the
+            # UI, look here before looking anywhere else.
             "INSERT INTO alerts(rule_id,severity,message,zone_id,camera_id,person_ref,"
-            "ts,frame,kind,acknowledged_by,acknowledged_at,status,site_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL,'OPEN',%s) "
+            "ts,frame,kind,track_id,acknowledged_by,acknowledged_at,status,site_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL,'OPEN',%s) "
             "RETURNING alert_id",
             (a.get("rule_id"), a.get("severity"), a.get("message"), a.get("zone_id"),
              a.get("camera_id"), a.get("person_ref"), float(a.get("ts", 0)),
-             a.get("frame"), a.get("kind", "FIRE"), a.get("site_id"))))
+             a.get("frame"), a.get("kind", "FIRE"),
+             (int(a["track_id"]) if a.get("track_id") is not None else None),
+             a.get("site_id"))))
 
     def acknowledge_alert(self, alert_id: str, who: str, ts: float) -> bool:
         return self.update_alert(alert_id, "ACK", who, ts)
@@ -348,7 +357,7 @@ class PostgresStore(Store):
 
     # -- reads --------------------------------------------------------------
     _ALERT_COLS = ("alert_id,rule_id,severity,message,zone_id,camera_id,site_id,"
-                   "person_ref,ts,frame,kind,acknowledged_by,acknowledged_at,"
+                   "person_ref,ts,frame,kind,track_id,acknowledged_by,acknowledged_at,"
                    "COALESCE(status,'OPEN') AS status,note,resolved_by,resolved_at")
 
     def list_alerts(self, unacked_only: bool = False) -> List[dict]:

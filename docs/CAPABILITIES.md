@@ -260,6 +260,18 @@ See [DECISIONS.md](../DECISIONS.md) D-31.
   `(track, ppe_type)` through UNKNOWN → CANDIDATE → CONFIRMED, and an explicit
   `NO-Hardhat` counts **four times** as strongly as the model simply going
   quiet (`absence_weight`).
+- **Its own severity, `COMPLIANCE`, not amber.** A missing hardhat is a policy
+  breach against a person, which is a different kind of thing from a density
+  measurement (amber/red) or a place-based restriction (magenta). It gets
+  `--fb-compliance` violet in the dashboard, the history page and the OpenCV
+  annotator, so an operator can tell at a glance whether the room is filling up
+  or somebody is under-equipped.
+- **The alert carries a crop of the person it accuses.** `Alert.track_id` names
+  the box, and the worker cuts that box out of the annotated frame (padded 35%
+  horizontally, 12% vertically) to `evidence/bookmarks/bm_<cam>_<seq>_t<track>.jpg`.
+  Viewable from the history page through the existing frame modal. `track_id` is
+  a LOCAL tracker id — it identifies a box in one camera process, is reused
+  after a restart, and is not a person identifier.
 - **Checkpoint:** `ayushgupta7777/safetyvision-yolov8` v2. Its published
   performance is **markedly weaker for NO-Safety Vest and Mask/NO-Mask than for
   Hardhat** — do not compensate by lowering confidence thresholds, which turns

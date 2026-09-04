@@ -290,6 +290,7 @@ BGR_TEXT       = (240, 236, 220)  # #dcecf0
 BGR_IGNORED    = (128, 128, 128)  # muted grey — detection mask, not a status
 BGR_FIRE       = (75, 75, 239)    # #ef4b4b fire  — critical, solid
 BGR_SMOKE      = (41, 160, 240)   # #f0a029 smoke — warning
+BGR_COMPLIANCE = (240, 110, 123)  # #7b6ef0 PPE violation — person-based policy
 
 def _stamp_zone_occupancy(events, occupancy, zones) -> None:
     """Add the resulting occupancy/density to movement events, in place.
@@ -416,6 +417,41 @@ OVERLAY_DEFAULT = {"zones": True, "boxes": True, "ids": True, "feet": True,
                    "dwell": True, "gid": True, "hazards": True}
 
 
+def ppe_state_fields(zone_id, occupancy, ppe_zones, counts, camera_id):
+    """PPE compliance fields for one zone's state payload, invariant-checked.
+
+    compliant + non_compliant + not_assessable MUST equal occupancy: the card
+    shows them beside each other and a reader will assume they add up.
+
+    THE CHECK IS HERE BECAUSE I GOT THIS WRONG TWICE. First by caching the
+    counts from the 2 Hz detector tick, so they described a moment up to 5s
+    before the occupancy beside them. Then by rebuilding from
+    registry.active(), which includes tracks the reaper keeps alive after they
+    have left frame — 7+5+1=13 against an occupancy of 8. Both times a single
+    spot-check happened to agree and I called it fixed.
+
+    Logging rather than raising: a miscounted dashboard tile must not take a
+    camera down. But it must not be invisible either, which sampling by hand
+    plainly was.
+    """
+    c = counts.get(zone_id) or {"compliant": 0, "non_compliant": 0,
+                                "not_assessable": 0, "violations": {}}
+    total = c["compliant"] + c["non_compliant"] + c["not_assessable"]
+    if total != occupancy:
+        log.warning(
+            "camera %s zone %s: PPE counts do not add up — %d compliant + %d "
+            "non-compliant + %d not-assessable = %d, but occupancy is %d. The "
+            "zone card will show numbers that disagree; the counts and the "
+            "occupancy are being taken from different sources.",
+            camera_id, zone_id, c["compliant"], c["non_compliant"],
+            c["not_assessable"], total, occupancy)
+    return {"ppe_required": list(ppe_zones[zone_id]),
+            "ppe_compliant": c["compliant"],
+            "ppe_non_compliant": c["non_compliant"],
+            "ppe_not_assessable": c["not_assessable"],
+            "ppe_violations": dict(c["violations"])}
+
+
 def _draw_hazards(frame, hazards):
     """Fire/smoke boxes. Drawn FIRST so person boxes sit on top of them.
 
@@ -499,7 +535,10 @@ def annotate(frame, zones, tracks, occupancy, track_meta=None, overlay=None,
         elif loiter:
             box_color, tag = BGR_WARNING, "LOITERING"
         elif ppe_missing:
-            box_color = BGR_WARNING
+            # Violet, matching the alert feed and history. Amber here would have
+            # made a worker without a hardhat look identical to a zone filling
+            # up, on the one surface where telling them apart matters most.
+            box_color = BGR_COMPLIANCE
             tag = "NO " + "/".join(
                 {"hardhat": "HAT", "safety_vest": "VEST",
                  "mask": "MASK"}.get(m, m.upper()) for m in ppe_missing)
@@ -1275,11 +1314,23 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             # stale without harm; the MEMBERSHIP cannot.
             ppe_zone_counts = {}
             if _ppe_zones:
+                # Built from THIS FRAME's tracks and zone_by_tid — the exact
+                # pair `occupancy` above is derived from (see the `confirmed`
+                # branch in pass 1), so the two describe the same people.
+                #
+                # My first two attempts at this both broke the invariant the
+                # payload promises. Caching the counts from the 2 Hz detector
+                # tick made them describe a moment up to 5s earlier. Rebuilding
+                # from registry.active() looked right but was still wrong: the
+                # registry keeps departed tracks alive for track_ttl_seconds,
+                # so it counted people the frame no longer contains — observed
+                # as 7+5+1=13 against an occupancy of 8. Only the frame's own
+                # tracks agree with the frame's own occupancy.
                 ppe_zone_counts = ppe_tracker.zone_summary([
-                    (t.track_id, t.current_zone_id,
-                     ppe_tracker.assessable(t.bbox))
-                    for t in registry.active()
-                    if t.current_zone_id in _ppe_zones])
+                    (tid, zone_by_tid.get(tid),
+                     ppe_tracker.assessable((x1, y1, x2, y2)))
+                    for (tid, x1, y1, x2, y2) in tracks
+                    if zone_by_tid.get(tid) in _ppe_zones])
             eng.camera.heartbeat(cfg.camera_id, vnow)
             heartbeat_event = new_event(CAMERA_HEARTBEAT, cfg.camera_id, cfg.site_id, vnow)
             for z in cfg.zones:
@@ -1322,11 +1373,8 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     #   compliant + non_compliant + not_assessable == occupancy
                     # while `violations` is per ITEM and will sum higher.
                     # Absent entirely on zones with no required_ppe.
-                    **({"ppe_required": _ppe_zones[z.zone_id],
-                        **{("ppe_" + k): v for k, v in
-                           ppe_zone_counts.get(z.zone_id, {
-                               "compliant": 0, "non_compliant": 0,
-                               "not_assessable": 0, "violations": {}}).items()}}
+                    **(ppe_state_fields(z.zone_id, occ, _ppe_zones,
+                                        ppe_zone_counts, cfg.camera_id)
                        if z.zone_id in _ppe_zones else {}),
                 })
                 # Head-count threshold (REQ-21). Independent of area and
@@ -1477,7 +1525,41 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         snap_alerts = [a for a in pending_alerts
                        if a.get("rule_id") in SNAPSHOT_RULES and a.get("kind") == "FIRE"]
         frame_ref = None
-        if snap_alerts:
+        # R-11 gets a CROP of the accused person, not the whole frame.
+        #
+        # A PPE violation names an individual, and reviewing it means looking at
+        # that individual: on a 1920x1080 frame a worker is a couple of hundred
+        # pixels tall and "is that a hardhat?" is genuinely hard to answer. A
+        # crop makes the question answerable in a second, which matters most for
+        # the alert type someone might reasonably dispute.
+        #
+        # Cropped from the ANNOTATED frame so the box and the "NO HAT" label
+        # come with it, and padded so the person is not cut out of their own
+        # context — a head-and-shoulders crop with no floor under it is hard to
+        # place in the scene.
+        ppe_boxes = {t[0]: t[1:] for t in tracks}
+        for _a in snap_alerts:
+            if _a.get("rule_id") != "R-11":
+                continue
+            _bx = ppe_boxes.get(_a.get("track_id"))
+            if _bx is None:
+                continue          # track gone this frame; fall back to the full frame
+            _x1, _y1, _x2, _y2 = _bx
+            _pw, _ph = (_x2 - _x1) * 0.35, (_y2 - _y1) * 0.12
+            _cx1 = max(0, int(_x1 - _pw)); _cy1 = max(0, int(_y1 - _ph))
+            _cx2 = min(annotated.shape[1], int(_x2 + _pw))
+            _cy2 = min(annotated.shape[0], int(_y2 + _ph))
+            if _cx2 - _cx1 < 16 or _cy2 - _cy1 < 16:
+                continue
+            bookmark_seq += 1
+            _cname = f"bm_{cfg.camera_id}_{bookmark_seq:05d}_t{_a.get('track_id')}.jpg"
+            cv2.imwrite(os.path.join(BOOKMARKS_DIR, _cname),
+                        annotated[_cy1:_cy2, _cx1:_cx2])
+            # Per-alert, so two workers violating at once get their own crops
+            # rather than sharing one frame in which neither is obvious.
+            _a["frame"] = "/bookmarks/" + _cname
+        if any(a.get("rule_id") != "R-11" or not a.get("frame")
+               for a in snap_alerts):
             bookmark_seq += 1
             bname = f"bm_{cfg.camera_id}_{bookmark_seq:05d}.jpg"
             cv2.imwrite(os.path.join(BOOKMARKS_DIR, bname), annotated)
@@ -1496,7 +1578,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             # Rule engine is zone-centric; stamp which camera this alert came from.
             if al.get("camera_id") is None:
                 al["camera_id"] = cfg.camera_id
-            if frame_ref and al.get("rule_id") in SNAPSHOT_RULES and al.get("kind") == "FIRE":
+            # Do not overwrite a per-alert crop already attached above; the
+            # shared full frame is the fallback for alerts that did not get one.
+            if (frame_ref and not al.get("frame")
+                    and al.get("rule_id") in SNAPSHOT_RULES
+                    and al.get("kind") == "FIRE"):
                 al["frame"] = frame_ref
             alerts_fp.write(json.dumps(al) + "\n")
             _post("/api/v1/alerts", al)

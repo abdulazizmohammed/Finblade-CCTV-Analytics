@@ -120,16 +120,18 @@ body{
 /* PPE compliance — a STATE line, not an event.
    Colours follow the theme's semantics rather than convention. Compliant takes
    --fb-ok grey, NOT the usual success hue: calm has to be visually silent so
-   amber and red carry all the urgency. Violations take amber to match R-11's
-   AMBER severity — not red, because a missing hardhat is a compliance state
-   and red is reserved for "wrong right now". n/a is fainter than either,
-   because it is an absence of information rather than a finding. */
+   amber and red carry all the urgency. Violations take --fb-compliance violet
+   to match R-11's COMPLIANCE severity in the alert feed — the count on the card
+   and the alert it produces are the same fact, so they must be the same colour.
+   Not amber (that is a measurement crossing a threshold) and not red (that is
+   "wrong right now"). n/a is fainter than either, because it is an absence of
+   information rather than a finding. */
 .ppe{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;margin-top:10px;
   padding-top:9px;border-top:1px solid var(--fb-line);
   font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:11.5px;}
 .ppe .k{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);}
 .ppe .ok{color:var(--fb-ok);}
-.ppe .bad{color:var(--fb-warning);}
+.ppe .bad{color:var(--fb-compliance);}
 .ppe .na{color:var(--fb-text-faint);}
 .flow{display:flex;justify-content:space-between;margin-top:10px;}
 .flow .f{display:flex;flex-direction:column;gap:2px;}
@@ -153,6 +155,11 @@ body{
 .alert{display:flex;gap:11px;padding:10px 12px;border-radius:var(--fb-r);background:var(--fb-surface-2);border-left:3px solid var(--fb-ok);}
 .alert[data-sev="AMBER"]{border-left-color:var(--fb-warning);}
 .alert[data-sev="RED"]{border-left-color:var(--fb-critical);}
+/* PPE compliance. Its own colour rather than amber: a density warning and a
+   worker without a hardhat are different kinds of problem wanting different
+   responses, and sharing a colour made them indistinguishable while scanning.
+   No animation — it is a state, not an alarm. */
+.alert[data-sev="COMPLIANCE"]{border-left-color:var(--fb-compliance);}
 .alert[data-sev="CRITICAL"]{border-left-color:var(--fb-restricted);background:linear-gradient(90deg,var(--fb-restricted-ghost),var(--fb-surface-2));animation:alarm 1.4s steps(2) infinite;}
 @keyframes alarm{0%,100%{background:linear-gradient(90deg,var(--fb-restricted-ghost),var(--fb-surface-2));}50%{background:var(--fb-surface-2);}}
 .alert .body{flex:1;min-width:0;}

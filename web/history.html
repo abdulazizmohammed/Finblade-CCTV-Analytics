@@ -35,6 +35,9 @@ tr.clickable:hover td{background:var(--fb-surface-2);}
 .sev{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:2px;border:1px solid currentColor;}
 .sev.AMBER{color:var(--fb-warning);}
 .sev.RED,.sev.CRITICAL{color:var(--fb-critical);}
+/* PPE compliance — see the note on --fb-compliance in the theme. Matches the
+   dashboard's alert feed so the same alert is the same colour in both places. */
+.sev.COMPLIANCE{color:var(--fb-compliance);}
 .sev.INFO,.sev.NORMAL{color:var(--fb-ok);}
 .rule{color:var(--fb-restricted);} /* restricted intrusion rows read magenta */
 .thumb{color:var(--fb-teal);text-decoration:none;font-family:var(--fb-font-data);font-size:11px;}

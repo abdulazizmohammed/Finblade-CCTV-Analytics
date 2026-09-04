@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     ts                     DOUBLE PRECISION,  -- epoch seconds, UTC
     frame                  TEXT,
     kind                   TEXT,
+    track_id               BIGINT,  -- local tracker id; a box, never a human
     acknowledged_by        TEXT,
     acknowledged_at        DOUBLE PRECISION,  -- epoch seconds, UTC
     status                 TEXT DEFAULT 'OPEN',
@@ -249,6 +250,11 @@ CREATE TABLE IF NOT EXISTS zones (
 -- Bring an EXISTING database up to the schema above. Every
 -- statement is idempotent; on a current database all are no-ops.
 ALTER TABLE zones ADD COLUMN IF NOT EXISTS required_ppe TEXT;
+-- The local tracker id a per-person alert is about (R-11). Identifies a BOX in
+-- a frame, not a human: private to one camera process and reused after a
+-- restart. It is what lets a compliance alert be tied to the crop of the person
+-- it accuses.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS track_id BIGINT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS rule_id TEXT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS severity TEXT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS message TEXT;

@@ -21,6 +21,20 @@ SEV_INFO = "INFO"
 SEV_AMBER = "AMBER"
 SEV_RED = "RED"
 SEV_CRITICAL = "CRITICAL"  # restricted intrusion (magenta-flashing-red in UI)
+# PPE compliance (R-11) gets its own severity rather than reusing AMBER.
+#
+# It is a different KIND of thing from everything above. AMBER and RED are
+# measurements crossing a threshold — the crowd got denser. CRITICAL is a
+# place-based policy — nobody may stand there. Compliance is a person-based
+# policy: this individual is not wearing something the zone requires. Sharing
+# amber with density meant an operator scanning the feed could not tell "the
+# room is filling up" from "someone has no hardhat" without reading every line,
+# and those want completely different responses.
+#
+# Rendered violet — adjacent to the restricted magenta because both are policy
+# rather than incident, but clearly separable from it, and nowhere near the
+# brand teal, which is chrome and never status.
+SEV_COMPLIANCE = "COMPLIANCE"
 
 
 @dataclass
@@ -33,6 +47,12 @@ class Alert:
     camera_id: Optional[str] = None
     person_ref: Optional[str] = None
     kind: str = "FIRE"  # "FIRE" or "CLEAR"
+    # The LOCAL tracker id this alert is about, where it is about one person.
+    # person_ref is an anonymous hash and cannot be pointed at a box in a
+    # frame; track_id can, which is what lets a per-person alert save a crop of
+    # the person it accuses. Private to one camera process and reused after a
+    # restart — it identifies a box, never a human.
+    track_id: Optional[int] = None
 
     def as_dict(self) -> dict:
         return {
@@ -44,6 +64,7 @@ class Alert:
             "camera_id": self.camera_id,
             "person_ref": self.person_ref,
             "kind": self.kind,
+            "track_id": self.track_id,
         }
 
 
@@ -346,16 +367,17 @@ class RuleEngine:
             first = getattr(state, "first_seen", None)
             held = (now - first) if first else 0.0
             return Alert(
-                "R-11", SEV_AMBER,
+                "R-11", SEV_COMPLIANCE,
                 f"{ppe_type} missing on track {track_id} in {zone_id} "
                 f"(sustained {held:.0f}s)", now,
-                zone_id=zone_id, camera_id=camera_id, person_ref=person_ref)
+                zone_id=zone_id, camera_id=camera_id, person_ref=person_ref,
+                track_id=track_id)
         if new_state == COMPLIANT:
             return Alert(
                 "R-11", SEV_INFO,
                 f"{ppe_type} compliance restored on track {track_id} in {zone_id}",
                 now, zone_id=zone_id, camera_id=camera_id,
-                person_ref=person_ref, kind="CLEAR")
+                person_ref=person_ref, kind="CLEAR", track_id=track_id)
         return None
 
     # -- loitering R-05 --

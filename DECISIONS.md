@@ -621,3 +621,45 @@ minimum person-box height gate is the obvious mitigation and is NOT implemented.
 `services/inference/ppe_client.py`, `finblade/ppe.py`, the association block in
 `geometry.py`, `evaluate_ppe`, the two event types, `required_ppe` on Zone, and
 `models/ppe_safetyvision_v2.pt`.
+
+## D-33 — Compliance is a fifth alert kind, and carries a crop of the person
+
+**Choice:** a `COMPLIANCE` severity of its own with its own colour
+(`--fb-compliance` violet `#7b6ef0`), and `Alert.track_id` plus a per-person
+crop saved alongside each R-11 alert.
+
+**WHY NOT AMBER.** R-11 fired as AMBER, which put "the room is filling up" and
+"that worker has no hardhat" in the same visual bucket. They are different kinds
+of thing and want different responses. The dashboard already distinguishes four
+kinds — amber/red for measurements against a threshold, magenta for a
+place-based restriction, teal for chrome that never means status — and a policy
+breach *against a person* is a fifth. It is not a severity ordering: a
+compliance alert is not "between" amber and red, which is why it is not coloured
+somewhere between them.
+
+Violet was chosen because it is far from amber and red in hue (so it does not
+compete with urgency), far from teal (so it is not read as chrome), and
+distinguishable from the magenta restricted stroke at a glance while sitting in
+the same "policy" family — restricted is policy about a PLACE, compliance is
+policy about a PERSON. It is a fill/pill colour, never a boundary stroke, so it
+cannot be confused with the dashed magenta restricted-zone outline.
+
+**WHY THE ALERT CARRIES A CROP.** A full annotated frame with eleven people in
+it does not tell an operator which one the alert is about. `person_ref` cannot
+help: it is an anonymous hash by design and points at nobody in the image. The
+local tracker id can, so `Alert.track_id` carries it and the worker cuts that
+box out of the ALREADY-ANNOTATED frame — so the crop keeps its own violet box
+and label — with 35% horizontal and 12% vertical padding, enough context to see
+a head and shoulders rather than a floating torso.
+
+**`track_id` IS NOT A PERSON IDENTIFIER, and the schema comment says so.** It
+names a box inside one camera process, is reused after a restart, and must never
+be presented as identifying a human. It is stored because it is the only thing
+that can point at the crop.
+
+**Cost:** one JPEG per confirmed violation on top of the shared frame. The
+existing orphaned-frame cleanup (`GET /api/v1/frames/orphaned`) covers them.
+
+**Reverse:** drop `SEV_COMPLIANCE` back to `SEV_AMBER` in `evaluate_ppe`, and
+delete the per-alert crop block in `run_cpu.py`. The `track_id` column can stay
+— it is nullable and every other rule leaves it null.

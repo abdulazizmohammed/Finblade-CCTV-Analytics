@@ -73,6 +73,34 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
 .props .p input{width:62px;background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:12px;padding:4px 6px;border-radius:var(--fb-r);}
 .props .p input:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
 .empty{color:var(--fb-text-faint);font-size:12px;padding:14px 0;}
+/* Required-PPE picker — a disclosure of checkboxes, not a <select multiple>.
+   A multi-select needs ctrl-click to DESELECT, which is undiscoverable and
+   close to unusable on a touch screen; getting it wrong here silently changes
+   what the system accuses people of, so the control has to be obvious.
+   <details> carries the keyboard handling and open/close natively.
+
+   Rendered IN FLOW rather than floated over the panel: #side scrolls, and an
+   absolutely positioned menu would be clipped by its overflow.
+
+   Deliberately plain chrome — no --fb-compliance violet. That colour means
+   "a person is in breach"; a zone merely REQUIRING an item is not a breach,
+   and borrowing the status colour for a config control would blunt it. */
+.ppe{border:1px solid var(--fb-line);border-radius:var(--fb-r);background:var(--fb-void);}
+.ppe>summary{list-style:none;cursor:pointer;padding:7px 9px;display:flex;align-items:center;gap:8px;
+  font-family:var(--fb-font-data);font-size:13px;color:var(--fb-text);}
+.ppe>summary::-webkit-details-marker{display:none;}
+.ppe>summary::after{content:'▾';margin-left:auto;color:var(--fb-text-faint);font-size:11px;}
+.ppe[open]>summary::after{content:'▴';}
+.ppe>summary:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:-2px;}
+.ppe>summary:hover{border-color:var(--fb-teal);}
+.ppe .none{color:var(--fb-text-faint);}
+.ppe .opts{border-top:1px solid var(--fb-line);padding:5px 9px 7px;}
+.ppe .opts label{display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;
+  font-family:var(--fb-font-data);font-size:12px;color:var(--fb-text-muted);}
+.ppe .opts label:hover{color:var(--fb-text);}
+.ppe .opts input{accent-color:var(--fb-teal);cursor:pointer;}
+.ppe .opts input:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+.zone .ppe{margin-top:9px;}
 </style>
 
 <header>
@@ -143,6 +171,22 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
   <datalist id="area-list"></datalist>
   <p class="hint" id="area-hint">Leave empty unless another camera also sees this
     place. Type a new id to create an area, or pick an existing one to join it.</p>
+
+  <!-- Required PPE: which items a person must be wearing INSIDE this zone.
+       Per zone and not per site, because that is the real shape of the problem
+       — a lab bench and a plant room want different things, and a requirement
+       that applied everywhere would accuse people in the car park. -->
+  <label class="lbl">Required PPE</label>
+  <details class="ppe" id="ppe">
+    <summary><span data-ppe-lbl class="none">none — not enforced here</span></summary>
+    <div class="opts">
+      <label><input type="checkbox" value="hardhat"> Hard hat</label>
+      <label><input type="checkbox" value="safety_vest"> Safety vest</label>
+      <label><input type="checkbox" value="mask"> Mask</label>
+    </div>
+  </details>
+  <p class="hint">Leave empty and no PPE rule applies here — the zone reports no
+    compliance figures at all rather than reporting everyone as fine.</p>
 
   <label class="lbl" for="adj">Adjacent zone IDs (comma-separated)</label>
   <input type="text" id="adj" placeholder="ZONE-02, ZONE-03">
@@ -272,6 +316,35 @@ $('btn-copy').onclick=()=>navigator.clipboard.writeText(yaml());
 $('btn-save').onclick=saveServer;
 $('btn-load').onclick=loadServer;
 
+// --- required PPE ---------------------------------------------------------
+// The vocabulary is fixed by finblade.ppe.PPE_TYPES. Anything outside it is
+// dropped server-side with a warning, so offering a free-text field here would
+// only let an operator type a requirement that silently never applies.
+const PPE_ITEMS=[['hardhat','Hard hat'],['safety_vest','Safety vest'],['mask','Mask']];
+const ppeName=k=>(PPE_ITEMS.find(p=>p[0]===k)||[k,k])[1];
+const ppeLabel=list=>(list&&list.length) ? list.map(ppeName).join(' + ')
+                                         : 'none — not enforced here';
+const ppeGet=root=>[...root.querySelectorAll('.opts input:checked')].map(i=>i.value);
+function ppeSyncLabel(root){
+  const list=ppeGet(root), el=root.querySelector('[data-ppe-lbl]');
+  el.textContent=ppeLabel(list);
+  el.classList.toggle('none', list.length===0);
+}
+function ppeSet(root,list){
+  const want=new Set(list||[]);
+  root.querySelectorAll('.opts input').forEach(i=>{ i.checked=want.has(i.value); });
+  ppeSyncLabel(root);
+}
+const ppePicker=(i,list)=>
+  `<details class="ppe zppe" data-i="${i}">`+
+  `<summary><span data-ppe-lbl class="${(list&&list.length)?'':'none'}">`+
+  `${ppeLabel(list)}</span></summary><div class="opts">`+
+  PPE_ITEMS.map(([k,lbl])=>
+    `<label><input type="checkbox" value="${k}"`+
+    `${(list||[]).includes(k)?' checked':''}> ${lbl}</label>`).join('')+
+  `</div></details>`;
+$('ppe').addEventListener('change', ()=> ppeSyncLabel($('ppe')));
+
 function closeZone(){
   if(pts.length<3){ $('coord').innerHTML=`<b style="color:${C.draft}">Needs at least 3 points</b>`; return; }
   const ztype=v('ztype');
@@ -283,6 +356,7 @@ function closeZone(){
     capacity_max:+v('cap'), area_sqm:+v('area'),
     warning_density:+v('warn'), critical_density:+v('crit'),
     loitering_threshold_sec:+v('loiter'), colour:v('colour'),
+    required_ppe: ppeGet($('ppe')),
     adjacency_list: v('adj').split(',').map(s=>s.trim()).filter(Boolean),
     polygon:polyPx, norm:polyPx.map(norm),
   });
@@ -312,6 +386,7 @@ function render(){
         `<label class="p ap"><span>Physical area</span>`+
         `<input type="text" list="area-list" data-i="${i}" `+
         `value="${z.physical_area_id||''}" placeholder="none"></label>`+
+        ppePicker(i, z.required_ppe)+
         `<div class="props">`+
           prop(i,'capacity_max','Capacity',z.capacity_max,1)+
           prop(i,'area_sqm','Area m²',z.area_sqm,0.1)+
@@ -343,6 +418,21 @@ function render(){
       render();
       loadAreas();
     });
+    // Change a zone's PPE requirement from its card -> auto-save, like the
+    // numbers below. Deliberately does NOT call render(): rebuilding the list
+    // would tear down and recreate this <details>, closing the dropdown after
+    // every single tick. The label is refreshed in place instead.
+    box.querySelectorAll('.zppe').forEach(d=> d.addEventListener('change', async()=>{
+      const z=zones[+d.dataset.i];
+      if(!z) return;
+      z.required_ppe=ppeGet(d);
+      ppeSyncLabel(d);
+      $('out').textContent=yaml();
+      const ok=await persistZones();
+      setStatus(ok ? `${z.zone_id} requires ${z.required_ppe.length
+                        ? z.required_ppe.join(', ') : 'no PPE'} — saved (applies live)`
+                   : `update FAILED — ${saveFailureReason()}`);
+    }));
     // Edit a zone's numbers right on the card -> update + auto-save (applies live).
     box.querySelectorAll('.props input').forEach(inp=> inp.onchange=async()=>{
       const i=+inp.dataset.i, k=inp.dataset.k, z=zones[i];
@@ -367,6 +457,7 @@ function editZone(i){
   $('parea').value=z.physical_area_id||'';
   $('warn').value=z.warning_density; $('crit').value=z.critical_density;
   $('loiter').value=z.loitering_threshold_sec; $('colour').value=z.colour||'#4fdce0';
+  ppeSet($('ppe'), z.required_ppe);
   $('adj').value=(z.adjacency_list||[]).join(', ');
   zones.splice(i,1);
   draw(); render();
@@ -384,6 +475,7 @@ function yaml(){
            `    restricted: ${z.restricted}\n    capacity_max: ${z.capacity_max}\n    area_sqm: ${z.area_sqm}\n`+
            `    warning_density: ${z.warning_density}\n    critical_density: ${z.critical_density}\n`+
            `    loitering_threshold_sec: ${z.loitering_threshold_sec}\n    colour: "${z.colour}"\n`+
+           `    required_ppe: [${(z.required_ppe||[]).join(', ')}]\n`+
            `    adjacency_list: [${z.adjacency_list.join(', ')}]\n    polygon: ${px}\n    normalized_polygon: ${nm}`;
   }).join('\n');
 }
@@ -395,6 +487,10 @@ function zonesPayload(cam){
     critical_density:z.critical_density, loitering_threshold_sec:z.loitering_threshold_sec,
     colour:z.colour, adjacency_list:z.adjacency_list, enabled:true,
     physical_area_id: z.physical_area_id || null,
+    // MUST be here. A field the form collects and the payload omits is saved
+    // nowhere and reports success — the exact way physical_area_id and
+    // required_ppe were each lost once already, one layer further down.
+    required_ppe: z.required_ppe || [],
     normalized_polygon: (z.norm && z.norm.length) ? z.norm : z.polygon.map(norm),
   }))};
 }
@@ -476,6 +572,7 @@ async function loadServer(){
       critical_density:z.critical_density, loitering_threshold_sec:z.loitering_threshold_sec,
       colour:z.colour||'#4fdce0', adjacency_list:z.adjacency_list||[],
       physical_area_id:z.physical_area_id||null,
+      required_ppe:z.required_ppe||[],
       norm:(z.normalized_polygon||[]),
       polygon:(z.normalized_polygon||[]).map(n=>[Math.round(n[0]*nat.w), Math.round(n[1]*nat.h)]),
     }));

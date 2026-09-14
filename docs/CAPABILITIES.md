@@ -250,7 +250,12 @@ See [DECISIONS.md](../DECISIONS.md) D-31.
   temporal state → alert.
 - **Zone-scoped requirements.** `required_ppe` on a zone, e.g. `[hardhat,
   safety_vest]`. A worker without a mask in a zone that does not require masks
-  is not in violation. Empty (the default) means no PPE rule applies.
+  is not in violation. Empty (the default) means no PPE rule applies — and the
+  zone then reports no compliance figures at all, rather than reporting everyone
+  as fine. Set per zone from the **zone editor**, as a dropdown of checkboxes
+  offering exactly `finblade.ppe.PPE_TYPES`; changing it saves immediately and
+  the worker picks it up on its next zone refresh, with no restart. If no zone
+  on a camera declares any requirement, the PPE model is not even loaded.
 - **Association is anatomical, not IoU** (`finblade/geometry.py`): a hardhat
   must sit in the top band of the person box, a vest in the torso band. It
   refuses when containment is below 0.5 or when two people are too close to
@@ -390,7 +395,7 @@ than cosmetic.
 | `web/cameras.html` | camera provisioning and pipeline control | Built |
 | `web/history.html` | event and alert history, movement | Built |
 | `web/report.html` | occupancy report generation | Built |
-| `tools/zone-editor.html` | draw and save zone polygons | Built |
+| `tools/zone-editor.html` | draw and save zone polygons, map zones to physical areas, set required PPE | Built |
 
 The dashboard's "In facility" KPI tile shows door-counted occupancy, aggregate
 door flow, the observed/declared split when a baseline is set, and the drift

@@ -11,6 +11,7 @@ A safety requirement that reports success and does nothing is the worst failure
 mode this field can have, so it gets a test that would have caught it.
 """
 import os
+import re
 import sys
 import unittest
 
@@ -108,6 +109,62 @@ class TestPostgresColumnIsDeclared(unittest.TestCase):
         self.assertIn("required_ppe=excluded.required_ppe", src)  # upsert
         self.assertIn('json.dumps(z.get("required_ppe")', src)    # params
         self.assertIn("physical_area_id,required_ppe,updated_at ", src)  # SELECT
+
+class TestZoneEditorCollectsIt(unittest.TestCase):
+    """The browser end of the same round trip.
+
+    The editor gathered physical_area_id into its zone objects once while
+    omitting it from the payload it POSTed, so the field was collected, shown,
+    and saved nowhere — with a success message. required_ppe has exactly the
+    same five touch points, and four of them are cosmetic: only the payload one
+    loses data when it is missed. Guard all five, because a missing picker is
+    obvious to a human and a missing payload key is not.
+    """
+
+    def _src(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "tools", "zone-editor.html"),
+                  encoding="utf-8") as fh:
+            return fh.read()
+
+    def _fn(self, src, name):
+        at = src.index("function %s(" % name)
+        return src[at:src.index("\n}", at)]
+
+    def test_the_payload_carries_it(self):
+        """THE ONE THAT MATTERS. Everything else is presentation; this is the
+        difference between saving the operator's choice and discarding it."""
+        self.assertIn("required_ppe:", self._fn(self._src(), "zonesPayload"))
+
+    def test_a_new_zone_picks_it_up_from_the_form(self):
+        self.assertIn("required_ppe: ppeGet(", self._fn(self._src(), "closeZone"))
+
+    def test_it_is_read_back_from_the_server(self):
+        self.assertIn("required_ppe:z.required_ppe", self._fn(self._src(), "loadServer"))
+
+    def test_editing_a_zone_restores_the_checkboxes(self):
+        """Without this, opening a zone to move one corner silently clears its
+        PPE requirement when the zone is re-added on Close."""
+        self.assertIn("ppeSet($('ppe')", self._fn(self._src(), "editZone"))
+
+    def test_the_offered_values_are_exactly_the_accepted_ones(self):
+        """A checkbox for an item the rule engine does not know would be
+        dropped server-side with a warning nobody reads — the operator would
+        believe they had set a requirement that never applies."""
+        from finblade.ppe import PPE_TYPES
+        src = self._src()
+        at = src.index("const PPE_ITEMS=")
+        # To "];", not to the first "]" — that one closes the first
+        # ['hardhat','Hard hat'] pair, so the slice saw a single item and the
+        # assertion failed against a control that was in fact correct.
+        decl = src[at:src.index("];", at) + 2]
+        offered = set(re.findall(r"\['([a-z_]+)',", decl))
+        self.assertEqual(offered, set(PPE_TYPES))
+
+        # And the checkboxes must offer the same set the constant does.
+        boxes = set(re.findall(r'<input type="checkbox" value="([a-z_]+)"', src))
+        self.assertEqual(boxes, set(PPE_TYPES))
+
 
 class TestPostgresRoundTrip(unittest.TestCase):
     """The real thing, against a real cluster.

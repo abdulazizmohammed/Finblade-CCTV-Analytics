@@ -68,7 +68,12 @@ _OPEN_PREFIXES = ("/web", "/tools", "/logo",
 # are consumed by a browser primitive that cannot send a header: <img src> for
 # the MJPEG stream and for single-frame snapshots, and the WebSocket
 # constructor. All three are read-only.
-_QUERY_KEY_SUFFIXES = ("/stream", "/snapshot", "/ws")
+#
+# Plus the GPS tracker ingest. A tracker unit or Traccar Client is configured
+# with ONE server URL and cannot set a header, so the key rides the query
+# string there too. It is a write, but the narrowest one in the system: a
+# position for one tracker id, validated as a fix, nothing else reachable.
+_QUERY_KEY_SUFFIXES = ("/stream", "/snapshot", "/ws", "/trackers/ingest")
 
 # Same reasoning, by prefix: saved frames are loaded as <img src> by the history
 # page and the zone editor, which cannot attach a header either. Read-only.

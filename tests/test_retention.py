@@ -61,7 +61,10 @@ class RetentionContract:
 
     def test_a_cutoff_before_everything_deletes_nothing(self):
         deleted = self.store.delete_before(NOW - 365 * DAY)
-        self.assertEqual({"zone_state_ts": 0, "events": 0}, deleted)
+        # tracker_positions is the third telemetry table under retention;
+        # GPS reports at 10 s per vehicle would otherwise outgrow both.
+        self.assertEqual({"zone_state_ts": 0, "events": 0, "tracker_positions": 0},
+                         deleted)
 
     def test_alerts_are_never_touched(self):
         """Alerts are the operator audit trail and each may own a snapshot JPEG

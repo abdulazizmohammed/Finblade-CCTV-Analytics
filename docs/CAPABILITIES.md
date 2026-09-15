@@ -168,6 +168,38 @@ branch must be visible as unassigned, not rejected. Tests:
 `tests/test_org.py` (logic, both store backends, service, HTTP routes),
 `tests/test_analytics_views.py::TestOrgHierarchy`.
 
+### Map and GPS trackers
+
+A branch carries `lat`/`lon` and a geofence radius (default 150 m). A
+tracker is a phone running Traccar Client, or a 4G tracker unit, on a lab
+vehicle or a device in transit. **A tracker is a vehicle or an asset, never a
+person**: there is no driver field anywhere, and the OsmAnd `driverUniqueId`
+is dropped on parse.
+
+| Capability | Status | Implementation |
+|---|---|---|
+| KSA map with every placed branch pinned, coloured by its roll-up; city clusters when zoomed out | Built | `web/map.html` — inline SVG, no tiles, no CDN |
+| Tap a branch → counts, cameras, vehicles present, and doors to its dashboard / cameras / history / reports / settings | Built | `web/map.html` panel; `?branch=` deep link |
+| Place or move a branch pin by tapping the map; edit name, type, city, geofence | Built | `web/map.html` Settings → `POST /api/v1/org/branches` |
+| Position ingest, three dialects: OsmAnd/Traccar Client (`?id=&lat=&lon=…`), OpenGTS `gprmc`, JSON | Built | `GET|POST /api/v1/trackers/ingest`, `finblade/gps.py` |
+| `?key=` accepted on the ingest route (a tracker cannot set a header) | Built | `services/api/auth.py` |
+| No-fix rejection (`0,0`, `$GPRMC` status `V`, out-of-range) | Built | `gps.py` `_check_point`, `parse_gprmc` |
+| Branch geofence arrival / departure with hysteresis (exit at 1.5× radius) and a 2-report confirm | Built | `gps.GeofenceEngine`; events `TRACKER_ARRIVED` / `TRACKER_DEPARTED` with `dwell_s` |
+| Geofence state survives an API restart | Built | restored from `tracker_live` |
+| R-12: tracker silent > 5 min (`FINBLADE_TRACKER_SILENT_S`) raises AMBER, auto-resolves on the next report | Built | `service.check_silent_trackers`, `_tracker_monitor` in `app.py` |
+| Live vehicle markers over `/ws`, with heading arrow, last-hour trail, state MOVING / STOPPED / OFFLINE | Built | `/ws` frame carries `trackers`; `GET /api/v1/trackers/{id}/track` |
+| Register / list / delete trackers; unregistered reporters kept and labelled | Built | `web/trackers.html`, `POST/GET/DELETE /api/v1/trackers` |
+| Phone pairing instructions (Traccar Client) and a browser-based reporter | Built | `web/trackers.html`, `web/tracker.html` (needs HTTPS for geolocation) |
+| Region / City / Branch scope on trackers, by home branch | Built | `GET /api/v1/trackers?region_id=…`, `/summary` |
+| Position history under retention | Built | `tracker_positions` pruned by `FINBLADE_RETENTION_DAYS` |
+| Route replay for a demo without a vehicle | Built | `scripts/replay_route.py --from RUH-01 --to KHJ-01` |
+| Street-level tiles | **Planned** | self-hosted PMTiles + vendored MapLibre; needs a one-time offline data download |
+| BLE tags (the Xiaomi Tag) as "arrived at branch" / "on board" beacons | **Planned** | `kind: BLE_TAG` is accepted; no gateway yet — needs a hardware test of address rotation |
+
+The country outline in `map.html` is a **hand-drawn ~40-vertex schematic**,
+not a survey boundary. Tests: `tests/test_gps.py` (dialects, geometry,
+geofence, both store backends, service, HTTP).
+
 ## 4. Metrics
 
 | Capability | Status | Implementation |
@@ -185,14 +217,20 @@ branch must be visible as unassigned, not rejected. Tests:
 
 ## 5. Events
 
-19 types, one envelope, one validator shared by the pipeline and the API
+23 types, one envelope, one validator shared by the pipeline and the API
 (`finblade/events.py`, reused via `services/api/schema.py`).
 
 `ZONE_ENTRY` `ZONE_EXIT` `ZONE_TRANSITION` `DENSITY_UPDATE` `CAPACITY_WARNING`
 `RESTRICTED_ZONE_ENTRY` `RESTRICTED_ZONE_EXIT` `LOITERING_START` `LOITERING_END`
 `CAMERA_HEARTBEAT` `CAMERA_ONLINE` `CAMERA_OFFLINE` `CAMERA_RECOVERED`
 `WRONG_DIRECTION` `GROUP_CROSSING` `FACILITY_ENTRY` `FACILITY_EXIT`
-`HAZARD_FIRE` `HAZARD_SMOKE`
+`HAZARD_FIRE` `HAZARD_SMOKE` `PPE_VIOLATION` `PPE_COMPLIANT`
+`TRACKER_ARRIVED` `TRACKER_DEPARTED`
+
+The two `TRACKER_*` events come from a GPS tracker crossing a branch
+geofence, not from a camera: `camera_id` carries the tracker id and `site_id`
+the branch. They carry no `person_ref` and do not count as a camera
+heartbeat.
 
 | Capability | Status | Implementation |
 |---|---|---|
@@ -236,6 +274,7 @@ appearance channel — a property of the sensor, not a gap in the code.
 | R-09 | head count above a per-zone threshold, area-independent | Built |
 | R-10 | sustained fire or smoke in view | **Runs** — see below |
 | R-11 | required PPE missing on a tracked person in a compliance zone | **Runs** — see below |
+| R-12 | GPS tracker silent longer than 5 min (amber); clears on the next report | Built — `service.py` `check_silent_trackers` |
 
 Implemented in `finblade/rules.py`. Hysteresis (separate on/off thresholds) and
 a 10-second debounce apply to all density and capacity rules; R-06 is immediate
@@ -405,10 +444,10 @@ crossing publishes immediately.
 Postgres is the only durable backend. `FINBLADE_INMEMORY=1` selects an in-memory
 store for tests; it is explicitly opt-in and never a fallback.
 
-**18 tables** — `alerts` `area_state_ts` `branches` `camera_transits` `cameras`
+**21 tables** — `alerts` `area_state_ts` `branches` `camera_transits` `cameras`
 `cities` `events` `facility_doors` `facility_meta` `facility_presence`
-`forwarder_cursors` `org_meta` `physical_areas` `regions` `reports` `zone_live`
-`zone_state_ts` `zones`
+`forwarder_cursors` `org_meta` `physical_areas` `regions` `reports`
+`tracker_live` `tracker_positions` `trackers` `zone_live` `zone_state_ts` `zones`
 (`services/api/ddl_pg.sql`, idempotent `CREATE`/`ALTER ... IF NOT EXISTS`).
 
 **18 SQL views** for direct chatbot querying (`services/api/analytics_views.py`):
@@ -427,7 +466,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**76 routes** — 73 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**81 routes** — 78 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 
@@ -444,6 +483,7 @@ WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 | Reports | `generate`, `{id}`, `occupancy` as HTML / JSON / CSV |
 | Zones & areas | zone CRUD, area CRUD |
 | Organisation | `org` (tree + roll-ups), `org/index`, `org/import`, `org/meta`, `org/regions`, `org/cities`, `org/branches` (upsert + delete) |
+| Trackers | `trackers/ingest` (GET+POST, three dialects, `?key=`), `trackers` list/register/delete, `trackers/{id}/track` |
 | Ops | `health`, `healthz`, `readyz`, `finblade/status`, `finblade/flush`, `frames/orphaned` |
 
 | Capability | Status | Implementation |
@@ -466,6 +506,9 @@ than cosmetic.
 |---|---|---|
 | `web/dashboard.html` | live feeds, zone cards, alert feed with acknowledge, unique-people counts, facility occupancy; Region › City › Branch scope selector (client-side, `?region=` `?city=` `?branch=`) | Built |
 | `web/network.html` | the Region → City → Branch tree with per-level roll-ups, camera pills, unassigned cameras, and add/rename/delete for every level; tenant name in the bar | Built |
+| `web/map.html` | KSA map: branch pins by status, city clusters, live vehicles with trails, tap-to-panel with doors to dashboard / cameras / history / reports / settings, place-pin-by-tap | Built |
+| `web/trackers.html` | register trackers, fleet status, Traccar Client pairing card with the exact URL | Built |
+| `web/tracker.html` | the phone page: browser geolocation → ingest, for a desk demo | Built |
 | `web/cameras.html` | camera provisioning and pipeline control; cameras grouped by branch under city and region, branch picked from a dropdown, `?branch=` narrowing | Built |
 | `web/history.html` | event and alert history, movement; `?region_id=` `?city_id=` `?branch_id=` passed through to the API | Built |
 | `web/report.html` | occupancy report generation | Built |

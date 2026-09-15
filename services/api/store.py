@@ -169,6 +169,17 @@ class Store:
     def get_org_meta(self) -> dict: return {}
     def set_org_meta(self, meta: dict) -> None: pass
 
+    # GPS trackers (finblade/gps.py). A position write updates the
+    # history AND the live row; the live row only moves forward in time.
+    def save_tracker(self, row: dict) -> None: pass
+    def list_trackers(self) -> List[dict]: return []
+    def delete_tracker(self, tracker_id: str) -> bool: return False
+    def save_position(self, p: dict, at_branch_id: str = None,
+                      at_since: float = None) -> None: pass
+    def latest_positions(self) -> List[dict]: return []
+    def positions_range(self, tracker_id: str, t0: float, t1: float,
+                        limit: int = 5000) -> List[dict]: return []
+
     # Facility roster. Default no-ops mean a backend without persistence keeps
     # working — but with the STRICT discharge policy the roster cannot be
     # rebuilt from live video, so a no-op backend resets occupancy to zero on
@@ -226,6 +237,9 @@ class InMemoryStore(Store):
         self._cities: Dict[str, dict] = {}
         self._branches: Dict[str, dict] = {}
         self._org_meta: Dict[str, str] = {}
+        self._trackers: Dict[str, dict] = {}
+        self._positions: List[dict] = []
+        self._tracker_live: Dict[str, dict] = {}
 
     def save_event(self, evt: dict) -> None:
         """Replace on event_id, matching both durable stores.
@@ -378,8 +392,11 @@ class InMemoryStore(Store):
                          if float(s.get("ts") or 0) >= cutoff_ts]
         self._events = [e for e in self._events
                         if float(e.get("ts") or e.get("timestamp") or 0) >= cutoff_ts]
+        before_pos = len(self._positions)
+        self._positions = [p for p in self._positions if float(p.get("ts") or 0) >= cutoff_ts]
         return {"zone_state_ts": before_states - len(self._zone_ts),
-                "events": before_events - len(self._events)}
+                "events": before_events - len(self._events),
+                "tracker_positions": before_pos - len(self._positions)}
 
     def event_count(self) -> int:
         return len(self._events)
@@ -620,6 +637,39 @@ class InMemoryStore(Store):
                 self._org_meta.pop(str(k), None)
             else:
                 self._org_meta[str(k)] = str(v)
+
+    # ---- GPS trackers -------------------------------------------------------
+    def save_tracker(self, row):
+        self._trackers[str(row["tracker_id"])] = dict(row, updated_at=time.time())
+
+    def list_trackers(self):
+        return [dict(t) for t in self._trackers.values()]
+
+    def delete_tracker(self, tracker_id):
+        tid = str(tracker_id)
+        self._tracker_live.pop(tid, None)
+        return self._trackers.pop(tid, None) is not None
+
+    def save_position(self, p, at_branch_id=None, at_since=None):
+        row = dict(p, received_at=time.time(), site_id=at_branch_id)
+        self._positions.append(row)
+        live = self._tracker_live.get(p["tracker_id"])
+        # Forward only: a delayed report from a tunnel must not rewind the dot.
+        if live is not None and float(p["ts"]) < float(live.get("ts") or 0):
+            live["positions"] = live.get("positions", 0) + 1
+            return
+        n = (live.get("positions", 0) if live else 0) + 1
+        self._tracker_live[p["tracker_id"]] = dict(
+            row, at_branch_id=at_branch_id, at_since=at_since, positions=n)
+
+    def latest_positions(self):
+        return [dict(v) for v in self._tracker_live.values()]
+
+    def positions_range(self, tracker_id, t0, t1, limit=5000):
+        rows = [dict(r) for r in self._positions
+                if r.get("tracker_id") == tracker_id and t0 <= float(r["ts"]) <= t1]
+        rows.sort(key=lambda r: float(r["ts"]))
+        return rows[-limit:]
 
     def rebind_global_ref(self, drop_ref, keep_ref):
         """Point stored events at the surviving ref after two identities merge."""

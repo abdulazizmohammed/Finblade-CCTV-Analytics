@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FinBlade — Phone tracker</title>
+<link rel="stylesheet" href="finblade-theme.css">
+<style>
+/* The phone page: turns the browser into a GPS reporter for a demo. It uses
+   the Geolocation API and posts to /api/v1/trackers/ingest as JSON. Browsers
+   only grant location on HTTPS (or localhost), and stop reporting when the
+   screen locks — for a real vehicle use Traccar Client (see trackers.html).
+   Big controls: this is used one-handed in a car park. */
+body{background:var(--fb-void);min-height:100vh;display:flex;flex-direction:column;align-items:stretch;}
+.top{display:flex;align-items:center;gap:12px;padding:14px 18px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);}
+.brand-logo{height:26px;width:auto;}
+.tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.wrap{padding:18px;max-width:520px;margin:0 auto;width:100%;box-sizing:border-box;}
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:14px;}
+.field label{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.field input,.field select{background:var(--fb-surface);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:18px;padding:12px;border-radius:var(--fb-r);}
+.field input:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.big{width:100%;font-size:20px;padding:18px;border-radius:var(--fb-r-lg);margin-top:6px;}
+.big.stop{background:var(--fb-critical-ghost);border-color:var(--fb-critical);color:var(--fb-critical);}
+.status{margin-top:18px;background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:14px;}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:8px 14px;font-size:14px;}
+.kv .k{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);align-self:center;}
+.kv .v{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;color:var(--fb-text);}
+.kv .v.bad{color:var(--fb-critical);}
+.kv .v.ok{color:var(--fb-text);}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--fb-text-faint);margin-right:8px;vertical-align:middle;}
+.dot.on{background:var(--fb-teal);box-shadow:0 0 10px var(--fb-teal);animation:p 2s ease-in-out infinite;}
+@keyframes p{50%{opacity:.3}}
+.warn{font-size:12.5px;color:var(--fb-warning);margin-top:12px;line-height:1.5;}
+.hint{font-size:12px;color:var(--fb-text-muted);margin-top:12px;line-height:1.5;}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;}}
+</style>
+</head>
+<body>
+  <div class="top"><img class="brand-logo" src="logo.svg" alt="FinBlade"><span class="tag">Phone tracker</span></div>
+  <div class="wrap">
+    <div class="field"><label for="tid">Tracker ID</label><input id="tid" placeholder="VEH-RUH-01" autocapitalize="characters" autocomplete="off"></div>
+    <div class="field"><label for="iv">Report every</label>
+      <select id="iv"><option value="5">5 s</option><option value="10" selected>10 s</option><option value="30">30 s</option></select></div>
+    <button class="fb-btn fb-btn--primary big" id="go">Start reporting</button>
+    <div class="status">
+      <div class="kv">
+        <span class="k">Status</span><span class="v" id="st"><span class="dot"></span>idle</span>
+        <span class="k">Position</span><span class="v" id="pos">—</span>
+        <span class="k">Accuracy</span><span class="v" id="acc">—</span>
+        <span class="k">Speed</span><span class="v" id="spd">—</span>
+        <span class="k">Sent</span><span class="v" id="sent">0</span>
+        <span class="k">Last reply</span><span class="v" id="rep">—</span>
+      </div>
+    </div>
+    <div class="warn" id="warn" hidden></div>
+    <p class="hint">Keep this page open with the screen on. It stops when the phone locks or you switch apps — use Traccar Client for a vehicle on the road.</p>
+  </div>
+<script src="apikey.js"></script>
+<script>
+const API=location.origin;
+const $=id=>document.getElementById(id);
+let watch=null, timer=null, last=null, sent=0, wakeLock=null;
+try{ $('tid').value=localStorage.getItem('fb_tracker_id')||''; }catch(e){}
+
+if(!('geolocation' in navigator)) showWarn('This browser has no Geolocation API.');
+else if(!window.isSecureContext) showWarn('Location needs HTTPS. Open this page over https:// (or on the API machine as localhost); on plain HTTP the browser will refuse.');
+
+function showWarn(t){const w=$('warn');w.hidden=false;w.textContent=t;}
+function setStatus(t,on){$('st').innerHTML=`<span class="dot ${on?'on':''}"></span>${t}`;}
+
+async function send(){
+  if(!last) return;
+  const body={tracker_id:$('tid').value.trim(),lat:last.coords.latitude,lon:last.coords.longitude,
+    ts:last.timestamp/1000,accuracy_m:last.coords.accuracy,
+    speed_kmh:last.coords.speed!=null?last.coords.speed*3.6:null,
+    heading:last.coords.heading!=null&&!isNaN(last.coords.heading)?last.coords.heading:null,
+    altitude_m:last.coords.altitude};
+  try{
+    const r=await fetch(`${API}/api/v1/trackers/ingest`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok){sent++;$('sent').textContent=sent;$('rep').textContent=(j.at_branch_id?'at '+j.at_branch_id:'accepted')+(j.events&&j.events.length?' · '+j.events.join(', '):'');$('rep').className='v ok';}
+    else{$('rep').textContent=`${r.status}: ${(j.errors||[j.error||'rejected']).join('; ')}`;$('rep').className='v bad';}
+  }catch(e){$('rep').textContent='cannot reach the API';$('rep').className='v bad';}
+}
+function onFix(p){
+  last=p;
+  $('pos').textContent=`${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)}`;
+  $('acc').textContent=`±${Math.round(p.coords.accuracy)} m`;
+  $('spd').textContent=p.coords.speed!=null?`${(p.coords.speed*3.6).toFixed(0)} km/h`:'—';
+  setStatus('reporting',true);
+}
+function onErr(e){setStatus('location error: '+e.message,false);}
+async function start(){
+  const id=$('tid').value.trim();
+  if(!id){showWarn('Enter the tracker ID first.');return;}
+  try{localStorage.setItem('fb_tracker_id',id);}catch(e){}
+  $('warn').hidden=true;
+  watch=navigator.geolocation.watchPosition(onFix,onErr,{enableHighAccuracy:true,maximumAge:2000,timeout:15000});
+  timer=setInterval(send,parseInt($('iv').value,10)*1000);
+  setStatus('waiting for a fix…',true);
+  $('go').textContent='Stop reporting'; $('go').classList.add('stop');
+  try{ if('wakeLock' in navigator) wakeLock=await navigator.wakeLock.request('screen'); }catch(e){}
+}
+function stop(){
+  if(watch!=null) navigator.geolocation.clearWatch(watch); watch=null;
+  clearInterval(timer); timer=null;
+  try{ if(wakeLock) wakeLock.release(); }catch(e){} wakeLock=null;
+  setStatus('stopped',false);
+  $('go').textContent='Start reporting'; $('go').classList.remove('stop');
+}
+$('go').addEventListener('click',()=>timer?stop():start());
+document.addEventListener('visibilitychange',async()=>{ if(document.visibilityState==='visible'&&timer&&!wakeLock){try{wakeLock=await navigator.wakeLock.request('screen');}catch(e){}} });
+</script>
+</body>
+</html>

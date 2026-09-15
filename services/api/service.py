@@ -9,8 +9,10 @@ import time
 from typing import List, Optional, Tuple
 
 from finblade import org as _org
+from finblade import gps as _trk
 from finblade.emission import DEFAULT_KEEPALIVE, StateWriteGate
-from finblade.events import FACILITY_ENTRY, FACILITY_EXIT, new_event
+from finblade.events import (FACILITY_ENTRY, FACILITY_EXIT, TRACKER_ARRIVED,
+                             TRACKER_DEPARTED, new_event)
 from finblade.presence import (
     ADMIT, DISCHARGE, DoorPolicy, FacilityRoster, apply_event,
 )
@@ -74,6 +76,13 @@ class IngestService:
             float(os.environ.get("FINBLADE_COUNT_KEEPALIVE", DEFAULT_KEEPALIVE) or 0))
         self.counts_published = 0
         self.counts_errors = 0
+        # GPS geofences. Fences are rebuilt from the branches table when it
+        # changes; the per-tracker state is restored from tracker_live so a
+        # vehicle already parked at a branch does not re-arrive on restart.
+        self._geo = _trk.GeofenceEngine()
+        self._geo_loaded = 0.0
+        self._geo_restored = False
+        self._tracker_silent = {}      # tracker_id -> True while R-12 is open
 
     # -- POST /api/v1/events/ingest --
     def ingest_event(self, payload: dict) -> Tuple[int, dict]:
@@ -82,8 +91,12 @@ class IngestService:
             return 422, {"accepted": False, "errors": errors}
         self.store.save_event(payload)
         # Any event from a camera counts as a heartbeat for offline detection.
-        self.store.mark_camera_seen(payload.get("camera_id"), payload.get("timestamp"),
-                                    payload.get("site_id"))
+        # Tracker events carry the tracker id in camera_id (there is no
+        # camera) and must NOT mint a camera row, or every vehicle would show
+        # up on the Cameras page as a camera that is permanently offline.
+        if payload.get("event_type") not in (TRACKER_ARRIVED, TRACKER_DEPARTED):
+            self.store.mark_camera_seen(payload.get("camera_id"), payload.get("timestamp"),
+                                        payload.get("site_id"))
         action = self._apply_presence(payload)
         if self.bus is not None:
             self.bus.publish(payload)
@@ -982,6 +995,7 @@ class IngestService:
         if errors:
             return 422, {"saved": False, "errors": errors}
         self.store.save_branch(row)
+        self._geo_loaded = 0.0             # fences follow the branch table
         return 200, {"saved": True, "branch_id": row["branch_id"]}
 
     def _delete_node(self, level: str, node_id: str, exists: bool,
@@ -1049,6 +1063,7 @@ class IngestService:
             self.store.save_city(c)
         for b in branches:
             self.store.save_branch(b)
+        self._geo_loaded = 0.0
         tenant = payload.get("tenant") or {}
         if isinstance(tenant, dict) and tenant:
             self.store.set_org_meta({
@@ -1057,6 +1072,151 @@ class IngestService:
                 "tenant_short": tenant.get("short")})
         return 200, {"imported": True, "regions": len(regions),
                      "cities": len(cities), "branches": len(branches)}
+
+    # -- GPS trackers (finblade/gps.py) --
+    # A tracker is a vehicle or an asset. The ingest path is deliberately
+    # permissive about WHO reports — an unregistered id is stored and shown
+    # as "unregistered" so a phone set up in the field before the office
+    # adds it is not silently dropped — and strict about WHAT: no fix, no
+    # row.
+    _TRACKER_KINDS = ("GPS", "BLE_TAG")
+    _ASSET_TYPES = ("VEHICLE", "DEVICE", "SAMPLE_BOX")
+    TRACKER_SILENT_S = float(os.environ.get("FINBLADE_TRACKER_SILENT_S",
+                                            _trk.DEFAULT_SILENT_S))
+
+    def _geofences(self) -> _trk.GeofenceEngine:
+        now = time.time()
+        if now - self._geo_loaded > 30.0:
+            self._geo.set_fences(_trk.fences_from_branches(self.store.list_branches()))
+            self._geo_loaded = now
+        if not self._geo_restored:
+            for live in self.store.latest_positions():
+                self._geo.restore(live["tracker_id"], live.get("at_branch_id"),
+                                  live.get("at_since"))
+            self._geo_restored = True
+        return self._geo
+
+    def register_tracker(self, payload: dict) -> Tuple[int, dict]:
+        if not isinstance(payload, dict):
+            return 422, {"saved": False, "errors": ["object expected"]}
+        errors = []
+        tid = _trk.norm_tracker_id(payload.get("tracker_id"))
+        if not tid:
+            errors.append("tracker_id is required: letters, digits, '_', '-', '.', ':'")
+        kind = str(payload.get("kind") or "GPS").upper()
+        if kind not in self._TRACKER_KINDS:
+            errors.append(f"kind must be one of {', '.join(self._TRACKER_KINDS)}")
+        atype = str(payload.get("asset_type") or "VEHICLE").upper()
+        if atype not in self._ASSET_TYPES:
+            errors.append(f"asset_type must be one of {', '.join(self._ASSET_TYPES)}")
+        home = payload.get("home_branch_id") or None
+        if home and not self.branch_known(home):
+            errors.append(f"unknown home_branch_id {home!r}")
+        if errors:
+            return 422, {"saved": False, "errors": errors}
+        self.store.save_tracker({
+            "tracker_id": tid, "name": (payload.get("name") or tid),
+            "kind": kind, "device_ref": payload.get("device_ref") or None,
+            "asset_type": atype, "asset_label": payload.get("asset_label") or None,
+            "home_branch_id": home,
+            "enabled": payload.get("enabled", True) is not False})
+        return 200, {"saved": True, "tracker_id": tid}
+
+    def delete_tracker(self, tracker_id: str) -> Tuple[int, dict]:
+        ok = self.store.delete_tracker(tracker_id)
+        self._tracker_silent.pop(str(tracker_id), None)
+        return (200 if ok else 404), {"deleted": ok, "tracker_id": tracker_id}
+
+    def trackers(self, now: Optional[float] = None) -> List[dict]:
+        """Registered trackers merged with their latest position, plus any
+        unregistered id that has reported. `site_id` is the home branch, so
+        the Region/City/Branch scope applies to vehicles too."""
+        now = time.time() if now is None else now
+        reg = {t["tracker_id"]: dict(t) for t in self.store.list_trackers()}
+        live = {p["tracker_id"]: p for p in self.store.latest_positions()}
+        out = []
+        for tid in sorted(set(reg) | set(live)):
+            t = reg.get(tid) or {"tracker_id": tid, "name": tid, "kind": "GPS",
+                                 "asset_type": "VEHICLE", "registered": False}
+            t.setdefault("registered", True)
+            t["site_id"] = t.get("home_branch_id")
+            p = live.get(tid)
+            if p:
+                t["position"] = {k: p.get(k) for k in ("ts", "lat", "lon", "speed_kmh",
+                                                       "heading", "accuracy_m",
+                                                       "battery_pct", "positions")}
+                t["at_branch_id"] = p.get("at_branch_id")
+                t["at_since"] = p.get("at_since")
+                silent = _trk.silent_for(p.get("ts"), now)
+            else:
+                t["position"] = None
+                t["at_branch_id"] = None
+                silent = None
+            t["seconds_since_seen"] = round(silent, 1) if silent is not None else None
+            t["state"] = ("NEVER_SEEN" if silent is None
+                          else "OFFLINE" if silent > self.TRACKER_SILENT_S
+                          else "MOVING" if (p.get("speed_kmh") or 0) > 3.0
+                          else "STOPPED")
+            out.append(t)
+        return out
+
+    def ingest_position(self, p: _trk.Position) -> Tuple[int, dict]:
+        """Store one position and run it through the branch geofences."""
+        geo = self._geofences()
+        transitions = geo.observe(p)
+        at, since = geo.at(p.tracker_id)
+        self.store.save_position(p.to_dict(), at_branch_id=at, at_since=since)
+        emitted = []
+        for tr in transitions:
+            evt = new_event(TRACKER_ARRIVED if tr.kind == "ARRIVED" else TRACKER_DEPARTED,
+                            p.tracker_id, tr.branch_id, tr.ts,
+                            tracker_id=p.tracker_id, branch_id=tr.branch_id,
+                            distance_m=round(tr.distance_m, 1),
+                            **({"dwell_s": round(tr.dwell_s, 1)} if tr.dwell_s is not None else {}))
+            code, _ = self.ingest_event(evt)
+            if code == 202:
+                emitted.append(evt["event_type"])
+        # A report clears an open silence alert, same as a camera recovering.
+        self._tracker_recovered(p.tracker_id, p.ts)
+        return 202, {"accepted": True, "tracker_id": p.tracker_id,
+                     "at_branch_id": at, "events": emitted}
+
+    def tracker_track(self, tracker_id: str, t0: float, t1: float,
+                      limit: int = 5000) -> List[dict]:
+        return self.store.positions_range(tracker_id, t0, t1, limit=limit)
+
+    # R-12: a tracker that stops reporting. Same shape as R-07 for cameras
+    # (raise once, auto-resolve on recovery) so the alert feed treats them
+    # alike. Driven by a loop in app.py.
+    def check_silent_trackers(self, now: Optional[float] = None) -> List[str]:
+        now = time.time() if now is None else now
+        fired = []
+        for t in self.trackers(now):
+            tid = t["tracker_id"]
+            if t.get("enabled") is False or t["state"] == "NEVER_SEEN":
+                continue
+            if t["state"] == "OFFLINE" and not self._tracker_silent.get(tid):
+                self._tracker_silent[tid] = True
+                mins = int(self.TRACKER_SILENT_S // 60)
+                self.raise_alert({
+                    "rule_id": "R-12", "severity": "AMBER", "kind": "FIRE",
+                    "message": f"tracker {t.get('name') or tid} silent >{mins} min"
+                               + (f" (last at {t['at_branch_id']})" if t.get("at_branch_id") else ""),
+                    "camera_id": tid, "site_id": t.get("home_branch_id"), "ts": now})
+                fired.append(tid)
+        return fired
+
+    def _tracker_recovered(self, tracker_id: str, now: float) -> None:
+        if not self._tracker_silent.get(tracker_id):
+            return
+        self._tracker_silent[tracker_id] = False
+        for a in self.store.list_alerts(unacked_only=False):
+            if a.get("rule_id") == "R-12" and a.get("camera_id") == tracker_id:
+                self.resolve(str(a.get("alert_id")), "RESOLVED", "system-recovery",
+                             now, note="tracker reporting again")
+        self.raise_alert({"rule_id": "R-12", "severity": "INFO", "kind": "CLEAR",
+                          "message": f"tracker {tracker_id} reporting again",
+                          "camera_id": tracker_id, "ts": now})
 
     # -- alerts --
     def site_for_camera(self, camera_id) -> str:

@@ -18,6 +18,10 @@
 # and '.', because they appear in URLs and query strings unquoted.
 #
 # branch_type: LAB | COLLECTION | HQ | WAREHOUSE | OTHER
+#
+# lat/lon are CITY-CENTRE coordinates (WGS84), offset ~1.5 km within a city so
+# the pins do not stack. They are placeholders like the ids: move each pin to
+# the real building on the Map page (Settings -> Place pin on map) or edit here.
 
 tenant:
   name: Wareed Medical Laboratories
@@ -31,18 +35,18 @@ regions:
       - city_id: RUH
         name: Riyadh
         branches:
-          - {branch_id: RUH-HQ,  name: Riyadh Head Office,         branch_type: HQ,         timezone: Asia/Riyadh}
-          - {branch_id: RUH-01,  name: Riyadh Main Laboratory,     branch_type: LAB,        timezone: Asia/Riyadh}
-          - {branch_id: RUH-02,  name: Riyadh Olaya Collection,    branch_type: COLLECTION, timezone: Asia/Riyadh}
-          - {branch_id: RUH-03,  name: Riyadh Al Nakheel Collection, branch_type: COLLECTION, timezone: Asia/Riyadh}
+          - {branch_id: RUH-HQ,  name: Riyadh Head Office,         branch_type: HQ,         timezone: Asia/Riyadh, lat: 24.7136, lon: 46.6753}
+          - {branch_id: RUH-01,  name: Riyadh Main Laboratory,     branch_type: LAB,        timezone: Asia/Riyadh, lat: 24.7256, lon: 46.6893}
+          - {branch_id: RUH-02,  name: Riyadh Olaya Collection,    branch_type: COLLECTION, timezone: Asia/Riyadh, lat: 24.7026, lon: 46.6913}
+          - {branch_id: RUH-03,  name: Riyadh Al Nakheel Collection, branch_type: COLLECTION, timezone: Asia/Riyadh, lat: 24.7236, lon: 46.6603}
       - city_id: KHJ
         name: Al Kharj
         branches:
-          - {branch_id: KHJ-01,  name: Al Kharj Laboratory,        branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: KHJ-01,  name: Al Kharj Laboratory,        branch_type: LAB,        timezone: Asia/Riyadh, lat: 24.1500, lon: 47.3000}
       - city_id: QSM
         name: Buraydah
         branches:
-          - {branch_id: QSM-01,  name: Buraydah Laboratory,        branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: QSM-01,  name: Buraydah Laboratory,        branch_type: LAB,        timezone: Asia/Riyadh, lat: 26.3260, lon: 43.9750}
 
   - region_id: WESTERN
     name: Western Region
@@ -50,20 +54,20 @@ regions:
       - city_id: JED
         name: Jeddah
         branches:
-          - {branch_id: JED-01,  name: Jeddah Main Laboratory,     branch_type: LAB,        timezone: Asia/Riyadh}
-          - {branch_id: JED-02,  name: Jeddah Al Rawdah Collection, branch_type: COLLECTION, timezone: Asia/Riyadh}
+          - {branch_id: JED-01,  name: Jeddah Main Laboratory,     branch_type: LAB,        timezone: Asia/Riyadh, lat: 21.4858, lon: 39.1925}
+          - {branch_id: JED-02,  name: Jeddah Al Rawdah Collection, branch_type: COLLECTION, timezone: Asia/Riyadh, lat: 21.4978, lon: 39.2065}
       - city_id: MAK
         name: Makkah
         branches:
-          - {branch_id: MAK-01,  name: Makkah Laboratory,          branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: MAK-01,  name: Makkah Laboratory,          branch_type: LAB,        timezone: Asia/Riyadh, lat: 21.3891, lon: 39.8579}
       - city_id: MED
         name: Madinah
         branches:
-          - {branch_id: MED-01,  name: Madinah Laboratory,         branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: MED-01,  name: Madinah Laboratory,         branch_type: LAB,        timezone: Asia/Riyadh, lat: 24.4672, lon: 39.6111}
       - city_id: TIF
         name: Taif
         branches:
-          - {branch_id: TIF-01,  name: Taif Laboratory,            branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: TIF-01,  name: Taif Laboratory,            branch_type: LAB,        timezone: Asia/Riyadh, lat: 21.2703, lon: 40.4158}
 
   - region_id: EASTERN
     name: Eastern Region
@@ -71,19 +75,19 @@ regions:
       - city_id: DMM
         name: Dammam
         branches:
-          - {branch_id: DMM-01,  name: Dammam Main Laboratory,     branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: DMM-01,  name: Dammam Main Laboratory,     branch_type: LAB,        timezone: Asia/Riyadh, lat: 26.4207, lon: 50.0888}
       - city_id: KHB
         name: Al Khobar
         branches:
-          - {branch_id: KHB-01,  name: Al Khobar Laboratory,       branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: KHB-01,  name: Al Khobar Laboratory,       branch_type: LAB,        timezone: Asia/Riyadh, lat: 26.2172, lon: 50.1971}
       - city_id: HOF
         name: Al Ahsa
         branches:
-          - {branch_id: HOF-01,  name: Al Ahsa Laboratory,         branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: HOF-01,  name: Al Ahsa Laboratory,         branch_type: LAB,        timezone: Asia/Riyadh, lat: 25.3800, lon: 49.5860}
       - city_id: JUB
         name: Jubail
         branches:
-          - {branch_id: JUB-01,  name: Jubail Laboratory,          branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: JUB-01,  name: Jubail Laboratory,          branch_type: LAB,        timezone: Asia/Riyadh, lat: 27.0046, lon: 49.6580}
 
   - region_id: NORTHERN
     name: Northern Region
@@ -91,11 +95,11 @@ regions:
       - city_id: TUU
         name: Tabuk
         branches:
-          - {branch_id: TUU-01,  name: Tabuk Laboratory,           branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: TUU-01,  name: Tabuk Laboratory,           branch_type: LAB,        timezone: Asia/Riyadh, lat: 28.3838, lon: 36.5550}
       - city_id: HAS
         name: Hail
         branches:
-          - {branch_id: HAS-01,  name: Hail Laboratory,            branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: HAS-01,  name: Hail Laboratory,            branch_type: LAB,        timezone: Asia/Riyadh, lat: 27.5114, lon: 41.7208}
 
   - region_id: SOUTHERN
     name: Southern Region
@@ -103,12 +107,12 @@ regions:
       - city_id: AHB
         name: Abha
         branches:
-          - {branch_id: AHB-01,  name: Abha Laboratory,            branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: AHB-01,  name: Abha Laboratory,            branch_type: LAB,        timezone: Asia/Riyadh, lat: 18.2164, lon: 42.5053}
       - city_id: GIZ
         name: Jazan
         branches:
-          - {branch_id: GIZ-01,  name: Jazan Laboratory,           branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: GIZ-01,  name: Jazan Laboratory,           branch_type: LAB,        timezone: Asia/Riyadh, lat: 16.8892, lon: 42.5511}
       - city_id: EAM
         name: Najran
         branches:
-          - {branch_id: EAM-01,  name: Najran Laboratory,          branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: EAM-01,  name: Najran Laboratory,          branch_type: LAB,        timezone: Asia/Riyadh, lat: 17.4924, lon: 44.1277}

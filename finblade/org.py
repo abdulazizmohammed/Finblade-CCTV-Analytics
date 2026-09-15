@@ -95,6 +95,26 @@ def validate_branch(payload: dict, city_ids: Iterable[str]) -> (Optional[dict], 
     btype = str(payload.get("branch_type") or DEFAULT_BRANCH_TYPE).strip().upper()
     if btype not in BRANCH_TYPES:
         errors.append(f"branch_type must be one of {', '.join(BRANCH_TYPES)}")
+    # Coordinates are optional (a branch can exist before it is placed on the
+    # map) but must come as a pair, and must be a real point on Earth.
+    lat, lon = payload.get("lat"), payload.get("lon")
+    if (lat is None) != (lon is None):
+        errors.append("lat and lon must be given together")
+    elif lat is not None:
+        try:
+            lat, lon = float(lat), float(lon)
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                errors.append("lat must be within ±90 and lon within ±180")
+        except (TypeError, ValueError):
+            errors.append("lat and lon must be numbers")
+    fence = payload.get("geofence_m")
+    if fence is not None:
+        try:
+            fence = float(fence)
+            if not (10.0 <= fence <= 5000.0):
+                errors.append("geofence_m must be between 10 and 5000 metres")
+        except (TypeError, ValueError):
+            errors.append("geofence_m must be a number")
     if errors:
         return None, errors
     return {"branch_id": bid, "city_id": cid, "name": _name(payload, "name", bid),
@@ -102,7 +122,8 @@ def validate_branch(payload: dict, city_ids: Iterable[str]) -> (Optional[dict], 
             "address": (str(payload.get("address")).strip()
                         if payload.get("address") else None),
             "timezone": (str(payload.get("timezone")).strip()
-                         if payload.get("timezone") else None)}, []
+                         if payload.get("timezone") else None),
+            "lat": lat, "lon": lon, "geofence_m": fence}, []
 
 
 # --------------------------------------------------------------------- scope --
@@ -243,6 +264,8 @@ def build_tree(regions: List[dict], cities: List[dict], branches: List[dict],
                 "branch_type": b.get("branch_type") or DEFAULT_BRANCH_TYPE,
                 "city_id": b.get("city_id"), "address": b.get("address"),
                 "timezone": b.get("timezone"),
+                "lat": b.get("lat"), "lon": b.get("lon"),
+                "geofence_m": b.get("geofence_m"),
                 "cameras": sorted((_camera_view(c) for c in cams_by.get(bid, [])),
                                   key=lambda c: str(c["camera_id"])),
                 "rollup": roll}

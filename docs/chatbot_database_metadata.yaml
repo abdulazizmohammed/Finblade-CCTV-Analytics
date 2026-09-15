@@ -54,6 +54,9 @@ tables:
       branch_type: {type: text, meaning: "LAB | COLLECTION | HQ | WAREHOUSE | OTHER"}
       address: {type: text}
       timezone: {type: text}
+      lat: {type: double, meaning: "WGS84; NULL = not placed on the map"}
+      lon: {type: double}
+      geofence_m: {type: double, meaning: "vehicle arrival radius; NULL = default 150"}
       updated_at: {type: double}
     relationships:
       - city_id -> cities.city_id
@@ -70,6 +73,72 @@ tables:
       value: {type: text}
     relationships: []
     warnings: []
+
+  - name: trackers
+    purpose: GPS trackers on lab vehicles or devices — a phone running Traccar Client or a 4G unit. A VEHICLE or an ASSET, never a person.
+    recommended_for_chatbot: yes
+    primary_key: [tracker_id]
+    columns:
+      tracker_id: {type: text, meaning: "what the device sends as its id"}
+      name: {type: text}
+      kind: {type: text, meaning: "GPS | BLE_TAG"}
+      device_ref: {type: text, meaning: "IMEI / phone label, free text"}
+      asset_type: {type: text, meaning: "VEHICLE | DEVICE | SAMPLE_BOX"}
+      asset_label: {type: text, meaning: "plate or asset tag"}
+      home_branch_id: {type: text, meaning: "branches.branch_id it rolls up under"}
+      enabled: {type: bigint}
+      updated_at: {type: double}
+    relationships:
+      - home_branch_id -> branches.branch_id
+    warnings:
+      - There is no driver column and none should be inferred. Positions describe a vehicle.
+
+  - name: tracker_positions
+    purpose: Every reported GPS position, one row per report (typically every 10 s while moving).
+    recommended_for_chatbot: caution
+    primary_key: [id]
+    columns:
+      tracker_id: {type: text}
+      ts: {type: double, meaning: "device time, epoch seconds UTC"}
+      received_at: {type: double, meaning: "server time"}
+      lat: {type: double}
+      lon: {type: double}
+      speed_kmh: {type: double}
+      heading: {type: double, meaning: "degrees, 0 = north"}
+      altitude_m: {type: double}
+      accuracy_m: {type: double}
+      battery_pct: {type: double}
+      dialect: {type: text, meaning: "osmand | gprmc | json — which wire format it came in"}
+      site_id: {type: text, meaning: "branch whose geofence the tracker was INSIDE at that moment; NULL on the road"}
+    relationships:
+      - tracker_id -> trackers.tracker_id
+      - site_id -> branches.branch_id
+    warnings:
+      - Large. Filter by tracker_id and ts. Under retention pruning.
+      - Arrivals and departures are in events (TRACKER_ARRIVED / TRACKER_DEPARTED, camera_id = tracker_id); do not derive them from this table.
+
+  - name: tracker_live
+    purpose: Latest position per tracker plus which branch geofence it is inside.
+    recommended_for_chatbot: yes
+    primary_key: [tracker_id]
+    columns:
+      tracker_id: {type: text}
+      ts: {type: double, meaning: "device time of the latest report"}
+      received_at: {type: double}
+      lat: {type: double}
+      lon: {type: double}
+      speed_kmh: {type: double}
+      heading: {type: double}
+      accuracy_m: {type: double}
+      battery_pct: {type: double}
+      at_branch_id: {type: text, meaning: "inside this branch's geofence; NULL = on the road"}
+      at_since: {type: double, meaning: "epoch when it arrived there"}
+      positions: {type: bigint, meaning: "reports received in total"}
+    relationships:
+      - tracker_id -> trackers.tracker_id
+      - at_branch_id -> branches.branch_id
+    warnings:
+      - "Offline is derived: now - ts > 300 s. There is no state column."
 
   - name: events
     purpose: Every discrete occurrence — zone movement, camera state, facility crossings, rule-derived events.

@@ -516,7 +516,7 @@ class PostgresStore(Store):
         """
         deleted = {}
         with self._pool.connection() as conn:
-            for table in ("zone_state_ts", "events"):
+            for table in ("zone_state_ts", "events", "tracker_positions"):
                 deleted[table] = conn.execute(
                     f"DELETE FROM {table} WHERE ts < %s", (cutoff_ts,)).rowcount
         self._zone_cache = None
@@ -800,19 +800,23 @@ class PostgresStore(Store):
     def save_branch(self, row: dict) -> None:
         self._x(
             "INSERT INTO branches(branch_id,city_id,name,branch_type,address,"
-            "timezone,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "timezone,lat,lon,geofence_m,updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
             "ON CONFLICT (branch_id) DO UPDATE SET city_id=excluded.city_id, "
             "name=excluded.name, branch_type=excluded.branch_type, "
             "address=excluded.address, timezone=excluded.timezone, "
+            "lat=excluded.lat, lon=excluded.lon, geofence_m=excluded.geofence_m, "
             "updated_at=excluded.updated_at",
             (str(row["branch_id"]), str(row["city_id"]),
              row.get("name") or row["branch_id"],
              row.get("branch_type") or "LAB", row.get("address"),
-             row.get("timezone"), time.time()))
+             row.get("timezone"), row.get("lat"), row.get("lon"),
+             row.get("geofence_m"), time.time()))
 
     def list_branches(self) -> List[dict]:
         return self._q("SELECT branch_id,city_id,name,branch_type,address,"
-                       "timezone,updated_at FROM branches ORDER BY name, branch_id")
+                       "timezone,lat,lon,geofence_m,updated_at FROM branches "
+                       "ORDER BY name, branch_id")
 
     def delete_branch(self, branch_id: str) -> bool:
         return self._x("DELETE FROM branches WHERE branch_id=%s",
@@ -831,6 +835,87 @@ class PostgresStore(Store):
                         "INSERT INTO org_meta(key,value) VALUES (%s,%s) "
                         "ON CONFLICT (key) DO UPDATE SET value=excluded.value",
                         (str(k), str(v)))
+
+    # ---- GPS trackers -------------------------------------------------------
+    _TRACKER_COLS = ("tracker_id,name,kind,device_ref,asset_type,asset_label,"
+                     "home_branch_id,enabled,updated_at")
+
+    def save_tracker(self, row: dict) -> None:
+        self._x(
+            f"INSERT INTO trackers({self._TRACKER_COLS}) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (tracker_id) DO UPDATE SET name=excluded.name, "
+            "kind=excluded.kind, device_ref=excluded.device_ref, "
+            "asset_type=excluded.asset_type, asset_label=excluded.asset_label, "
+            "home_branch_id=excluded.home_branch_id, enabled=excluded.enabled, "
+            "updated_at=excluded.updated_at",
+            (str(row["tracker_id"]), row.get("name") or row["tracker_id"],
+             row.get("kind") or "GPS", row.get("device_ref"),
+             row.get("asset_type") or "VEHICLE", row.get("asset_label"),
+             row.get("home_branch_id"),
+             0 if row.get("enabled") is False else 1, time.time()))
+
+    def list_trackers(self) -> List[dict]:
+        rows = self._q(f"SELECT {self._TRACKER_COLS} FROM trackers ORDER BY tracker_id")
+        for r in rows:
+            r["enabled"] = bool(r.get("enabled", 1))
+        return rows
+
+    def delete_tracker(self, tracker_id: str) -> bool:
+        tid = str(tracker_id)
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM tracker_live WHERE tracker_id=%s", (tid,))
+            gone = conn.execute("DELETE FROM trackers WHERE tracker_id=%s", (tid,)).rowcount
+        return gone > 0
+
+    def save_position(self, p: dict, at_branch_id: str = None,
+                      at_since: float = None) -> None:
+        now = time.time()
+        with self._pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO tracker_positions(tracker_id,ts,received_at,lat,lon,"
+                "speed_kmh,heading,altitude_m,accuracy_m,battery_pct,dialect,site_id) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (p["tracker_id"], float(p["ts"]), now, float(p["lat"]), float(p["lon"]),
+                 p.get("speed_kmh"), p.get("heading"), p.get("altitude_m"),
+                 p.get("accuracy_m"), p.get("battery_pct"), p.get("dialect"),
+                 at_branch_id))
+            # Forward only, like zone_live: a delayed report must not rewind
+            # the dot. The counter still advances so "positions" is honest.
+            conn.execute(
+                "INSERT INTO tracker_live(tracker_id,ts,received_at,lat,lon,speed_kmh,"
+                "heading,accuracy_m,battery_pct,at_branch_id,at_since,positions) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1) "
+                "ON CONFLICT (tracker_id) DO UPDATE SET "
+                "positions=tracker_live.positions+1, "
+                "ts=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.ts ELSE tracker_live.ts END, "
+                "received_at=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.received_at ELSE tracker_live.received_at END, "
+                "lat=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.lat ELSE tracker_live.lat END, "
+                "lon=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.lon ELSE tracker_live.lon END, "
+                "speed_kmh=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.speed_kmh ELSE tracker_live.speed_kmh END, "
+                "heading=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.heading ELSE tracker_live.heading END, "
+                "accuracy_m=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.accuracy_m ELSE tracker_live.accuracy_m END, "
+                "battery_pct=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.battery_pct ELSE tracker_live.battery_pct END, "
+                "at_branch_id=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.at_branch_id ELSE tracker_live.at_branch_id END, "
+                "at_since=CASE WHEN excluded.ts>=tracker_live.ts THEN excluded.at_since ELSE tracker_live.at_since END",
+                (p["tracker_id"], float(p["ts"]), now, float(p["lat"]), float(p["lon"]),
+                 p.get("speed_kmh"), p.get("heading"), p.get("accuracy_m"),
+                 p.get("battery_pct"), at_branch_id, at_since))
+
+    def latest_positions(self) -> List[dict]:
+        return self._q("SELECT tracker_id,ts,received_at,lat,lon,speed_kmh,heading,"
+                       "accuracy_m,battery_pct,at_branch_id,at_since,positions "
+                       "FROM tracker_live")
+
+    def positions_range(self, tracker_id: str, t0: float, t1: float,
+                        limit: int = 5000) -> List[dict]:
+        rows = self._q(
+            "SELECT tracker_id,ts,received_at,lat,lon,speed_kmh,heading,altitude_m,"
+            "accuracy_m,battery_pct,dialect,site_id FROM tracker_positions "
+            "WHERE tracker_id=%s AND ts BETWEEN %s AND %s ORDER BY ts DESC LIMIT %s",
+            (str(tracker_id), float(t0), float(t1), int(limit)))
+        rows.reverse()
+        return rows
 
     # ---- identity merge write-back ----------------------------------------
     def rebind_global_ref(self, drop_ref: str, keep_ref: str) -> int:

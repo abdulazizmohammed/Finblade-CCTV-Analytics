@@ -9,6 +9,7 @@ Run: uvicorn services.api.app:app --host 0.0.0.0 --port 8000
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -25,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 from finblade.areas import distinct_occupancy as _distinct_occupancy
 from finblade import window as _window
+from finblade import gps as _tracking
 
 # The site's reporting day. Headline counts answer "how many today", and "today"
 # is opening hours in the site's own timezone — not a UTC day, and not "since
@@ -161,6 +163,20 @@ async def _offline_monitor():
             # offline alerts silently stop and nothing anywhere says so.
             _loop_errors["offline"] += 1
             log.exception("camera-offline monitor tick failed")
+
+
+async def _tracker_monitor():
+    """R-12: a GPS tracker that stops reporting. Same shape as R-07 above;
+    the rule itself lives in the service so it is testable without a loop."""
+    while True:
+        try:
+            await asyncio.sleep(15)
+            svc.check_silent_trackers()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            _loop_errors["trackers"] = _loop_errors.get("trackers", 0) + 1
+            log.exception("tracker-silence monitor tick failed")
 
 
 # R-08: generate an occupancy report on a fixed cadence (hourly by default; set
@@ -374,6 +390,7 @@ async def _autostart_cameras():
 @asynccontextmanager
 async def lifespan(app):
     tasks = [asyncio.create_task(_offline_monitor()),
+             asyncio.create_task(_tracker_monitor()),
              asyncio.create_task(_report_scheduler()),
              asyncio.create_task(_forward_loop()),
              asyncio.create_task(_retention_loop()),
@@ -1176,6 +1193,95 @@ async def org_delete_branch(branch_id: str):
     return JSONResponse(status_code=code, content=body)
 
 
+# ---- GPS trackers ----------------------------------------------------------
+# A phone running Traccar Client, or a 4G tracker unit, on a lab vehicle or a
+# device in transit. Positions arrive over plain HTTP in one of three
+# dialects and are run through the branch geofences (finblade/gps.py).
+# A tracker is a vehicle or an asset, never a person.
+
+async def _ingest_params(request: Request) -> dict:
+    """Query string, plus a form or JSON body if there is one. Traccar
+    Client puts everything in the query string of a POST with an empty
+    body; some units send form-encoded; our own page sends JSON."""
+    params = dict(request.query_params)
+    ctype = (request.headers.get("content-type") or "").lower()
+    body = await request.body()
+    if body:
+        if "json" in ctype:
+            try:
+                data = json.loads(body)
+                if isinstance(data, dict):
+                    params.update({k: v for k, v in data.items() if v is not None})
+                    params["_json"] = True
+            except ValueError:
+                pass
+        elif "x-www-form-urlencoded" in ctype or b"=" in body:
+            from urllib.parse import parse_qsl
+            params.update(dict(parse_qsl(body.decode("utf-8", "replace"))))
+    return params
+
+
+@app.api_route("/api/v1/trackers/ingest", methods=["GET", "POST"])
+async def tracker_ingest(request: Request):
+    """One position from a tracker. Three dialects, detected from the
+    fields present:
+
+      OsmAnd / Traccar Client   ?id=..&lat=..&lon=..&timestamp=..&speed=..
+      OpenGTS gprmc             ?dev=..&gprmc=$GPRMC,....
+      JSON (our page, replay)   {"tracker_id":..,"lat":..,"lon":..,"speed_kmh":..}
+
+    Traccar Client expects a 200 with any body; it retries on anything else,
+    so a 422 here means the phone keeps a bad fix queued — which is right,
+    because the alternative is plotting 0,0.
+    """
+    params = await _ingest_params(request)
+    if "gprmc" in params:
+        pos, errors = _tracking.parse_gprmc(params)
+    elif params.pop("_json", False):
+        pos, errors = _tracking.parse_json(params)
+    else:
+        pos, errors = _tracking.parse_osmand(params)
+    if errors:
+        return JSONResponse(status_code=422, content={"accepted": False, "errors": errors})
+    code, body = svc.ingest_position(pos)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.get("/api/v1/trackers")
+async def trackers(region_id: str = Query(None), city_id: str = Query(None),
+                   branch_id: str = Query(None)):
+    """Every tracker with its latest position and state. Narrowed by the
+    home branch when a scope is given."""
+    rows = svc.trackers()
+    return {"trackers": _in_scope(rows, _scope(region_id, city_id, branch_id)),
+            "silent_after_s": svc.TRACKER_SILENT_S}
+
+
+@app.post("/api/v1/trackers")
+async def register_tracker(request: Request):
+    code, body = svc.register_tracker(await request.json())
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.delete("/api/v1/trackers/{tracker_id}")
+async def delete_tracker(tracker_id: str):
+    code, body = svc.delete_tracker(tracker_id)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.get("/api/v1/trackers/{tracker_id}/track")
+async def tracker_track(tracker_id: str, frm: float = Query(None, alias="from"),
+                        to: float = Query(None, alias="to"),
+                        minutes: float = Query(60.0), limit: int = Query(5000)):
+    """The path a tracker took: positions in a window, oldest first.
+    `minutes` counts back from now unless from/to are given."""
+    now = time.time()
+    t0 = frm if frm is not None else now - minutes * 60.0
+    t1 = to if to is not None else now
+    rows = svc.tracker_track(tracker_id, t0, t1, limit=limit)
+    return {"tracker_id": tracker_id, "from": t0, "to": t1, "positions": rows}
+
+
 @app.post("/api/v1/cameras/health")
 async def camera_health(request: Request):
     """Ingest a health snapshot from an inference runner; returns control state."""
@@ -1688,6 +1794,7 @@ async def summary(charts: int = Query(1), region_id: str = Query(None),
     cameras = _in_scope([_remote_camera_view(c) for c in _camera_list()], sites)
     zones = _in_scope(svc.zone_states(), sites)
     alerts = _in_scope(svc.list_alerts(unacked_only=False), sites)
+    trackers = _in_scope(svc.trackers(), sites)
     counts = id_svc.counts()
 
     # Pre-tallied so a tile does not have to reduce three arrays to render one
@@ -1719,6 +1826,7 @@ async def summary(charts: int = Query(1), region_id: str = Query(None),
         "zones": zones,
         # Active feed = OPEN + ACK. Resolved and dismissed drop out.
         "alerts": alerts,
+        "trackers": trackers,
         "counts": counts,
         "summary": {
             # People on the monitored floor. None — not 0 — when no polygons are
@@ -1774,6 +1882,9 @@ async def ws(websocket: WebSocket):
                 # Active feed = OPEN + ACK (resolved/dismissed drop out); operators
                 # resolve acked alerts from here, so it can't be unacked-only.
                 "alerts": svc.list_alerts(unacked_only=False),
+                # Vehicles ride the socket too, so the map dot moves at the
+                # report rate rather than on a poll. Small: one row per tracker.
+                "trackers": svc.trackers(),
                 "ts": time.time(),
             })
             await asyncio.sleep(0.5)

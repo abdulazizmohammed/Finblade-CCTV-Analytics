@@ -45,6 +45,12 @@ HAZARD_SMOKE = "HAZARD_SMOKE"
 # actionable.
 PPE_VIOLATION = "PPE_VIOLATION"
 PPE_COMPLIANT = "PPE_COMPLIANT"
+# A GPS tracker (a lab vehicle, a device in transit) crossed a branch's
+# geofence (finblade/gps.py). The source is the tracker, so camera_id
+# carries the tracker id — there is no camera. Vehicle/asset scoped, never a
+# person: no person_ref, no driver.
+TRACKER_ARRIVED = "TRACKER_ARRIVED"
+TRACKER_DEPARTED = "TRACKER_DEPARTED"
 
 EVENT_TYPES = {
     ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE, CAPACITY_WARNING,
@@ -52,6 +58,7 @@ EVENT_TYPES = {
     CAMERA_HEARTBEAT, CAMERA_ONLINE, CAMERA_OFFLINE, CAMERA_RECOVERED,
     WRONG_DIRECTION, GROUP_CROSSING, FACILITY_ENTRY, FACILITY_EXIT,
     HAZARD_FIRE, HAZARD_SMOKE, PPE_VIOLATION, PPE_COMPLIANT,
+    TRACKER_ARRIVED, TRACKER_DEPARTED,
 }
 
 # Per-type required payload keys and their python types.
@@ -94,6 +101,10 @@ _SCHEMA = {
                     "violation_type": str, "first_seen": _NUM,
                     "confirmed_at": _NUM},
     PPE_COMPLIANT: {"zone_id": str, "person_ref": str, "ppe_type": str},
+    # Which tracker, which branch, how far from its centre when the fence
+    # confirmed. dwell_s on departure is how long it stood there.
+    TRACKER_ARRIVED: {"tracker_id": str, "branch_id": str, "distance_m": _NUM},
+    TRACKER_DEPARTED: {"tracker_id": str, "branch_id": str, "distance_m": _NUM},
 }
 
 # Fields that are type-checked WHEN PRESENT but never required.

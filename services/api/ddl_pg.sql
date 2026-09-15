@@ -120,7 +120,61 @@ CREATE TABLE IF NOT EXISTS branches (
     branch_type            TEXT DEFAULT 'LAB', -- LAB | COLLECTION | HQ | WAREHOUSE | OTHER
     address                TEXT,
     timezone               TEXT,
+    -- WGS84. Where the branch sits on the map, and the centre of its
+    -- geofence for vehicle arrival / departure. NULL = not placed yet.
+    lat                    DOUBLE PRECISION,
+    lon                    DOUBLE PRECISION,
+    geofence_m             DOUBLE PRECISION,   -- radius; NULL = the default
     updated_at             DOUBLE PRECISION  -- epoch seconds, UTC
+);
+
+-- GPS trackers: a phone running Traccar Client, or a 4G tracker unit, on a
+-- lab vehicle or a device. A tracker belongs to a VEHICLE or an ASSET, never
+-- to a person — no driver name is stored anywhere. finblade/gps.py.
+CREATE TABLE IF NOT EXISTS trackers (
+    tracker_id             TEXT PRIMARY KEY,   -- what the device sends as its id
+    name                   TEXT,
+    kind                   TEXT DEFAULT 'GPS', -- GPS | BLE_TAG
+    device_ref             TEXT,               -- IMEI / MAC / phone label; free text
+    asset_type             TEXT DEFAULT 'VEHICLE',  -- VEHICLE | DEVICE | SAMPLE_BOX
+    asset_label            TEXT,               -- e.g. plate or asset tag
+    home_branch_id         TEXT,               -- site_id it rolls up under
+    enabled                BIGINT DEFAULT 1,
+    updated_at             DOUBLE PRECISION  -- epoch seconds, UTC
+);
+
+-- Every reported position. Retention-pruned with zone_state_ts and events.
+CREATE TABLE IF NOT EXISTS tracker_positions (
+    id                     BIGSERIAL PRIMARY KEY,
+    tracker_id             TEXT NOT NULL,
+    ts                     DOUBLE PRECISION NOT NULL,  -- device time, epoch UTC
+    received_at            DOUBLE PRECISION,           -- server time
+    lat                    DOUBLE PRECISION NOT NULL,
+    lon                    DOUBLE PRECISION NOT NULL,
+    speed_kmh              DOUBLE PRECISION,
+    heading                DOUBLE PRECISION,
+    altitude_m             DOUBLE PRECISION,
+    accuracy_m             DOUBLE PRECISION,
+    battery_pct            DOUBLE PRECISION,
+    dialect                TEXT,               -- osmand | gprmc | json
+    site_id                TEXT                -- branch it was INSIDE, if any
+);
+
+-- Latest reading per tracker, plus the geofence state. Same pattern as
+-- zone_live: constant size, only ever moves forward in time.
+CREATE TABLE IF NOT EXISTS tracker_live (
+    tracker_id             TEXT PRIMARY KEY,
+    ts                     DOUBLE PRECISION,
+    received_at            DOUBLE PRECISION,
+    lat                    DOUBLE PRECISION,
+    lon                    DOUBLE PRECISION,
+    speed_kmh              DOUBLE PRECISION,
+    heading                DOUBLE PRECISION,
+    accuracy_m             DOUBLE PRECISION,
+    battery_pct            DOUBLE PRECISION,
+    at_branch_id           TEXT,               -- inside this branch's geofence
+    at_since               DOUBLE PRECISION,
+    positions              BIGINT DEFAULT 0
 );
 
 -- Tenant-level facts with nowhere better to live: the customer's display name
@@ -294,6 +348,9 @@ CREATE TABLE IF NOT EXISTS zones (
 
 -- Bring an EXISTING database up to the schema above. Every
 -- statement is idempotent; on a current database all are no-ops.
+ALTER TABLE branches ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+ALTER TABLE branches ADD COLUMN IF NOT EXISTS lon DOUBLE PRECISION;
+ALTER TABLE branches ADD COLUMN IF NOT EXISTS geofence_m DOUBLE PRECISION;
 ALTER TABLE zones ADD COLUMN IF NOT EXISTS required_ppe TEXT;
 ALTER TABLE zones ADD COLUMN IF NOT EXISTS ppe_profile TEXT DEFAULT 'industrial';
 -- The local tracker id a per-person alert is about (R-11). Identifies a BOX in
@@ -440,6 +497,8 @@ CREATE INDEX IF NOT EXISTS ix_zones_area ON zones(physical_area_id);
 CREATE INDEX IF NOT EXISTS ix_cities_region ON cities(region_id);
 CREATE INDEX IF NOT EXISTS ix_branches_city ON branches(city_id);
 CREATE INDEX IF NOT EXISTS ix_cameras_site ON cameras(site_id);
+CREATE INDEX IF NOT EXISTS ix_tpos_tracker_ts ON tracker_positions(tracker_id, ts);
+CREATE INDEX IF NOT EXISTS ix_tpos_ts ON tracker_positions(ts);
 
 -- The index the analytics views live on. zone_state_ts is scanned by
 -- (camera_id, zone_id, ts) for every interval and window function; the

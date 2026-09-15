@@ -872,3 +872,59 @@ Cameras page stays a flat grid with a free-text Site field.
 **Reverse:** drop the four tables and the `_scope` calls in `app.py`; the
 `site_id` columns are untouched and nothing else depends on the new tables.
 The Network page and the seed file can simply be deleted.
+
+## D-37 — KSA map without tiles, and GPS tracking through a phone
+**Choice:** an inline-SVG country map (`web/map.html`) with branches pinned
+from `branches.lat/lon`, and a GPS tracking path built around plain-HTTP
+position reports — Traccar Client on a phone today, a 4G tracker unit later —
+with branch geofences, arrival/departure events and a silence rule (R-12).
+
+**WHY NO MAP TILES.** FinBlade deploys on-prem and air-gapped, and the UI rule
+is no CDN. OpenStreetMap tiles would phone out on every pan. A ~40-vertex
+hand-drawn outline of the Kingdom projected from lat/lon needs nothing,
+renders in the brand theme, and is enough to show which region a vehicle is
+in. Street-level detail (self-hosted PMTiles + vendored MapLibre) is planned
+and needs a one-time offline download the human has to do; it is not
+required to place branches or watch a vehicle drive between cities. **The
+outline is schematic, not a survey boundary, and the page says so.**
+
+**WHY A PHONE, AND WHY THIS PROTOCOL.** The client showed a Xiaomi Tag — a
+Bluetooth tag with no GPS and no radio to us, whose location lives only in
+Xiaomi's cloud. It cannot draw a moving vehicle. A phone running Traccar
+Client can, today, with no code on the device, and the format it speaks
+(OsmAnd: `?id=&lat=&lon=&timestamp=&speed=…`) is what most 4G tracker units
+speak too. So the ingest endpoint accepts that, plus the OpenGTS `gprmc`
+dialect (the client pointed at opengts.org — dormant since 2017, but its
+device format has an installed base), plus our own JSON for the phone web
+page and the replay script. One endpoint, three dialects, no gateway
+software to run. If a client turns up with binary-protocol hardware, Traccar
+server is the gateway to add — not OpenGTS.
+
+**A TRACKER IS A VEHICLE OR AN ASSET, NEVER A PERSON.** No driver field
+exists anywhere; `driverUniqueId` from OsmAnd is dropped on parse. The events
+carry the tracker id in `camera_id` because that is the source column, and
+they deliberately do not count as a camera heartbeat — the first cut minted
+a phantom OFFLINE camera per vehicle.
+
+**`?key=` ON THE INGEST ROUTE.** A tracker unit has one URL field and no
+headers. The route was added to the query-key allowlist alongside the stream,
+snapshot and WebSocket. It is a write, but the narrowest one in the system:
+one validated fix for one tracker id, nothing else reachable with it.
+
+**GEOFENCE DISCIPLINE.** Inside = within radius (default 150 m); outside =
+beyond 1.5× radius; two consecutive reports confirm either. A vehicle idling
+on the boundary therefore does not arrive and depart with every GPS wobble,
+and a drive-past never arrives. Same reasoning as the zone debounce. State is
+restored from `tracker_live` on restart so a parked vehicle does not
+re-arrive.
+
+**Cost:** three tables, one module (`finblade/gps.py`), five routes, three
+pages, a replay script; ~1,400 lines with tests. Nothing on the camera path
+changed. **A first cut overwrote `finblade/tracking.py`, which is the
+inference worker's `TrackReaper`; it was restored from git before commit and
+the GPS module renamed. Check `git diff --stat` for unintended files before
+every commit — a new module name must be checked against the tree.**
+
+**Reverse:** drop the three tables, `finblade/gps.py`, the tracker routes and
+`_tracker_monitor`; remove `TRACKER_*` from `EVENT_TYPES`; delete the three
+pages and the replay script. `branches.lat/lon` can stay — they are nullable.

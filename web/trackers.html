@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinBlade — Trackers</title>
+<link rel="stylesheet" href="finblade-theme.css">
+<style>
+/* GPS trackers: register a vehicle or asset tracker, pair a phone, watch the
+   fleet. A tracker is a vehicle or an asset — never a person — and this page
+   has no field for a driver on purpose. */
+body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),transparent 60%),var(--fb-void);min-height:100vh;}
+.topbar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:10;flex-wrap:wrap;}
+.brand-logo{height:28px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
+.tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.spacer{flex:1;}
+.wrap{max-width:1240px;margin:0 auto;padding:18px 22px 60px;}
+.eyebrow{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-text-faint);margin:0 0 12px;}
+.summary{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 20px;}
+.stat{border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);background:var(--fb-surface);padding:8px 14px;min-width:96px;}
+.stat .n{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:22px;line-height:1;color:var(--fb-text);}
+.stat .l{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);margin-top:5px;}
+.stat[data-tone="warning"] .n{color:var(--fb-warning);} .stat[data-tone="critical"] .n{color:var(--fb-critical);}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;}
+.card{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:14px;}
+.card[data-state="OFFLINE"]{border-color:var(--fb-critical);}
+.chead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:2px;}
+.cid{font-weight:600;font-size:15px;}
+.sub{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);margin-bottom:12px;}
+.state{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:2px;border:1px solid currentColor;white-space:nowrap;}
+.state.MOVING{color:var(--fb-text);} .state.STOPPED{color:var(--fb-ok);}
+.state.OFFLINE{color:var(--fb-critical);background:var(--fb-critical-ghost);}
+.state.NEVER_SEEN{color:var(--fb-text-faint);}
+.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin:12px 0;}
+.m{display:flex;flex-direction:column;}
+.m .v{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:15px;color:var(--fb-text);}
+.m .v.bad{color:var(--fb-critical);}
+.m .k{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--fb-text-faint);}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--fb-line);}
+.actions .fb-btn{font-size:12px;padding:6px 10px;}
+.unreg{font-family:var(--fb-font-data);font-size:10px;color:var(--fb-warning);letter-spacing:.08em;text-transform:uppercase;}
+.reg{margin-top:26px;}
+.form{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;}
+.field{display:flex;flex-direction:column;gap:5px;}
+.field label{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.field input,.field select{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:13px;padding:7px 9px;border-radius:var(--fb-r);min-width:150px;}
+.field input:focus,.field select:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.note{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);margin:8px 0 0;min-height:1.3em;}
+.note.bad{color:var(--fb-critical);}
+.empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:22px;text-align:center;}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;}
+@media(max-width:800px){.pair{grid-template-columns:1fr;}}
+.pair h4{margin:0 0 8px;font-size:13px;font-weight:600;}
+.pair ol{margin:0;padding-left:18px;font-size:12.5px;color:var(--fb-text);line-height:1.6;}
+.pair code,.url{font-family:var(--fb-font-data);font-size:12px;color:var(--fb-teal-bright);background:var(--fb-void);border:1px solid var(--fb-line);border-radius:2px;padding:2px 6px;word-break:break-all;}
+.url{display:block;padding:8px 10px;margin:6px 0;}
+.hint{font-size:11.5px;color:var(--fb-text-muted);margin:6px 0 0;line-height:1.5;}
+:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <img class="brand-logo" src="logo.svg" alt="FinBlade">
+    <span class="tag">Trackers</span>
+    <span class="spacer"></span>
+    <span class="fb-live" title="live"></span>
+    <a class="fb-btn" href="map.html">Map</a>
+    <a class="fb-btn" href="network.html">Network</a>
+    <a class="fb-btn" href="cameras.html">Cameras</a>
+    <a class="fb-btn fb-btn--primary" href="dashboard.html">← Live dashboard</a>
+  </div>
+
+  <div class="wrap">
+    <p class="eyebrow">Fleet · refreshes every 3s</p>
+    <div class="summary" id="summary"></div>
+    <div class="grid" id="grid"><div class="empty">Loading trackers…</div></div>
+
+    <div class="reg fb-panel">
+      <p class="eyebrow">Register a tracker</p>
+      <div class="form">
+        <div class="field"><label for="f_id">Tracker ID <span style="text-transform:none;letter-spacing:0">(what the device sends)</span></label><input id="f_id" placeholder="VEH-RUH-01"></div>
+        <div class="field"><label for="f_name">Name</label><input id="f_name" placeholder="Riyadh sample van 1"></div>
+        <div class="field"><label for="f_type">Asset</label><select id="f_type"><option>VEHICLE</option><option>DEVICE</option><option>SAMPLE_BOX</option></select></div>
+        <div class="field"><label for="f_label">Plate / asset tag</label><input id="f_label" placeholder="ABC 1234"></div>
+        <div class="field"><label for="f_kind">Kind</label><select id="f_kind"><option>GPS</option><option>BLE_TAG</option></select></div>
+        <div class="field"><label for="f_dev">Device ref (IMEI / phone)</label><input id="f_dev" placeholder="optional"></div>
+        <div class="field"><label for="f_home">Home branch</label><select id="f_home"><option value="">— none —</option></select></div>
+        <button class="fb-btn fb-btn--primary" id="save">Register</button>
+      </div>
+      <p class="note" id="regNote">No driver field, by design: a tracker belongs to a vehicle or an asset, and nothing here identifies a person.</p>
+
+      <div class="pair">
+        <div>
+          <h4>Pair a phone (Traccar Client, free, Android / iOS)</h4>
+          <ol>
+            <li>Install <b>Traccar Client</b> from the app store.</li>
+            <li>Device identifier: the Tracker ID you registered above.</li>
+            <li>Server URL:<span class="url" id="pairUrl">…</span></li>
+            <li>Frequency 10 s · Accuracy High · start the service.</li>
+          </ol>
+          <p class="hint" id="pairHint"></p>
+        </div>
+        <div>
+          <h4>No app: use the phone's browser</h4>
+          <ol>
+            <li>Open on the phone:<span class="url" id="webUrl">…</span></li>
+            <li>Enter the Tracker ID and tap <b>Start</b>.</li>
+          </ol>
+          <p class="hint">Reports only while the page is open and the screen is on — fine for a desk demo, not for a vehicle. Browsers require HTTPS for location; on plain HTTP this only works on the machine running the API. For a real vehicle use Traccar Client.</p>
+          <h4 style="margin-top:12px">Tracker units</h4>
+          <p class="hint">Any 4G tracker that speaks the <b>OsmAnd / HTTP</b> protocol points at the same URL. Units configured for <b>OpenGTS</b> (<code>gprmc</code> format) also work unchanged.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script src="apikey.js"></script>
+<script>
+const API=location.origin;
+const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
+let ORG=null;
+function branchName(id){if(!ORG||!id)return id||'—';const b=ORG.branches.find(x=>x.branch_id===id);return b?b.name:id;}
+function ago(s){if(s==null)return 'never';if(s<60)return s.toFixed(0)+'s ago';if(s<3600)return (s/60).toFixed(0)+' min ago';return (s/3600).toFixed(1)+' h ago';}
+
+function card(t){
+  const p=t.position||{};
+  const el=document.createElement('div'); el.className='card'; el.dataset.state=t.state;
+  el.innerHTML=`
+    <div class="chead"><span class="cid">${esc(t.name||t.tracker_id)}</span><span class="state ${esc(t.state)}">${esc(t.state.replace('_',' '))}</span></div>
+    <div class="sub">${esc(t.tracker_id)} · ${esc(t.asset_type||'VEHICLE')}${t.asset_label?' · '+esc(t.asset_label):''}${t.registered===false?' · <span class="unreg">unregistered — reporting anyway</span>':''}</div>
+    <div class="metrics">
+      <div class="m"><span class="v ${t.state==='OFFLINE'?'bad':''}">${ago(t.seconds_since_seen)}</span><span class="k">Last report</span></div>
+      <div class="m"><span class="v">${p.speed_kmh!=null?p.speed_kmh.toFixed(0)+' km/h':'—'}</span><span class="k">Speed</span></div>
+      <div class="m"><span class="v">${t.at_branch_id?esc(branchName(t.at_branch_id)):(p.lat!=null?'on the road':'—')}</span><span class="k">At branch</span></div>
+      <div class="m"><span class="v">${p.battery_pct!=null?Math.round(p.battery_pct)+'%':'—'}</span><span class="k">Battery</span></div>
+      <div class="m"><span class="v">${p.lat!=null?p.lat.toFixed(4)+', '+p.lon.toFixed(4):'—'}</span><span class="k">Position</span></div>
+      <div class="m"><span class="v">${esc(branchName(t.home_branch_id))}</span><span class="k">Home branch</span></div>
+    </div>
+    <div class="actions">
+      <a class="fb-btn fb-btn--primary" href="map.html?vehicle=${encodeURIComponent(t.tracker_id)}">Show on map</a>
+      ${t.registered===false?`<button class="fb-btn" data-act="adopt" data-id="${esc(t.tracker_id)}">Register</button>`:''}
+      <button class="fb-btn fb-btn--danger" data-act="del" data-id="${esc(t.tracker_id)}">Delete</button>
+    </div>`;
+  return el;
+}
+function summary(ts){
+  const by={MOVING:0,STOPPED:0,OFFLINE:0,NEVER_SEEN:0}; ts.forEach(t=>by[t.state]=(by[t.state]||0)+1);
+  const cells=[['Trackers',ts.length,''],['Moving',by.MOVING,''],['Stopped',by.STOPPED,''],['Offline',by.OFFLINE,by.OFFLINE?'critical':''],['Never seen',by.NEVER_SEEN,'']];
+  $('summary').innerHTML=cells.map(([l,n,t])=>`<div class="stat"${t?` data-tone="${t}"`:''}><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+}
+async function load(){
+  let ts=[];
+  try{ ts=(await fetch(`${API}/api/v1/trackers`).then(r=>r.json())).trackers||[]; }
+  catch(e){ $('grid').innerHTML='<div class="empty">offline — cannot reach the API at this origin</div>'; return; }
+  summary(ts);
+  const g=$('grid'); g.innerHTML='';
+  if(!ts.length){ g.innerHTML='<div class="empty">No trackers yet. Register one below and pair a phone.</div>'; return; }
+  ts.forEach(t=>g.appendChild(card(t)));
+}
+async function loadOrg(){
+  try{ ORG=await fetch(`${API}/api/v1/org/index`).then(r=>r.json()); }catch(e){ ORG=null; return; }
+  const sel=$('f_home'); const cur=sel.value;
+  sel.innerHTML='<option value="">— none —</option>'+ORG.branches.map(b=>`<option value="${esc(b.branch_id)}">${esc(b.name)} (${esc(b.branch_id)})</option>`).join('');
+  sel.value=cur;
+}
+function pairing(){
+  const key=window.fbGetKey?window.fbGetKey():'';
+  const ingest=`${API}/api/v1/trackers/ingest${key?'?key='+encodeURIComponent(key):''}`;
+  $('pairUrl').textContent=ingest;
+  $('webUrl').textContent=`${API}/web/tracker.html`;
+  const host=location.hostname;
+  $('pairHint').textContent=(host==='localhost'||host==='127.0.0.1')
+    ? 'You opened this page as localhost — a phone cannot reach that. Replace it with this machine\'s LAN address (e.g. 192.168.1.74) or its public/Tailscale address.'
+    : 'The phone must be able to reach this address: same Wi-Fi, a VPN such as Tailscale, or a public deployment.';
+}
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-act]'); if(!b) return;
+  const id=b.dataset.id;
+  if(b.dataset.act==='del'){
+    if(!confirm(`Delete tracker ${id}? Its position history is kept.`)) return;
+    try{ await fetch(`${API}/api/v1/trackers/${encodeURIComponent(id)}`,{method:'DELETE'}); }catch(err){}
+    load();
+  }else if(b.dataset.act==='adopt'){
+    $('f_id').value=id; $('f_id').scrollIntoView({behavior:'smooth'}); $('f_name').focus();
+  }
+});
+$('save').addEventListener('click',async()=>{
+  const id=$('f_id').value.trim(); const n=$('regNote');
+  if(!id){n.classList.add('bad');n.textContent='Tracker ID is required.';return;}
+  const body={tracker_id:id,name:$('f_name').value.trim()||null,asset_type:$('f_type').value,asset_label:$('f_label').value.trim()||null,
+    kind:$('f_kind').value,device_ref:$('f_dev').value.trim()||null,home_branch_id:$('f_home').value||null};
+  try{
+    const r=await fetch(`${API}/api/v1/trackers`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({}));
+    n.classList.toggle('bad',!r.ok);
+    n.textContent=r.ok?`Registered ${id}. Now set "${id}" as the device identifier in Traccar Client, with the server URL below.`:'Save failed: '+((j.errors||[j.error]).join('; '));
+    if(r.ok){['f_id','f_name','f_label','f_dev'].forEach(i=>$(i).value='');load();}
+  }catch(err){ n.classList.add('bad'); n.textContent='Save failed — API offline?'; }
+});
+loadOrg().then(load); pairing();
+setInterval(load,3000); setInterval(loadOrg,30000);
+</script>
+<footer class="fb-footer">&copy; 2026 FinBladeAi. All Rights Reserved</footer>
+</body>
+</html>

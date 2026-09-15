@@ -471,6 +471,46 @@ def ppe_maps(zones, camera_id):
     return req, prof
 
 
+def ppe_served(ppe_zones, ppe_profiles, detectors, camera_id):
+    """Drop requirements no LOADED detector can possibly judge.
+
+    THE RULE THIS ENFORCES: an item must not be judged unless a detector that
+    can emit its class is actually running. Absence of a detection is evidence
+    toward a violation in R-11, so an item nobody is looking for does not come
+    out UNKNOWN — it comes out NONCOMPLIANT, and accuses every person in the
+    zone of not wearing something no model was ever asked about.
+
+    Observed live: a zone switched to the medical profile while only the
+    industrial detector was loaded. The industrial model cannot emit
+    surgical_mask or surgical_gloves, so both read "absent" on every tick and
+    the zone reported 2 non-compliant people with violations for both items.
+    Entirely fabricated — there was no medical model on the machine at all.
+
+    Filtering here rather than in the judging loop means the zone-state counts,
+    the alert path and the evidence file all see the same filtered set, so the
+    card and the feed cannot disagree about it.
+    """
+    live = {d.profile for d in detectors if d.enabled}
+    kept, kept_prof, dropped = {}, {}, {}
+    for zid, items in ppe_zones.items():
+        prof = ppe_profiles.get(zid)
+        if prof in live:
+            kept[zid] = items
+            kept_prof[zid] = prof
+        else:
+            dropped[zid] = (prof, items)
+    for zid, (prof, items) in dropped.items():
+        log.warning(
+            "camera %s zone %s: requires %s on the '%s' profile, but NO '%s' "
+            "detector is loaded — those items are NOT being judged. Nobody is "
+            "reported non-compliant for them, which is the only honest "
+            "outcome; judging them would convict everyone on the detector's "
+            "absence. Load that model (or restart this camera if you have just "
+            "enabled it) to make the requirement real.",
+            camera_id, zid, items, prof, prof)
+    return kept, kept_prof
+
+
 def ppe_state_fields(zone_id, occupancy, ppe_zones, counts, camera_id):
     """PPE compliance fields for one zone's state payload, invariant-checked.
 
@@ -850,6 +890,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     # returns [] rather than raising, but keeping the list tight means the
     # per-frame loop does no work for a model that is not there.
     _ppe_detectors = [d for d in (ppe, ppe_med) if d.enabled]
+    # A requirement no loaded detector can judge must be dropped, not judged on
+    # silence. Applied here AND on every hot-reload, because either the zones or
+    # the detector set can change underneath the other.
+    _ppe_zones, _ppe_profiles = ppe_served(_ppe_zones, _ppe_profiles,
+                                           _ppe_detectors, cfg.camera_id)
     if ppe_med.enabled:
         log.warning(
             "camera %s: MEDICAL PPE is an EVALUATION capability — the "
@@ -1011,6 +1056,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     _prev_ppe = _ppe_zones
                     _prev_prof = _ppe_profiles
                     _ppe_zones, _ppe_profiles = ppe_maps(cfg.zones, cfg.camera_id)
+                    # Same filter as at startup: a profile switch can point a
+                    # zone at a detector that is not loaded, and judging it
+                    # then would convict everyone on that model's absence.
+                    _ppe_zones, _ppe_profiles = ppe_served(
+                        _ppe_zones, _ppe_profiles, _ppe_detectors, cfg.camera_id)
                     if _ppe_zones != _prev_ppe or _ppe_profiles != _prev_prof:
                         # A verdict already reached for an item nobody requires
                         # any more must go, or zone_summary keeps counting that

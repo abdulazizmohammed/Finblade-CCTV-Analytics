@@ -155,6 +155,69 @@ class TestZoneConfiguration(unittest.TestCase):
         self.assertEqual(z.to_dict()["required_ppe"], ["goggles"])
 
 
+class TestNothingIsJudgedWithoutADetector(unittest.TestCase):
+    """An item must not be judged unless a model that can emit its class runs.
+
+    OBSERVED LIVE, and this is why the guard exists. A zone was switched to the
+    medical profile while only the industrial detector was loaded. The
+    industrial model cannot emit surgical_mask or surgical_gloves, so both read
+    "absent" on every tick, absence is evidence toward a violation, and the zone
+    reported 2 non-compliant people with violations for both items — entirely
+    fabricated, on a machine with no medical model on it at all.
+
+    UNKNOWN is not the safe default here. Silence convicts.
+    """
+
+    class _Det:
+        def __init__(self, profile, enabled):
+            self.profile, self.enabled = profile, enabled
+
+    def _served(self, zones, profiles, detectors):
+        from services.inference.run_cpu import ppe_served
+        return ppe_served(zones, profiles, detectors, "CAM-1")
+
+    def test_medical_items_are_dropped_when_only_industrial_is_loaded(self):
+        zones = {"LAB": ["surgical_mask", "surgical_gloves"]}
+        kept, prof = self._served(zones, {"LAB": "medical"},
+                                  [self._Det("industrial", True)])
+        self.assertEqual(kept, {})
+        self.assertEqual(prof, {})
+
+    def test_industrial_items_survive_when_industrial_is_loaded(self):
+        zones = {"YARD": ["hardhat"]}
+        kept, _ = self._served(zones, {"YARD": "industrial"},
+                               [self._Det("industrial", True)])
+        self.assertEqual(kept, {"YARD": ["hardhat"]})
+
+    def test_a_disabled_detector_does_not_count_as_loaded(self):
+        """enabled=False is the state a detector lands in when its weights are
+        missing — which is exactly the medical model's situation today."""
+        kept, _ = self._served({"LAB": ["surgical_mask"]}, {"LAB": "medical"},
+                               [self._Det("medical", False)])
+        self.assertEqual(kept, {})
+
+    def test_no_detectors_at_all_judges_nothing(self):
+        kept, _ = self._served({"LAB": ["surgical_mask"]}, {"LAB": "medical"}, [])
+        self.assertEqual(kept, {})
+
+    def test_each_zone_is_decided_on_its_own_profile(self):
+        """A camera seeing both a plant room and a lab must keep judging the
+        plant room when the medical model is missing."""
+        zones = {"YARD": ["hardhat"], "LAB": ["surgical_mask"]}
+        profiles = {"YARD": "industrial", "LAB": "medical"}
+        kept, prof = self._served(zones, profiles, [self._Det("industrial", True)])
+        self.assertEqual(kept, {"YARD": ["hardhat"]})
+        self.assertEqual(prof, {"YARD": "industrial"})
+
+    def test_both_survive_when_both_detectors_are_loaded(self):
+        zones = {"YARD": ["hardhat"], "LAB": ["surgical_mask"]}
+        profiles = {"YARD": "industrial", "LAB": "medical"}
+        kept, _ = self._served(zones, profiles,
+                               [self._Det("industrial", True),
+                                self._Det("medical", True)])
+        self.assertEqual(kept, zones)
+
+
 class TestAnatomicalBands(unittest.TestCase):
     """Bands are REASONED / NOT YET SITE VALIDATED. These assert the ordering
     relationships that make them coherent, not the exact numbers — the numbers

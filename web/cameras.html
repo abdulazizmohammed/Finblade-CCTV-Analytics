@@ -53,6 +53,20 @@ body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),tr
 .field input:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
 .empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:22px;text-align:center;}
 .note{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);margin:6px 0 0;}
+.field select{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:13px;padding:7px 9px;border-radius:var(--fb-r);min-width:220px;}
+.field select:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+/* Region › City › Branch grouping. A band per branch so a fleet of twenty
+   branches reads as twenty short lists, not one wall of cards. */
+.group{margin:18px 0 8px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+.group .path{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fb-teal-dim);}
+.group .bname{font-size:15px;font-weight:600;}
+.group .bid{font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);letter-spacing:.08em;}
+.group .rule{flex:1;height:1px;background:var(--fb-line);min-width:40px;}
+.group .cnt{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:10px;color:var(--fb-text-muted);}
+.group.unassigned .bname{color:var(--fb-warning);}
+.scopebar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);}
+.scopebar b{color:var(--fb-text);font-weight:500;}
+.field[hidden],.scopebar[hidden]{display:none;}
 :focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
 </style>
 </head>
@@ -62,6 +76,7 @@ body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),tr
     <span class="tag">Camera Health</span>
     <span class="spacer"></span>
     <span class="fb-live" title="live"></span>
+    <a class="fb-btn" href="network.html">Network</a>
     <a class="fb-btn" href="/tools/zone-editor.html">Zones</a>
     <a class="fb-btn" href="history.html">History</a>
     <a class="fb-btn" href="report.html">Report</a>
@@ -70,19 +85,23 @@ body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),tr
 
   <div class="wrap">
     <p class="eyebrow">Fleet status · refreshes every 3s</p>
+    <div class="scopebar" id="scopebar" hidden></div>
     <div class="summary" id="summary"></div>
-    <div class="grid" id="grid"><div class="empty">Loading cameras…</div></div>
+    <div id="grid"><div class="empty">Loading cameras…</div></div>
 
     <div class="reg fb-panel">
       <p class="eyebrow">Register / update a camera</p>
       <div class="form">
         <div class="field"><label for="f_id">Camera ID</label><input id="f_id" placeholder="CAM-A-01"></div>
         <div class="field"><label for="f_name">Name</label><input id="f_name" placeholder="Main concourse"></div>
-        <div class="field"><label for="f_site">Site</label><input id="f_site" placeholder="SITE-01"></div>
+        <!-- Branch = site_id. A select when the org chart exists (so a camera
+             cannot be filed under a branch nobody drew), free text otherwise. -->
+        <div class="field" id="branchField"><label for="f_branch">Branch</label><select id="f_branch"><option value="">— no branch —</option></select></div>
+        <div class="field" id="siteField"><label for="f_site">Site</label><input id="f_site" placeholder="SITE-01"></div>
         <div class="field" style="min-width:280px;flex:1"><label for="f_source">Source (RTSP URL or file)</label><input id="f_source" placeholder="rtsp://127.0.0.1:8554/cam01"></div>
         <button class="fb-btn fb-btn--primary" id="saveCam">Add camera</button>
       </div>
-      <p class="note" id="regNote">Enter an RTSP URL (or a file path) as the Source — the camera's detection pipeline starts automatically and it goes live. Leave Source blank to just register metadata.</p>
+      <p class="note" id="regNote">Enter an RTSP URL (or a file path) as the Source — the camera's detection pipeline starts automatically and it goes live. Leave Source blank to just register metadata. The Branch you pick becomes the camera's site_id, which is how it rolls up into its city and region.</p>
     </div>
   </div>
 
@@ -95,7 +114,50 @@ body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),tr
 // API had just served.
 const API=location.origin;
 const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
 const SEV={OFFLINE:'critical',DEGRADED:'warning',RECONNECTING:'warning'};
+
+// --- Region -> City -> Branch ---------------------------------------------
+// The org chart, as the API holds it. When it exists the page groups cameras
+// by branch under their city and region, the register form offers branches
+// as a dropdown, and ?branch=<id> (how the Network page links here) narrows
+// the list to that branch. When it does not exist the page is exactly what it
+// was: a flat grid and a free-text Site field.
+let ORG=null;                 // {regions, cities, branches, meta}
+const SCOPE_BRANCH=new URL(location.href).searchParams.get('branch')||'';
+function branchPath(bid){
+  if(!ORG) return null;
+  const b=ORG.branches.find(x=>x.branch_id===bid); if(!b) return null;
+  const c=ORG.cities.find(x=>x.city_id===b.city_id)||{};
+  const r=ORG.regions.find(x=>x.region_id===c.region_id)||{};
+  return {branch:b,city:c,region:r,
+          path:[r.name||r.region_id,c.name||c.city_id].filter(Boolean).join(' › ')};
+}
+async function loadOrg(){
+  try{ ORG=await fetch(`${API}/api/v1/org/index`).then(r=>r.json()); }
+  catch(e){ ORG=null; }
+  const has=!!(ORG&&ORG.branches&&ORG.branches.length);
+  $('branchField').hidden=!has; $('siteField').hidden=has;
+  if(has){
+    const sel=$('f_branch'); const cur=sel.value;
+    const byC={}; ORG.cities.forEach(c=>byC[c.city_id]=c);
+    const byR={}; ORG.regions.forEach(r=>byR[r.region_id]=r);
+    // Grouped by region so a twenty-branch list is scannable.
+    const groups={};
+    ORG.branches.forEach(b=>{const c=byC[b.city_id]||{};const r=byR[c.region_id]||{};
+      (groups[r.name||r.region_id||'—']=groups[r.name||r.region_id||'—']||[]).push({b,c});});
+    sel.innerHTML='<option value="">— pick a branch —</option>'+Object.keys(groups).sort().map(g=>
+      `<optgroup label="${esc(g)}">`+groups[g].map(({b,c})=>
+        `<option value="${esc(b.branch_id)}">${esc(c.name||c.city_id)} › ${esc(b.name)} (${esc(b.branch_id)})</option>`).join('')+'</optgroup>').join('');
+    sel.value=cur||SCOPE_BRANCH||'';
+  }
+  const bar=$('scopebar');
+  if(SCOPE_BRANCH){
+    const p=branchPath(SCOPE_BRANCH);
+    bar.hidden=false;
+    bar.innerHTML=`Showing branch <b>${esc(p?p.branch.name:SCOPE_BRANCH)}</b>${p?' · '+esc(p.path):' · not on the org chart'} <a class="fb-btn" href="cameras.html">Show all</a> <a class="fb-btn" href="network.html">Network</a>`;
+  }else bar.hidden=true;
+}
 
 function fmtAge(s){ if(s==null) return '—'; if(s<60) return s.toFixed(0)+'s'; if(s<3600) return (s/60).toFixed(0)+'m'; return (s/3600).toFixed(1)+'h'; }
 
@@ -116,7 +178,7 @@ function card(c){
       <span class="cid">${c.camera_id}</span>
       <span class="state ${st}">${st}</span>
     </div>
-    <div class="cname">${c.name?c.name+' · ':''}${c.site_id||'—'}${c.sim_failure?' · <span style="color:var(--fb-warning)">SIMULATED</span>':''}</div>
+    <div class="cname">${c.name?esc(c.name)+' · ':''}${(()=>{const p=branchPath(c.site_id);return p?esc(p.branch.name)+' · '+esc(c.site_id):esc(c.site_id||'—');})()}${c.sim_failure?' · <span style="color:var(--fb-warning)">SIMULATED</span>':''}</div>
     <div class="metrics">
       <div class="m"><span class="v">${typeof c.input_fps==='number'?c.input_fps.toFixed(1):'—'}</span><span class="k">Input FPS</span></div>
       <div class="m"><span class="v">${c.resolution||'—'}</span><span class="k">Resolution</span></div>
@@ -145,14 +207,46 @@ function summary(cams){
     `<div class="stat"><div class="n" style="color:${col}">${n}</div><div class="l">${l}</div></div>`).join('');
 }
 
+function groupHeader(title,path,id,n,unassigned){
+  const h=document.createElement('div');
+  h.className='group'+(unassigned?' unassigned':'');
+  h.innerHTML=`${path?`<span class="path">${esc(path)}</span>`:''}<span class="bname">${esc(title)}</span>${id?`<span class="bid">${esc(id)}</span>`:''}<span class="rule"></span><span class="cnt">${n} camera${n===1?'':'s'}</span>`;
+  return h;
+}
+function gridOf(cams){
+  const g=document.createElement('div'); g.className='grid';
+  cams.forEach(c=>{ try{ g.appendChild(card(c)); }catch(e){ console.error('camera card failed',c,e); } });
+  return g;
+}
+
 async function load(){
   let cams=[];
   try{ cams=(await fetch(`${API}/api/v1/cameras`).then(r=>r.json())).cameras||[]; }
   catch(e){ $('grid').innerHTML='<div class="empty">offline — cannot reach the API at this origin</div>'; return; }
+  if(SCOPE_BRANCH) cams=cams.filter(c=>c.site_id===SCOPE_BRANCH);
   summary(cams);
   const g=$('grid'); g.innerHTML='';
-  if(!cams.length){ g.innerHTML='<div class="empty">No cameras registered yet. Start a runner with --api-url, or register one below.</div>'; return; }
-  cams.forEach(c=>{ try{ g.appendChild(card(c)); }catch(e){ console.error('camera card failed',c,e); } });
+  if(!cams.length){ g.innerHTML=`<div class="empty">${SCOPE_BRANCH?`No cameras registered with site ${esc(SCOPE_BRANCH)} yet.`:'No cameras registered yet. Start a runner with --api-url, or register one below.'}</div>`; return; }
+  // No org chart: the flat grid this page always was.
+  if(!(ORG&&ORG.branches&&ORG.branches.length)){ g.appendChild(gridOf(cams)); return; }
+  // Region › City › Branch bands, in the order the org chart lists them, then
+  // an amber "Unassigned" band for anything whose site matches no branch —
+  // it must stay visible, because a camera nobody can find is a camera
+  // nobody fixes.
+  const bySite={}; cams.forEach(c=>{(bySite[c.site_id||'']=bySite[c.site_id||'']||[]).push(c);});
+  const seen=new Set();
+  ORG.branches.forEach(b=>{
+    const list=bySite[b.branch_id]; if(!list) return;
+    seen.add(b.branch_id);
+    const p=branchPath(b.branch_id);
+    g.appendChild(groupHeader(b.name,p&&p.path,b.branch_id,list.length,false));
+    g.appendChild(gridOf(list));
+  });
+  Object.keys(bySite).sort().forEach(site=>{
+    if(seen.has(site)) return;
+    g.appendChild(groupHeader(site?`Unassigned · site ${site}`:'Unassigned · no site','not on the org chart','',bySite[site].length,true));
+    g.appendChild(gridOf(bySite[site]));
+  });
 }
 
 document.addEventListener('click',e=>{
@@ -169,8 +263,11 @@ $('saveCam').addEventListener('click',async()=>{
   const id=$('f_id').value.trim();
   if(!id){ $('regNote').textContent='Camera ID is required.'; return; }
   const source=$('f_source').value.trim();
+  // Branch dropdown when the org chart exists, free-text Site otherwise —
+  // both land in site_id, which is the camera's branch.
+  const site=$('branchField').hidden ? $('f_site').value.trim() : $('f_branch').value;
   const body={camera_id:id,name:$('f_name').value.trim()||null,
-    site_id:$('f_site').value.trim()||null,source:source||null};
+    site_id:site||null,source:source||null};
   $('regNote').textContent=source?`Adding ${id} and starting its pipeline…`:`Registering ${id}…`;
   try{
     const r=await fetch(`${API}/api/v1/cameras`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -180,13 +277,15 @@ $('saveCam').addEventListener('click',async()=>{
     if(p&&p.started) $('regNote').textContent=`Added ${id} — pipeline started on port ${p.port}. It will come online shortly.`;
     else if(typeof p==='string') $('regNote').textContent=`Saved ${id}, but ${p}`;
     else $('regNote').textContent=`Registered ${id} (metadata only — no source given).`;
+    if(j.warning) $('regNote').textContent+=` ${j.warning}.`;
     ['f_id','f_name','f_site','f_source'].forEach(i=>$(i).value='');
     load();
   }catch(e){ $('regNote').textContent='Save failed — API offline?'; }
 });
 
-load();
+loadOrg().then(load);
 setInterval(load,3000);
+setInterval(loadOrg,30000);
 </script>
 <footer class="fb-footer">&copy; 2026 FinBladeAi. All Rights Reserved</footer>
 </body>

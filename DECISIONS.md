@@ -812,3 +812,63 @@ existing orphaned-frame cleanup (`GET /api/v1/frames/orphaned`) covers them.
 **Reverse:** drop `SEV_COMPLIANCE` back to `SEV_AMBER` in `evaluate_ppe`, and
 delete the per-alert crop block in `run_cpu.py`. The `track_id` column can stay
 — it is nullable and every other rule leaves it null.
+
+## D-36 — Region → City → Branch: the customer's hierarchy, keyed on `site_id`
+**Choice:** three new tables (`regions`, `cities`, `branches`) with `ON DELETE
+RESTRICT` foreign keys between the levels, a `v_org_hierarchy` view, a
+`/api/v1/org` route family, `region_id`/`city_id`/`branch_id` narrowing on
+every site-keyed read, and three UI changes (a Network page, a scope selector
+on the dashboard, branch grouping on the Cameras page). Wareed Medical
+Laboratories runs its network this way and its command centre asks questions
+in these terms; a flat list of sites cannot answer "how is the Western region
+doing".
+
+**A CAMERA'S `site_id` IS ITS BRANCH ID. No second key.** Every camera, zone
+reading, event and alert already carried `site_id` — the workers send it, the
+forwarder routes on it, six read endpoints already filter on it. Adding a
+separate `branch_id` column to `cameras` would have created two keys that
+could disagree, and every roll-up would then have to pick one. Instead the
+branch table's primary key is defined to *be* the site id, and the hierarchy
+attaches to the data that exists. Nothing in the worker or the ingest path
+changed.
+
+**NOT a foreign key from `cameras.site_id` to `branches`, deliberately.**
+Workers post `site_id` from their YAML before anyone has drawn the org chart,
+and the autostart cameras in `config/cameras*.yaml` say `SITE-01`. A
+constraint there would reject a heartbeat. Instead a camera whose `site_id`
+matches no branch is **unassigned**: shown in an amber band on the Network
+and Cameras pages, counted in the network total, in no region. `POST
+/cameras` returns a `warning` in that case rather than a 4xx. The failure is
+loud and visible, and it is not a failure of the pipeline.
+
+**Referential integrity is enforced twice, on purpose.** The database refuses
+to orphan a subtree (`RESTRICT`), and the service checks first so the answer
+is a clean 409 with a message, identical on the in-memory store, rather than
+an `IntegrityError` in the API log. A branch that still owns cameras is also
+refused — cameras are not org-chart rows and are not deleted with it, but
+silently dropping them out of every regional total is exactly the wrong
+outcome.
+
+**Scope is applied client-side on the dashboard, server-side everywhere
+else.** The `/ws` frame is unchanged and carries the whole network; the
+dashboard keeps rows whose `site_id` is in the selected subtree. Switching
+scope is therefore instant and never reconnects the socket. The REST
+endpoints narrow server-side because a remote consumer (the FinBlade
+platform, the chatbot) should not have to pull the whole network to see one
+branch. The filters intersect and an unknown id returns nothing — a typo must
+not quietly widen to the whole network.
+
+**The Wareed seed (`config/org.wareed.yaml`) is a SHAPE, not the client's
+branch list.** Regions and cities are the KSA administrative split; the
+branch rows are placeholders (one lab per city, two collection points in
+Riyadh and Jeddah) so the UI has something to show. It says so at the top of
+the file. Replace them with the real list before the client sees this.
+
+**Cost:** four tables, one view, ten routes, ~900 lines including tests.
+Every existing endpoint behaves exactly as before when no scope parameter is
+given and no hierarchy is loaded: the dashboard hides the selector, the
+Cameras page stays a flat grid with a free-text Site field.
+
+**Reverse:** drop the four tables and the `_scope` calls in `app.py`; the
+`site_id` columns are untouched and nothing else depends on the new tables.
+The Network page and the seed file can simply be deleted.

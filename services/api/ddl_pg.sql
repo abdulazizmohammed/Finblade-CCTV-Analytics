@@ -89,9 +89,50 @@ CREATE TABLE IF NOT EXISTS camera_transits (
     PRIMARY KEY (from_camera, to_camera)
 );
 
+-- The customer's organisation: Region -> City -> Branch. Strict tree, one
+-- parent each, enforced here with foreign keys AND in the service (which turns
+-- a refused delete into a 409 rather than a stack trace).
+--
+-- cameras.site_id IS the branch id. Every camera, zone reading, event and
+-- alert already carries site_id, so the hierarchy attaches to the key the
+-- data has rather than adding a second one that could disagree with it.
+-- Deliberately NOT a foreign key: workers post site_id before anyone has
+-- drawn the org chart, and a camera whose site_id matches no branch must be
+-- visible as UNASSIGNED, not rejected. See finblade/org.py.
+CREATE TABLE IF NOT EXISTS regions (
+    region_id              TEXT PRIMARY KEY,
+    name                   TEXT,
+    sort_order             BIGINT DEFAULT 0,
+    updated_at             DOUBLE PRECISION  -- epoch seconds, UTC
+);
+
+CREATE TABLE IF NOT EXISTS cities (
+    city_id                TEXT PRIMARY KEY,
+    region_id              TEXT NOT NULL REFERENCES regions(region_id) ON DELETE RESTRICT,
+    name                   TEXT,
+    updated_at             DOUBLE PRECISION  -- epoch seconds, UTC
+);
+
+CREATE TABLE IF NOT EXISTS branches (
+    branch_id              TEXT PRIMARY KEY,   -- == cameras.site_id
+    city_id                TEXT NOT NULL REFERENCES cities(city_id) ON DELETE RESTRICT,
+    name                   TEXT,
+    branch_type            TEXT DEFAULT 'LAB', -- LAB | COLLECTION | HQ | WAREHOUSE | OTHER
+    address                TEXT,
+    timezone               TEXT,
+    updated_at             DOUBLE PRECISION  -- epoch seconds, UTC
+);
+
+-- Tenant-level facts with nowhere better to live: the customer's display name
+-- and country. TEXT values, unlike facility_meta, which is numeric.
+CREATE TABLE IF NOT EXISTS org_meta (
+    key                    TEXT PRIMARY KEY,
+    value                  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS cameras (
     camera_id              TEXT PRIMARY KEY,
-    site_id                TEXT,
+    site_id                TEXT,               -- == branches.branch_id, see above
     last_seen              DOUBLE PRECISION,  -- epoch seconds, UTC
     name                   TEXT,
     state                  TEXT,
@@ -396,6 +437,9 @@ CREATE INDEX IF NOT EXISTS ix_reports_gen ON reports(generated_at);
 CREATE INDEX IF NOT EXISTS ix_zst_zone_cam_id ON zone_state_ts(zone_id, camera_id, id);
 CREATE INDEX IF NOT EXISTS ix_zst_zone_ts ON zone_state_ts(zone_id, ts);
 CREATE INDEX IF NOT EXISTS ix_zones_area ON zones(physical_area_id);
+CREATE INDEX IF NOT EXISTS ix_cities_region ON cities(region_id);
+CREATE INDEX IF NOT EXISTS ix_branches_city ON branches(city_id);
+CREATE INDEX IF NOT EXISTS ix_cameras_site ON cameras(site_id);
 
 -- The index the analytics views live on. zone_state_ts is scanned by
 -- (camera_id, zone_id, ts) for every interval and window function; the

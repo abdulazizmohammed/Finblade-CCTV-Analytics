@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinBlade — Network</title>
+<!-- Brand tokens first; every colour below comes from these variables. -->
+<link rel="stylesheet" href="finblade-theme.css">
+<style>
+/* Region -> City -> Branch. The customer's command centre reads the network
+   top-down: which region is busy, which city has an open alert, which branch
+   has a camera down. So the page IS the tree — each level a collapsible band
+   with its roll-up on the right, branches as cards, cameras as pills inside.
+   Colours are theme variables only. Calm is grey; amber and red carry all the
+   urgency; violet is a person-policy breach; teal is chrome, never status. */
+body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),transparent 60%),var(--fb-void);min-height:100vh;}
+.topbar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:10;flex-wrap:wrap;}
+.brand-logo{height:28px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
+.tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.tenant{font-family:var(--fb-font-data);font-size:11px;letter-spacing:.04em;color:var(--fb-text-muted);padding-left:14px;border-left:1px solid var(--fb-line);}
+.tenant b{color:var(--fb-text);font-weight:500;}
+.spacer{flex:1;}
+.wrap{max-width:1240px;margin:0 auto;padding:18px 22px 60px;}
+.eyebrow{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-text-faint);margin:0 0 12px;}
+
+/* summary strip */
+.summary{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 20px;}
+.stat{border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);background:var(--fb-surface);padding:8px 14px;min-width:96px;}
+.stat .n{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:22px;line-height:1;color:var(--fb-text);}
+.stat .l{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);margin-top:5px;}
+.stat[data-tone="warning"] .n{color:var(--fb-warning);}
+.stat[data-tone="critical"] .n{color:var(--fb-critical);}
+
+/* toolbar */
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;}
+.bar input{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:13px;padding:7px 9px;border-radius:var(--fb-r);min-width:240px;}
+.bar input:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+
+/* roll-up chips: one per number, tabular, muted unless non-zero and urgent */
+.roll{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.chip{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:10px;letter-spacing:.06em;padding:3px 7px;border:1px solid var(--fb-line);border-radius:2px;color:var(--fb-text-muted);white-space:nowrap;}
+.chip b{font-weight:500;color:var(--fb-text);}
+.chip[data-tone="warning"]{color:var(--fb-warning);border-color:var(--fb-warning);background:var(--fb-warning-ghost);}
+.chip[data-tone="warning"] b{color:var(--fb-warning);}
+.chip[data-tone="critical"]{color:var(--fb-critical);border-color:var(--fb-critical);background:var(--fb-critical-ghost);}
+.chip[data-tone="critical"] b{color:var(--fb-critical);}
+.chip[data-tone="compliance"]{color:var(--fb-compliance);border-color:var(--fb-compliance);background:var(--fb-compliance-ghost);}
+.chip[data-tone="compliance"] b{color:var(--fb-compliance);}
+
+/* the tree */
+.region{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);margin-bottom:14px;overflow:hidden;}
+.region[data-tone="warning"]{border-color:var(--fb-warning);}
+.region[data-tone="critical"]{border-color:var(--fb-critical);}
+.rhead,.chead{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;user-select:none;}
+.rhead{border-bottom:1px solid var(--fb-line);}
+.rhead:hover,.chead:hover{background:var(--fb-surface-2);}
+.rhead .name{font-size:16px;font-weight:600;}
+.chead .name{font-size:13.5px;font-weight:500;}
+.caret{font-family:var(--fb-font-data);color:var(--fb-teal);width:12px;display:inline-block;transition:transform .15s;}
+details[open]>summary .caret{transform:rotate(90deg);}
+summary{list-style:none;}summary::-webkit-details-marker{display:none;}
+.id{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.08em;color:var(--fb-text-faint);}
+.level{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--fb-teal-dim);}
+.rhead .roll,.chead .roll{margin-left:auto;}
+.rbody{padding:6px 16px 12px;}
+.city{border-left:2px solid var(--fb-line);margin:8px 0 8px 4px;padding-left:10px;}
+.city[data-tone="warning"]{border-left-color:var(--fb-warning);}
+.city[data-tone="critical"]{border-left-color:var(--fb-critical);}
+.branches{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;padding:4px 0 8px 22px;}
+.branch{background:var(--fb-void);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:12px 14px;}
+.branch[data-tone="warning"]{border-color:var(--fb-warning);}
+.branch[data-tone="critical"]{border-color:var(--fb-critical);}
+.bhead{display:flex;align-items:baseline;gap:8px;margin-bottom:2px;}
+.bhead .name{font-weight:600;font-size:14px;}
+.btype{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-teal);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:1px 5px;margin-left:auto;}
+.bmeta{font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);margin-bottom:8px;}
+.cams{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;}
+.cam{display:inline-flex;align-items:center;gap:6px;font-family:var(--fb-font-data);font-size:10.5px;color:var(--fb-text-muted);border:1px solid var(--fb-line);border-radius:2px;padding:3px 7px;}
+.cam .d{width:6px;height:6px;border-radius:50%;background:var(--fb-ok);}
+.cam .d.off{background:var(--fb-critical);}
+.cam .d.deg{background:var(--fb-warning);}
+.cam .n{font-variant-numeric:tabular-nums;color:var(--fb-text);}
+.nocam{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-faint);margin:6px 0;}
+.bact{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--fb-line);}
+.bact .fb-btn{font-size:11px;padding:5px 9px;}
+.rowact{display:flex;gap:6px;margin-left:8px;}
+.rowact .fb-btn{font-size:10px;padding:3px 7px;}
+
+/* unassigned: cameras claiming a site nobody has drawn on the org chart.
+   Amber outline — it is a data-quality caveat, not a floor emergency. */
+.unassigned{border:1px dashed var(--fb-warning);border-radius:var(--fb-r-lg);padding:12px 16px;margin-bottom:14px;background:var(--fb-warning-ghost);}
+.unassigned h3{margin:0 0 4px;font-size:14px;color:var(--fb-warning);}
+.unassigned p{margin:0 0 8px;font-size:12px;color:var(--fb-text-muted);}
+.ugroup{margin:6px 0;}
+.ugroup .id{color:var(--fb-text-muted);}
+
+/* management */
+.manage{margin-top:26px;}
+.forms{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;}
+.form{display:flex;flex-direction:column;gap:8px;}
+.form h4{margin:0 0 2px;font-size:12px;font-weight:600;color:var(--fb-text);}
+.field{display:flex;flex-direction:column;gap:4px;}
+.field label{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.field input,.field select{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:13px;padding:7px 9px;border-radius:var(--fb-r);}
+.field input:focus,.field select:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.note{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);margin:10px 0 0;min-height:1.4em;}
+.note.bad{color:var(--fb-critical);}
+.empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:22px;text-align:center;}
+:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;}}
+@media(max-width:720px){.rhead .roll,.chead .roll{width:100%;margin-left:0;}.branches{padding-left:0;}}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <img class="brand-logo" src="logo.svg" alt="FinBlade">
+    <span class="tag">Network</span>
+    <span class="tenant" id="tenant">—</span>
+    <span class="spacer"></span>
+    <span class="fb-live" title="live"></span>
+    <a class="fb-btn" href="cameras.html">Cameras</a>
+    <a class="fb-btn" href="/tools/zone-editor.html">Zones</a>
+    <a class="fb-btn" href="history.html">History</a>
+    <a class="fb-btn" href="report.html">Report</a>
+    <a class="fb-btn fb-btn--primary" href="dashboard.html">← Live dashboard</a>
+  </div>
+
+  <div class="wrap">
+    <p class="eyebrow">Region · City · Branch · refreshes every 5s</p>
+    <div class="summary" id="summary"></div>
+    <div class="bar">
+      <input id="q" type="search" placeholder="filter branches, cities, cameras…" aria-label="filter">
+      <button class="fb-btn" id="expandAll">Expand all</button>
+      <button class="fb-btn" id="collapseAll">Collapse all</button>
+    </div>
+    <div id="unassigned"></div>
+    <div id="tree"><div class="empty">Loading network…</div></div>
+
+    <div class="manage fb-panel">
+      <p class="eyebrow">Manage the hierarchy</p>
+      <div class="forms">
+        <div class="form">
+          <h4>Add / rename a region</h4>
+          <div class="field"><label for="r_id">Region ID</label><input id="r_id" placeholder="WESTERN"></div>
+          <div class="field"><label for="r_name">Name</label><input id="r_name" placeholder="Western Region"></div>
+          <button class="fb-btn fb-btn--primary" data-save="region">Save region</button>
+        </div>
+        <div class="form">
+          <h4>Add / move a city</h4>
+          <div class="field"><label for="c_region">Region</label><select id="c_region"></select></div>
+          <div class="field"><label for="c_id">City ID</label><input id="c_id" placeholder="JED"></div>
+          <div class="field"><label for="c_name">Name</label><input id="c_name" placeholder="Jeddah"></div>
+          <button class="fb-btn fb-btn--primary" data-save="city">Save city</button>
+        </div>
+        <div class="form">
+          <h4>Add / move a branch</h4>
+          <div class="field"><label for="b_city">City</label><select id="b_city"></select></div>
+          <div class="field"><label for="b_id">Branch ID <span style="text-transform:none;letter-spacing:0">(= camera site_id)</span></label><input id="b_id" placeholder="JED-01"></div>
+          <div class="field"><label for="b_name">Name</label><input id="b_name" placeholder="Jeddah Main Laboratory"></div>
+          <div class="field"><label for="b_type">Type</label>
+            <select id="b_type"><option>LAB</option><option>COLLECTION</option><option>HQ</option><option>WAREHOUSE</option><option>OTHER</option></select></div>
+          <button class="fb-btn fb-btn--primary" data-save="branch">Save branch</button>
+        </div>
+      </div>
+      <p class="note" id="note">Ids allow letters, digits, “_”, “-” and “.”. A camera joins a branch by being registered with that branch id as its Site. A region or city with children, or a branch with cameras, cannot be deleted until they are moved.</p>
+    </div>
+  </div>
+
+<script src="apikey.js"></script>
+<script>
+// Same origin as the page — see the note in cameras.html.
+const API=location.origin;
+const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
+
+let TREE=null, INDEX=null;
+const OPEN=new Set();          // region/city ids the operator has expanded
+let openInit=false;
+let FILTER='';
+
+// Worst thing inside a node decides its border: red beats amber beats calm.
+// Offline cameras are amber here, not red — a camera down is a fleet-health
+// fact for the Cameras page, while red on this page means people are at risk.
+function tone(r){
+  if(!r) return '';
+  if(r.alerts_critical>0||r.zones_critical>0) return 'critical';
+  if(r.alerts_warning>0||r.zones_warning>0||r.cameras_offline>0||r.alerts_compliance>0) return 'warning';
+  return '';
+}
+function chip(label,n,toneIf){
+  const t=(toneIf&&n>0)?toneIf:'';
+  return `<span class="chip"${t?` data-tone="${t}"`:''}><b>${n}</b> ${label}</span>`;
+}
+function rollHtml(r){
+  return `<span class="roll">
+    ${chip('cams',r.cameras)}
+    ${chip('online',r.cameras_online)}
+    ${chip('offline',r.cameras_offline,'warning')}
+    ${chip('in view',r.people_in_view)}
+    ${chip('warning',r.alerts_warning+r.zones_warning,'warning')}
+    ${chip('critical',r.alerts_critical+r.zones_critical,'critical')}
+    ${chip('compliance',r.alerts_compliance,'compliance')}
+  </span>`;
+}
+function camPill(c){
+  const st=String(c.effective_state||'OFFLINE').toUpperCase();
+  const cls=(st==='OFFLINE'||st==='DISABLED')?'off':(st==='ONLINE'?'':'deg');
+  return `<span class="cam" title="${esc(st)}"><span class="d ${cls}"></span>${esc(c.camera_id)}${c.name?' · '+esc(c.name):''}${st==='ONLINE'?` <span class="n">${+c.people_in_view||0}</span>`:''}</span>`;
+}
+
+function matches(text){ return !FILTER || String(text).toLowerCase().includes(FILTER); }
+function branchMatches(b){
+  return matches(b.name)||matches(b.branch_id)||b.cameras.some(c=>matches(c.camera_id)||matches(c.name||''));
+}
+
+function branchHtml(b){
+  const cams=b.cameras.length?`<div class="cams">${b.cameras.map(camPill).join('')}</div>`
+                              :`<div class="nocam">no cameras registered with site ${esc(b.branch_id)}</div>`;
+  const q=encodeURIComponent(b.branch_id);
+  return `<div class="branch" data-tone="${tone(b.rollup)}">
+    <div class="bhead"><span class="name">${esc(b.name)}</span><span class="btype">${esc(b.branch_type)}</span></div>
+    <div class="bmeta">${esc(b.branch_id)}${b.timezone?' · '+esc(b.timezone):''}${b.address?' · '+esc(b.address):''}</div>
+    ${rollHtml(b.rollup)}
+    ${cams}
+    <div class="bact">
+      <a class="fb-btn fb-btn--primary" href="dashboard.html?branch=${q}">Dashboard</a>
+      <a class="fb-btn" href="cameras.html?branch=${q}">Cameras</a>
+      <a class="fb-btn" href="history.html?branch_id=${q}">History</a>
+      <button class="fb-btn fb-btn--danger" data-del="branch" data-id="${esc(b.branch_id)}" ${b.cameras.length?'disabled title="move its cameras first"':''}>Delete</button>
+    </div></div>`;
+}
+function cityHtml(c){
+  const kids=c.branches.filter(branchMatches);
+  if(FILTER&&!kids.length&&!matches(c.name)&&!matches(c.city_id)) return '';
+  const shown=FILTER&&kids.length?kids:c.branches;
+  const key='c:'+c.city_id, open=OPEN.has(key)||!!FILTER;
+  const q=encodeURIComponent(c.city_id);
+  return `<details class="city" data-tone="${tone(c.rollup)}" data-key="${esc(key)}" ${open?'open':''}>
+    <summary class="chead"><span class="caret">▶</span><span class="level">City</span><span class="name">${esc(c.name)}</span><span class="id">${esc(c.city_id)}</span>
+      <span class="rowact"><a class="fb-btn" href="dashboard.html?city=${q}">Dashboard</a>
+        <button class="fb-btn fb-btn--danger" data-del="city" data-id="${esc(c.city_id)}" ${c.branches.length?'disabled title="delete or move its branches first"':''}>Delete</button></span>
+      ${rollHtml(c.rollup)}</summary>
+    <div class="branches">${shown.length?shown.map(branchHtml).join(''):'<div class="nocam">no branches in this city yet</div>'}</div>
+  </details>`;
+}
+function regionHtml(r){
+  const cities=r.cities.map(cityHtml).filter(Boolean);
+  if(FILTER&&!cities.length&&!matches(r.name)&&!matches(r.region_id)) return '';
+  const key='r:'+r.region_id, open=OPEN.has(key)||!!FILTER;
+  const q=encodeURIComponent(r.region_id);
+  return `<details class="region" data-tone="${tone(r.rollup)}" data-key="${esc(key)}" ${open?'open':''}>
+    <summary class="rhead"><span class="caret">▶</span><span class="level">Region</span><span class="name">${esc(r.name)}</span><span class="id">${esc(r.region_id)}</span>
+      <span class="rowact"><a class="fb-btn" href="dashboard.html?region=${q}">Dashboard</a>
+        <button class="fb-btn fb-btn--danger" data-del="region" data-id="${esc(r.region_id)}" ${r.cities.length?'disabled title="delete or move its cities first"':''}>Delete</button></span>
+      ${rollHtml(r.rollup)}</summary>
+    <div class="rbody">${cities.length?cities.join(''):'<div class="nocam">no cities in this region yet</div>'}</div>
+  </details>`;
+}
+
+function renderSummary(t){
+  const r=t.rollup, k=t.counts;
+  const cells=[['Regions',k.regions,''],['Cities',k.cities,''],['Branches',k.branches,''],
+    ['Cameras',`${r.cameras_online} / ${r.cameras}`,''],
+    ['Offline',r.cameras_offline,r.cameras_offline>0?'warning':''],
+    ['People in view',r.people_in_view,''],
+    ['Open alerts',r.alerts_open,r.alerts_critical>0?'critical':(r.alerts_open>0?'warning':'')],
+    ['Unassigned cams',k.cameras_unassigned,k.cameras_unassigned>0?'warning':'']];
+  $('summary').innerHTML=cells.map(([l,n,t])=>
+    `<div class="stat"${t?` data-tone="${t}"`:''}><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+}
+function renderUnassigned(t){
+  const host=$('unassigned');
+  if(!t.unassigned.length){host.innerHTML='';return;}
+  host.innerHTML=`<div class="unassigned"><h3>Unassigned cameras</h3>
+    <p>These cameras were registered with a Site that matches no branch. They count in the network total but in no region. Either add the branch below with that exact id, or re-register the camera with an existing branch id as its Site.</p>
+    ${t.unassigned.map(u=>`<div class="ugroup"><span class="id">site_id: ${u.site_id==null?'<i>none</i>':esc(u.site_id)}</span>
+      <div class="cams">${u.cameras.map(camPill).join('')}</div></div>`).join('')}</div>`;
+}
+function renderTree(t){
+  const host=$('tree');
+  if(!t.regions.length){host.innerHTML='<div class="empty">No hierarchy yet. Add a region below, or run <code>scripts/seed_org.py</code> to load config/org.wareed.yaml.</div>';return;}
+  if(!openInit){ t.regions.forEach(r=>OPEN.add('r:'+r.region_id)); openInit=true; }
+  const html=t.regions.map(regionHtml).filter(Boolean).join('');
+  host.innerHTML=html||'<div class="empty">nothing matches the filter</div>';
+}
+function renderForms(idx){
+  const rsel=$('c_region'), csel=$('b_city');
+  const rv=rsel.value, cv=csel.value;
+  rsel.innerHTML=idx.regions.map(r=>`<option value="${esc(r.region_id)}">${esc(r.name)} (${esc(r.region_id)})</option>`).join('')||'<option value="">— add a region first —</option>';
+  const byR={}; idx.regions.forEach(r=>byR[r.region_id]=r.name);
+  csel.innerHTML=idx.cities.map(c=>`<option value="${esc(c.city_id)}">${esc(byR[c.region_id]||c.region_id)} › ${esc(c.name)} (${esc(c.city_id)})</option>`).join('')||'<option value="">— add a city first —</option>';
+  if(rv) rsel.value=rv; if(cv) csel.value=cv;
+  const m=idx.meta||{};
+  $('tenant').innerHTML=m.tenant_name?`<b>${esc(m.tenant_name)}</b>${m.tenant_country?' · '+esc(m.tenant_country):''}`:'<b>tenant not set</b>';
+}
+
+async function load(){
+  try{
+    const [t,idx]=await Promise.all([
+      fetch(`${API}/api/v1/org`).then(r=>r.json()),
+      fetch(`${API}/api/v1/org/index`).then(r=>r.json())]);
+    TREE=t; INDEX=idx;
+  }catch(e){ $('tree').innerHTML='<div class="empty">offline — cannot reach the API at this origin</div>'; return; }
+  renderSummary(TREE); renderUnassigned(TREE); renderTree(TREE); renderForms(INDEX);
+}
+
+// Remember what the operator opened, so a refresh does not fold the tree.
+document.addEventListener('toggle',e=>{
+  const d=e.target; if(!(d instanceof HTMLDetailsElement)||!d.dataset.key) return;
+  if(d.open) OPEN.add(d.dataset.key); else OPEN.delete(d.dataset.key);
+},true);
+$('expandAll').addEventListener('click',()=>{document.querySelectorAll('details[data-key]').forEach(d=>{d.open=true;OPEN.add(d.dataset.key);});});
+$('collapseAll').addEventListener('click',()=>{document.querySelectorAll('details[data-key]').forEach(d=>{d.open=false;OPEN.delete(d.dataset.key);});});
+$('q').addEventListener('input',e=>{FILTER=e.target.value.trim().toLowerCase(); if(TREE) renderTree(TREE);});
+
+// A summary click toggles the <details>; a button inside it must not.
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-del]'); if(!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const kind=b.dataset.del, id=b.dataset.id;
+  if(!confirm(`Delete ${kind} ${id}?`)) return;
+  const path={region:'regions',city:'cities',branch:'branches'}[kind];
+  try{
+    const r=await fetch(`${API}/api/v1/org/${path}/${encodeURIComponent(id)}`,{method:'DELETE'});
+    const j=await r.json().catch(()=>({}));
+    setNote(r.ok?`Deleted ${kind} ${id}.`:(j.error||`delete failed (${r.status})`),!r.ok);
+    load();
+  }catch(err){ setNote('Delete failed — API offline?',true); }
+});
+// A link inside a <summary> would both navigate and toggle the band. Take
+// over the click: no toggle, and navigate ourselves.
+document.addEventListener('click',e=>{
+  const a=e.target.closest('summary a.fb-btn'); if(!a) return;
+  e.preventDefault(); e.stopPropagation(); location.href=a.href;
+},true);
+
+function setNote(t,bad){ const n=$('note'); n.textContent=t; n.classList.toggle('bad',!!bad); }
+
+document.querySelectorAll('button[data-save]').forEach(btn=>btn.addEventListener('click',async()=>{
+  const kind=btn.dataset.save; let body, path;
+  if(kind==='region'){ path='regions'; body={region_id:$('r_id').value.trim(),name:$('r_name').value.trim()||null}; }
+  else if(kind==='city'){ path='cities'; body={city_id:$('c_id').value.trim(),region_id:$('c_region').value,name:$('c_name').value.trim()||null}; }
+  else { path='branches'; body={branch_id:$('b_id').value.trim(),city_id:$('b_city').value,name:$('b_name').value.trim()||null,branch_type:$('b_type').value}; }
+  try{
+    const r=await fetch(`${API}/api/v1/org/${path}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ setNote('Save failed: '+((j.errors||[j.error]).join('; ')),true); return; }
+    setNote(`Saved ${kind} ${j[kind+'_id']}.`);
+    if(kind==='region'){['r_id','r_name'].forEach(i=>$(i).value='');}
+    else if(kind==='city'){['c_id','c_name'].forEach(i=>$(i).value='');}
+    else {['b_id','b_name'].forEach(i=>$(i).value='');}
+    load();
+  }catch(err){ setNote('Save failed — API offline?',true); }
+}));
+
+load();
+setInterval(load,5000);
+</script>
+<footer class="fb-footer">&copy; 2026 FinBladeAi. All Rights Reserved</footer>
+</body>
+</html>

@@ -500,6 +500,23 @@ def _paginate(rows, offset: int, limit: int):
                     "has_more": len(rows) > offset + limit}
 
 
+def _scope(region_id=None, city_id=None, branch_id=None):
+    """Branch ids (== site_ids) a read is narrowed to, or None for no scope.
+
+    The Region -> City -> Branch filters on every read endpoint resolve
+    through here. They INTERSECT with each other and with a bare `site_id`
+    filter where one exists, so `?region_id=WEST&site_id=RUH-01` returns
+    nothing rather than one or the other. An unknown id returns nothing too:
+    a typo must not quietly widen to the whole network.
+    """
+    return svc.branches_in_scope(region_id=region_id, city_id=city_id,
+                                 branch_id=branch_id)
+
+
+def _in_scope(rows, sites):
+    return rows if sites is None else [r for r in rows if r.get("site_id") in sites]
+
+
 @app.get("/api/v1/history/events")
 async def history_events(frm: float = Query(0, alias="from"),
                          to: float = Query(9_000_000_000_000.0, alias="to"),
@@ -507,6 +524,8 @@ async def history_events(frm: float = Query(0, alias="from"),
                          event_type: str = Query(None), person_ref: str = Query(None),
                          global_ref: str = Query(None),
                          site_id: str = Query(None),
+                         region_id: str = Query(None), city_id: str = Query(None),
+                         branch_id: str = Query(None),
                          limit: int = Query(500), offset: int = Query(0)):
     rows = svc.events_history(frm, to, camera_id=camera_id, zone_id=zone_id,
                               event_type=event_type, person_ref=person_ref,
@@ -514,6 +533,7 @@ async def history_events(frm: float = Query(0, alias="from"),
                               limit=offset + limit + 1)
     if site_id:
         rows = [e for e in rows if e.get("site_id") == site_id]
+    rows = _in_scope(rows, _scope(region_id, city_id, branch_id))
     window, page = _paginate(rows, offset, limit)
     return {"events": window, "page": page}
 
@@ -549,6 +569,8 @@ async def history_alerts(frm: float = Query(0, alias="from"),
                          camera_id: str = Query(None), rule_id: str = Query(None),
                          severity: str = Query(None), status: str = Query(None),
                          zone_id: str = Query(None), site_id: str = Query(None),
+                         region_id: str = Query(None), city_id: str = Query(None),
+                         branch_id: str = Query(None),
                          limit: int = Query(500), offset: int = Query(0)):
     rows = svc.alerts_history(frm, to, camera_id=camera_id, rule_id=rule_id,
                               limit=offset + limit + 1)
@@ -557,6 +579,7 @@ async def history_alerts(frm: float = Query(0, alias="from"),
         if wanted:
             rows = [a for a in rows
                     if str(a.get(field) or "").upper() == str(wanted).upper()]
+    rows = _in_scope(rows, _scope(region_id, city_id, branch_id))
     window, page = _paginate(rows, offset, limit)
     return {"alerts": window, "page": page}
 
@@ -1074,8 +1097,83 @@ def _is_integration(request) -> bool:
 
 
 @app.get("/api/v1/cameras")
-async def cameras(request: Request):
-    return {"cameras": _camera_list(drop_source=_is_integration(request))}
+async def cameras(request: Request, region_id: str = Query(None),
+                  city_id: str = Query(None), branch_id: str = Query(None)):
+    rows = _camera_list(drop_source=_is_integration(request))
+    return {"cameras": _in_scope(rows, _scope(region_id, city_id, branch_id))}
+
+
+# ---- organisation hierarchy: Region -> City -> Branch ----------------------
+# The customer's network is a strict tree and every camera hangs off a branch
+# (its site_id). GET /org is the tree with live counts rolled up per level;
+# the writes below maintain it; the region_id / city_id / branch_id query
+# parameters on the read endpoints narrow to a subtree. finblade/org.py.
+
+@app.get("/api/v1/org")
+async def org_tree(request: Request):
+    """Region -> City -> Branch -> cameras, with camera / zone / alert counts
+    summed up every level. Cameras whose site_id matches no branch are listed
+    under `unassigned` and counted in the network total only."""
+    cameras = _camera_list(drop_source=True)
+    return svc.org_tree(cameras=cameras, zones=svc.zone_states(),
+                        alerts=svc.list_alerts(unacked_only=False))
+
+
+@app.get("/api/v1/org/index")
+async def org_index():
+    """The raw rows (regions, cities, branches) and tenant meta, no counts.
+    What the editors and the seed script read."""
+    return svc.org_index()
+
+
+@app.post("/api/v1/org/import")
+async def org_import(request: Request):
+    """Load a whole tree in one call — see config/org.wareed.yaml for the
+    shape. Upserts by id and deletes nothing, so re-running is safe."""
+    code, body = svc.import_org(await request.json())
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/org/meta")
+async def org_meta(request: Request):
+    code, body = svc.set_org_meta(await request.json())
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/org/regions")
+async def org_save_region(request: Request):
+    code, body = svc.save_region(await request.json())
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.delete("/api/v1/org/regions/{region_id}")
+async def org_delete_region(region_id: str):
+    code, body = svc.delete_region(region_id)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/org/cities")
+async def org_save_city(request: Request):
+    code, body = svc.save_city(await request.json())
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.delete("/api/v1/org/cities/{city_id}")
+async def org_delete_city(city_id: str):
+    code, body = svc.delete_city(city_id)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/org/branches")
+async def org_save_branch(request: Request):
+    code, body = svc.save_branch(await request.json())
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.delete("/api/v1/org/branches/{branch_id}")
+async def org_delete_branch(branch_id: str):
+    code, body = svc.delete_branch(branch_id)
+    return JSONResponse(status_code=code, content=body)
 
 
 @app.post("/api/v1/cameras/health")
@@ -1093,6 +1191,14 @@ async def create_camera(request: Request):
     code, body = svc.upsert_camera(payload)
     if code != 200:
         return JSONResponse(status_code=code, content=body)
+    # site_id is the camera's BRANCH. Accepted whatever it says — a worker
+    # may register before the org chart is drawn — but a value that matches
+    # no branch is flagged, because that camera will sit under "Unassigned"
+    # on the Network page and in no region's total.
+    site = (payload.get("site_id") or "").strip()
+    if site and svc.store.list_branches() and not svc.branch_known(site):
+        body["warning"] = (f"site_id {site!r} is not a registered branch; the "
+                           "camera is listed as unassigned on the Network page")
     source = (payload.get("source") or "").strip()
     if source:
         if not _valid_source(source):
@@ -1225,7 +1331,9 @@ async def zone_state(request: Request):
 
 @app.get("/api/v1/zones/state")
 async def zone_states(camera_id: str = Query(None), zone_id: str = Query(None),
-                      site_id: str = Query(None), charts: int = Query(1)):
+                      site_id: str = Query(None), region_id: str = Query(None),
+                      city_id: str = Query(None), branch_id: str = Query(None),
+                      charts: int = Query(1)):
     """Live zone state, optionally narrowed.
 
     All filters are optional and default to off, so an existing caller sees
@@ -1240,6 +1348,7 @@ async def zone_states(camera_id: str = Query(None), zone_id: str = Query(None),
         rows = [z for z in rows if z.get("zone_id") == zone_id]
     if site_id:
         rows = [z for z in rows if z.get("site_id") == site_id]
+    rows = _in_scope(rows, _scope(region_id, city_id, branch_id))
     body = {"zones": rows}
     # FinBlade chart tag (live-feed-chart-tags.md). Additive; ?charts=0 omits it.
     return _charts.attach(body, _charts.zone_charts(rows)) if charts else body
@@ -1354,16 +1463,18 @@ async def zone_duration(zone_id: str, frm: float = Query(None, alias="from"),
 async def alerts(unacked_only: bool = False, severity: str = Query(None),
                  status: str = Query(None), zone_id: str = Query(None),
                  camera_id: str = Query(None), rule_id: str = Query(None),
-                 site_id: str = Query(None)):
+                 site_id: str = Query(None), region_id: str = Query(None),
+                 city_id: str = Query(None), branch_id: str = Query(None)):
     """The active alert feed (OPEN + ACK), optionally narrowed.
 
     Filters are case-insensitive and default to off. severity is
     INFO|AMBER|RED|CRITICAL and status is OPEN|ACK — a resolved or dismissed
     alert has left this feed by definition; use /history/alerts for those.
     """
-    return {"alerts": svc.list_alerts(
+    rows = svc.list_alerts(
         unacked_only=unacked_only, severity=severity, status=status,
-        zone_id=zone_id, camera_id=camera_id, rule_id=rule_id, site_id=site_id)}
+        zone_id=zone_id, camera_id=camera_id, rule_id=rule_id, site_id=site_id)
+    return {"alerts": _in_scope(rows, _scope(region_id, city_id, branch_id))}
 
 
 @app.get("/api/v1/alerts/{alert_id}")
@@ -1553,7 +1664,8 @@ async def health_detail():
 
 
 @app.get("/api/v1/summary")
-async def summary(charts: int = Query(1)):
+async def summary(charts: int = Query(1), region_id: str = Query(None),
+                  city_id: str = Query(None), branch_id: str = Query(None)):
     """Everything a remote dashboard needs, in ONE call at ONE instant.
 
     The /ws frame in REST form, plus people counts. Built from the same helpers
@@ -1569,9 +1681,13 @@ async def summary(charts: int = Query(1)):
     than 5s returns the same zone numbers repeatedly; 5s is the honest rate, or
     use /ws and stop polling.
     """
-    cameras = [_remote_camera_view(c) for c in _camera_list()]
-    zones = svc.zone_states()
-    alerts = svc.list_alerts(unacked_only=False)
+    # Region / City / Branch narrowing applies to the three site-keyed lists.
+    # `counts` (identity) is process-wide and is left as is; it is not
+    # site-keyed and a narrowed copy would be a guess.
+    sites = _scope(region_id, city_id, branch_id)
+    cameras = _in_scope([_remote_camera_view(c) for c in _camera_list()], sites)
+    zones = _in_scope(svc.zone_states(), sites)
+    alerts = _in_scope(svc.list_alerts(unacked_only=False), sites)
     counts = id_svc.counts()
 
     # Pre-tallied so a tile does not have to reduce three arrays to render one
@@ -1595,6 +1711,10 @@ async def summary(charts: int = Query(1)):
 
     body = {
         "site_id": _site_id(cameras),
+        # Echo the narrowing so a consumer can label what it is looking at.
+        "scope": {"region_id": region_id, "city_id": city_id,
+                  "branch_id": branch_id,
+                  "sites": sorted(sites) if sites is not None else None},
         "cameras": cameras,
         "zones": zones,
         # Active feed = OPEN + ACK. Resolved and dismissed drop out.

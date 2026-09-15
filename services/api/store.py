@@ -153,6 +153,22 @@ class Store:
     def list_reports(self, limit: int = 100) -> List[dict]: return []
     def get_report(self, report_id: str) -> dict: return None
 
+    # Organisation hierarchy: Region -> City -> Branch (finblade/org.py).
+    # A delete returns False both when the row is absent AND when it still has
+    # children — the tree is never left with an orphan. The service tells the
+    # two apart before calling, so the HTTP layer can say 404 vs 409.
+    def save_region(self, row: dict) -> None: pass
+    def list_regions(self) -> List[dict]: return []
+    def delete_region(self, region_id: str) -> bool: return False
+    def save_city(self, row: dict) -> None: pass
+    def list_cities(self) -> List[dict]: return []
+    def delete_city(self, city_id: str) -> bool: return False
+    def save_branch(self, row: dict) -> None: pass
+    def list_branches(self) -> List[dict]: return []
+    def delete_branch(self, branch_id: str) -> bool: return False
+    def get_org_meta(self) -> dict: return {}
+    def set_org_meta(self, meta: dict) -> None: pass
+
     # Facility roster. Default no-ops mean a backend without persistence keeps
     # working — but with the STRICT discharge policy the roster cannot be
     # rebuilt from live video, so a no-op backend resets occupancy to zero on
@@ -206,6 +222,10 @@ class InMemoryStore(Store):
         self._presence: List[dict] = []
         self._presence_stats: Dict[str, float] = {}
         self._presence_doors: Dict[str, dict] = {}
+        self._regions: Dict[str, dict] = {}
+        self._cities: Dict[str, dict] = {}
+        self._branches: Dict[str, dict] = {}
+        self._org_meta: Dict[str, str] = {}
 
     def save_event(self, evt: dict) -> None:
         """Replace on event_id, matching both durable stores.
@@ -554,6 +574,52 @@ class InMemoryStore(Store):
     def area_state_range(self, area_id, t0, t1):
         return [dict(s) for s in self._area_states
                 if s.get("area_id") == area_id and t0 <= s.get("ts", 0) <= t1]
+
+    # ---- organisation hierarchy ---------------------------------------------
+    # Same refusal rule as the Postgres foreign keys: a parent with children
+    # does not go. Enforced here too so the two backends answer alike.
+    def save_region(self, row):
+        self._regions[str(row["region_id"])] = dict(row, updated_at=time.time())
+
+    def list_regions(self):
+        return [dict(r) for r in self._regions.values()]
+
+    def delete_region(self, region_id):
+        rid = str(region_id)
+        if any(c.get("region_id") == rid for c in self._cities.values()):
+            return False
+        return self._regions.pop(rid, None) is not None
+
+    def save_city(self, row):
+        self._cities[str(row["city_id"])] = dict(row, updated_at=time.time())
+
+    def list_cities(self):
+        return [dict(c) for c in self._cities.values()]
+
+    def delete_city(self, city_id):
+        cid = str(city_id)
+        if any(b.get("city_id") == cid for b in self._branches.values()):
+            return False
+        return self._cities.pop(cid, None) is not None
+
+    def save_branch(self, row):
+        self._branches[str(row["branch_id"])] = dict(row, updated_at=time.time())
+
+    def list_branches(self):
+        return [dict(b) for b in self._branches.values()]
+
+    def delete_branch(self, branch_id):
+        return self._branches.pop(str(branch_id), None) is not None
+
+    def get_org_meta(self):
+        return dict(self._org_meta)
+
+    def set_org_meta(self, meta):
+        for k, v in (meta or {}).items():
+            if v is None:
+                self._org_meta.pop(str(k), None)
+            else:
+                self._org_meta[str(k)] = str(v)
 
     def rebind_global_ref(self, drop_ref, keep_ref):
         """Point stored events at the surviving ref after two identities merge."""

@@ -397,6 +397,33 @@ class TestZoneEntries(Base):
         self.assertEqual(7, got[0]["entries"])
 
 
+class TestOrgHierarchy(Base):
+    """Region -> City -> Branch flattened, joinable to everything on site_id."""
+
+    def test_one_row_per_branch_with_its_city_and_region(self):
+        self.conn.execute("INSERT INTO regions(region_id,name,sort_order) VALUES ('WEST','Western',1)")
+        self.conn.execute("INSERT INTO cities(city_id,region_id,name) VALUES ('JED','WEST','Jeddah')")
+        self.conn.execute("INSERT INTO branches(branch_id,city_id,name,branch_type) "
+                          "VALUES ('SITE-01','JED','Jeddah Main Lab','LAB')")
+        self.state(T0, 4)
+        self.build()
+        got = self.rows("SELECT region_name, city_name, branch_name FROM v_org_hierarchy")
+        self.assertEqual([("Western", "Jeddah", "Jeddah Main Lab")],
+                         [(r["region_name"], r["city_name"], r["branch_name"]) for r in got])
+        # The join the chatbot is expected to write: any site-keyed view
+        # rolled up by region.
+        got = self.rows(
+            "SELECT h.region_id, SUM(i.occupancy) AS occ FROM v_zone_intervals i "
+            "JOIN v_org_hierarchy h ON h.branch_id = i.site_id GROUP BY h.region_id")
+        self.assertEqual([("WEST", 4)], [(r["region_id"], int(r["occ"])) for r in got])
+
+    def test_a_branch_needs_a_city_and_a_city_needs_a_region(self):
+        with self.assertRaises(Exception):
+            self.conn.execute("INSERT INTO cities(city_id,region_id,name) VALUES ('JED','NOPE','Jeddah')")
+        with self.assertRaises(Exception):
+            self.conn.execute("INSERT INTO branches(branch_id,city_id) VALUES ('X','NOPE')")
+
+
 class TestNoCredentialsAnywhere(Base):
     """cameras.source holds RTSP URLs with passwords. It reached a read-only
     key once already; no view may select it."""

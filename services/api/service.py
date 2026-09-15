@@ -8,6 +8,7 @@ import os
 import time
 from typing import List, Optional, Tuple
 
+from finblade import org as _org
 from finblade.emission import DEFAULT_KEEPALIVE, StateWriteGate
 from finblade.events import FACILITY_ENTRY, FACILITY_EXIT, new_event
 from finblade.presence import (
@@ -921,6 +922,141 @@ class IngestService:
         gone = self.store.delete_area(area_id)
         self._areas_loaded = 0.0
         return gone
+
+    # -- organisation hierarchy: Region -> City -> Branch --
+    # Referential checks live here, not only in the database, so the in-memory
+    # backend refuses the same writes Postgres would and the HTTP layer can say
+    # 422 (bad parent) or 409 (has children) instead of surfacing an
+    # IntegrityError. finblade/org.py holds the pure logic.
+    def org_index(self) -> dict:
+        """The raw rows plus tenant meta — what the editors and the seed
+        script want, with no live counts attached."""
+        return {"meta": self.store.get_org_meta(),
+                "regions": self.store.list_regions(),
+                "cities": self.store.list_cities(),
+                "branches": self.store.list_branches()}
+
+    def org_tree(self, cameras: List[dict] = (), zones: List[dict] = (),
+                 alerts: List[dict] = ()) -> dict:
+        """The nested tree with camera / zone / alert counts rolled up per
+        level. `cameras` must already carry effective_state (the API's
+        _camera_list does that) — this does not recompute liveness."""
+        idx = self.org_index()
+        tree = _org.build_tree(idx["regions"], idx["cities"], idx["branches"],
+                               cameras=list(cameras), zones=list(zones),
+                               alerts=list(alerts))
+        tree["meta"] = idx["meta"]
+        return tree
+
+    def branches_in_scope(self, region_id=None, city_id=None, branch_id=None):
+        """Set of site_ids a read is narrowed to, or None for no scope."""
+        if not (region_id or city_id or branch_id):
+            return None
+        return _org.branches_in_scope(self.store.list_cities(),
+                                      self.store.list_branches(),
+                                      region_id=region_id, city_id=city_id,
+                                      branch_id=branch_id)
+
+    def branch_known(self, site_id) -> bool:
+        return bool(site_id) and any(b["branch_id"] == site_id
+                                     for b in self.store.list_branches())
+
+    def save_region(self, payload: dict) -> Tuple[int, dict]:
+        row, errors = _org.validate_region(payload or {})
+        if errors:
+            return 422, {"saved": False, "errors": errors}
+        self.store.save_region(row)
+        return 200, {"saved": True, "region_id": row["region_id"]}
+
+    def save_city(self, payload: dict) -> Tuple[int, dict]:
+        row, errors = _org.validate_city(
+            payload or {}, [r["region_id"] for r in self.store.list_regions()])
+        if errors:
+            return 422, {"saved": False, "errors": errors}
+        self.store.save_city(row)
+        return 200, {"saved": True, "city_id": row["city_id"]}
+
+    def save_branch(self, payload: dict) -> Tuple[int, dict]:
+        row, errors = _org.validate_branch(
+            payload or {}, [c["city_id"] for c in self.store.list_cities()])
+        if errors:
+            return 422, {"saved": False, "errors": errors}
+        self.store.save_branch(row)
+        return 200, {"saved": True, "branch_id": row["branch_id"]}
+
+    def _delete_node(self, level: str, node_id: str, exists: bool,
+                     children: int, deleter) -> Tuple[int, dict]:
+        if not exists:
+            return 404, {"deleted": False, "error": f"unknown {level}",
+                         f"{level}_id": node_id}
+        if children:
+            return 409, {"deleted": False, f"{level}_id": node_id,
+                         "error": f"{level} still has {children} child(ren); "
+                                  "delete or move them first"}
+        return 200, {"deleted": bool(deleter(node_id)), f"{level}_id": node_id}
+
+    def delete_region(self, region_id: str) -> Tuple[int, dict]:
+        rid = str(region_id)
+        return self._delete_node(
+            "region", rid,
+            any(r["region_id"] == rid for r in self.store.list_regions()),
+            sum(1 for c in self.store.list_cities() if c.get("region_id") == rid),
+            self.store.delete_region)
+
+    def delete_city(self, city_id: str) -> Tuple[int, dict]:
+        cid = str(city_id)
+        return self._delete_node(
+            "city", cid,
+            any(c["city_id"] == cid for c in self.store.list_cities()),
+            sum(1 for b in self.store.list_branches() if b.get("city_id") == cid),
+            self.store.delete_city)
+
+    def delete_branch(self, branch_id: str) -> Tuple[int, dict]:
+        bid = str(branch_id)
+        # Cameras are the branch's children here. They are not deleted with
+        # it — a camera is a running pipeline, not an org-chart entry — but a
+        # branch that still owns cameras is not removed either, or those
+        # cameras would silently drop out of every regional total.
+        return self._delete_node(
+            "branch", bid,
+            any(b["branch_id"] == bid for b in self.store.list_branches()),
+            sum(1 for c in self.store.list_cameras() if c.get("site_id") == bid),
+            self.store.delete_branch)
+
+    def set_org_meta(self, payload: dict) -> Tuple[int, dict]:
+        if not isinstance(payload, dict):
+            return 422, {"saved": False, "errors": ["object expected"]}
+        allowed = {k: payload.get(k) for k in ("tenant_name", "tenant_country",
+                                               "tenant_short")
+                   if k in payload}
+        if not allowed:
+            return 422, {"saved": False,
+                         "errors": ["nothing to set: tenant_name, tenant_country, tenant_short"]}
+        self.store.set_org_meta(allowed)
+        return 200, {"saved": True, "meta": self.store.get_org_meta()}
+
+    def import_org(self, payload: dict) -> Tuple[int, dict]:
+        """Load a whole tree in one call. Idempotent: rows are upserted by id,
+        nothing is deleted, so re-running a seed file is safe."""
+        if not isinstance(payload, dict):
+            return 422, {"imported": False, "errors": ["object expected"]}
+        regions, cities, branches, errors = _org.flatten_import(payload)
+        if errors:
+            return 422, {"imported": False, "errors": errors}
+        for r in regions:
+            self.store.save_region(r)
+        for c in cities:
+            self.store.save_city(c)
+        for b in branches:
+            self.store.save_branch(b)
+        tenant = payload.get("tenant") or {}
+        if isinstance(tenant, dict) and tenant:
+            self.store.set_org_meta({
+                "tenant_name": tenant.get("name"),
+                "tenant_country": tenant.get("country"),
+                "tenant_short": tenant.get("short")})
+        return 200, {"imported": True, "regions": len(regions),
+                     "cities": len(cities), "branches": len(branches)}
 
     # -- alerts --
     def site_for_camera(self, camera_id) -> str:

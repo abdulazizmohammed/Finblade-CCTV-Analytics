@@ -149,9 +149,17 @@ function setMode(m){
   load();
 }
 
+// Region -> City -> Branch scope, passed straight through from the URL
+// (?region_id= / ?city_id= / ?branch_id=, which is how the Network page links
+// here). The history endpoints narrow server-side; the camera dropdown is
+// narrowed the same way so it only offers cameras in scope.
+const ORG_SCOPE=(()=>{const q=new URL(location.href).searchParams;const o={};
+  ['region_id','city_id','branch_id'].forEach(k=>{if(q.get(k))o[k]=q.get(k);});return o;})();
+const withScope=q=>{Object.entries(ORG_SCOPE).forEach(([k,v])=>q.set(k,v));return q;};
+
 async function loadCameras(){
   try{
-    const {cameras}=await fetch(`${API}/api/v1/cameras`).then(r=>r.json());
+    const {cameras}=await fetch(`${API}/api/v1/cameras?${withScope(new URLSearchParams())}`).then(r=>r.json());
     const sel=$('cam');
     cameras.forEach(c=>{const o=document.createElement('option');o.value=c.camera_id;o.textContent=c.camera_id;sel.appendChild(o);});
   }catch(e){}
@@ -164,12 +172,12 @@ async function load(){
   try{
     if(mode==='alerts'){
       $('flows').innerHTML=''; $('tracks').innerHTML='';
-      const q=new URLSearchParams({from,to,limit:1000});
+      const q=withScope(new URLSearchParams({from,to,limit:1000}));
       if(cam)q.set('camera_id',cam); if(typ)q.set('rule_id',typ);
       rows=(await fetch(`${API}/api/v1/history/alerts?${q}`).then(r=>r.json())).alerts||[];
       renderAlerts(rows);
     }else{
-      const q=new URLSearchParams({from,to,limit:1000});
+      const q=withScope(new URLSearchParams({from,to,limit:1000}));
       if(cam)q.set('camera_id',cam); if(typ)q.set('event_type',typ);
       if(pref)q.set('person_ref',pref);
       rows=(await fetch(`${API}/api/v1/history/events?${q}`).then(r=>r.json())).events||[];

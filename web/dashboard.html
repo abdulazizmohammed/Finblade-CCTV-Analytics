@@ -28,6 +28,18 @@ body{
 .spacer{flex:1;}
 .meta{display:flex;align-items:center;gap:18px;}
 .meta .site{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);letter-spacing:.04em;}
+/* Region -> City -> Branch scope. Chrome, so teal focus and no status colour.
+   The selects cascade; "All" at any level clears the levels beneath it. */
+.scope{display:flex;align-items:center;gap:6px;}
+.scope .lbl{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--fb-text-faint);}
+.scope select{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:11px;padding:4px 6px;border-radius:var(--fb-r);max-width:150px;}
+.scope select:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.scope select:disabled{color:var(--fb-text-faint);}
+.scope .sep{color:var(--fb-text-faint);font-family:var(--fb-font-data);}
+.scope[hidden]{display:none;}
+.crumb{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);letter-spacing:.04em;}
+.crumb b{color:var(--fb-text);font-weight:500;}
+@media(max-width:960px){.topbar{flex-wrap:wrap;}.meta{flex-wrap:wrap;gap:10px;}}
 .clock{font-family:var(--fb-font-data);color:var(--fb-teal);letter-spacing:.06em;font-variant-numeric:tabular-nums;}
 .conn{display:flex;align-items:center;gap:7px;font-family:var(--fb-font-data);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
 .conn .dot{width:7px;height:7px;border-radius:50%;background:var(--fb-teal);box-shadow:0 0 8px var(--fb-teal);animation:fbpulse 2.4s ease-in-out infinite;}
@@ -202,9 +214,20 @@ body{
     </div>
     <span class="spacer"></span>
     <div class="meta">
-      <span class="site" id="site">—</span>
+      <!-- Region -> City -> Branch. Hidden until the org chart exists, so a
+           deployment that has not drawn one sees the page it always saw. -->
+      <div class="scope" id="scope" hidden>
+        <span class="lbl">Scope</span>
+        <select id="scRegion" aria-label="Region"><option value="">All regions</option></select>
+        <span class="sep">›</span>
+        <select id="scCity" aria-label="City" disabled><option value="">All cities</option></select>
+        <span class="sep">›</span>
+        <select id="scBranch" aria-label="Branch" disabled><option value="">All branches</option></select>
+      </div>
+      <span class="crumb" id="site">—</span>
       <span class="clock fb-num" id="clock">--:--:--</span>
       <span class="conn" id="conn"><span class="dot"></span> connecting…</span>
+      <a class="fb-btn" href="network.html">Network</a>
       <a class="fb-btn" href="cameras.html">Cameras</a>
       <a class="fb-btn" href="/tools/zone-editor.html">Zones</a>
       <a class="fb-btn" href="history.html">History</a>
@@ -270,6 +293,110 @@ const STREAM=`${location.protocol}//${location.hostname}:8080/stream`;
 const $=id=>document.getElementById(id);
 const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
 const t0=Date.now();
+
+// --- Region -> City -> Branch scope ------------------------------------------
+// The customer's command centre reads the network by region, city and branch,
+// and a branch is a camera's site_id. Scope is applied CLIENT-SIDE to the
+// site-keyed lists (cameras, zones, alerts): the /ws frame is unchanged and
+// carries the whole network, and the page keeps only rows whose site_id is in
+// the selected subtree. So switching scope is instant and never reconnects
+// the socket. The facility roster and identity counts are process-wide and
+// are not site-keyed, so they are left alone.
+//
+// Initial scope comes from the URL (?region= / ?city= / ?branch=) — that is
+// how the Network page's "Dashboard" buttons land here already narrowed — and
+// is then written back to the URL so the view survives a refresh and can be
+// bookmarked for a wall screen.
+const SCOPE={sites:null, region:'', city:'', branch:'', index:null};
+function inScope(row){ return SCOPE.sites===null || SCOPE.sites.has(row&&row.site_id); }
+function scoped(rows){ return SCOPE.sites===null ? (rows||[]) : (rows||[]).filter(inScope); }
+
+function resolveScope(){
+  const idx=SCOPE.index; if(!idx){SCOPE.sites=null;return;}
+  if(!SCOPE.region&&!SCOPE.city&&!SCOPE.branch){SCOPE.sites=null;return;}
+  const cityRegion={}; idx.cities.forEach(c=>cityRegion[c.city_id]=c.region_id);
+  const keep=new Set();
+  idx.branches.forEach(b=>{
+    if(SCOPE.branch&&b.branch_id!==SCOPE.branch)return;
+    if(SCOPE.city&&b.city_id!==SCOPE.city)return;
+    if(SCOPE.region&&cityRegion[b.city_id]!==SCOPE.region)return;
+    keep.add(b.branch_id);
+  });
+  SCOPE.sites=keep;
+}
+function scopeLabel(){
+  const idx=SCOPE.index; const m=(idx&&idx.meta)||{};
+  const tenant=m.tenant_short||m.tenant_name||'';
+  const parts=[];
+  if(idx){
+    const r=idx.regions.find(x=>x.region_id===SCOPE.region);
+    const c=idx.cities.find(x=>x.city_id===SCOPE.city);
+    const b=idx.branches.find(x=>x.branch_id===SCOPE.branch);
+    if(r)parts.push(esc(r.name)); if(c)parts.push(esc(c.name)); if(b)parts.push(`<b>${esc(b.name)}</b>`);
+  }
+  if(!parts.length) parts.push(tenant?'<b>whole network</b>':'');
+  return (tenant?esc(tenant)+' · ':'')+parts.join(' › ');
+}
+function fillSelect(sel,rows,idKey,placeholder){
+  const cur=sel.value;
+  sel.innerHTML=`<option value="">${placeholder}</option>`+rows.map(r=>`<option value="${esc(r[idKey])}">${esc(r.name||r[idKey])}</option>`).join('');
+  sel.value=rows.some(r=>r[idKey]===cur)?cur:'';
+}
+function renderScope(){
+  const idx=SCOPE.index; const host=$('scope');
+  if(!idx||!idx.regions.length){host.hidden=true;$('site').innerHTML=scopeLabel()||'—';return;}
+  host.hidden=false;
+  fillSelect($('scRegion'),idx.regions,'region_id','All regions');
+  $('scRegion').value=SCOPE.region;
+  const cities=idx.cities.filter(c=>!SCOPE.region||c.region_id===SCOPE.region);
+  fillSelect($('scCity'),cities,'city_id','All cities'); $('scCity').value=SCOPE.city; $('scCity').disabled=!SCOPE.region;
+  const branches=idx.branches.filter(b=>{
+    if(SCOPE.city) return b.city_id===SCOPE.city;
+    if(SCOPE.region) return cities.some(c=>c.city_id===b.city_id);
+    return true;
+  });
+  fillSelect($('scBranch'),branches,'branch_id','All branches'); $('scBranch').value=SCOPE.branch; $('scBranch').disabled=!SCOPE.region;
+  $('site').innerHTML=scopeLabel();
+}
+function setScope(region,city,branch){
+  const before=[SCOPE.region,SCOPE.city,SCOPE.branch,SCOPE.sites&&[...SCOPE.sites].sort().join(',')].join('|');
+  SCOPE.region=region||''; SCOPE.city=city||''; SCOPE.branch=branch||'';
+  // A parent change invalidates its children.
+  const idx=SCOPE.index;
+  if(idx){
+    if(SCOPE.city && !idx.cities.some(c=>c.city_id===SCOPE.city&&(!SCOPE.region||c.region_id===SCOPE.region))) SCOPE.city='';
+    if(SCOPE.branch){
+      const b=idx.branches.find(x=>x.branch_id===SCOPE.branch);
+      const cityOk=b&&(!SCOPE.city||b.city_id===SCOPE.city);
+      const regOk=b&&(!SCOPE.region||idx.cities.some(c=>c.city_id===b.city_id&&c.region_id===SCOPE.region));
+      if(!(cityOk&&regOk)) SCOPE.branch='';
+    }
+  }
+  resolveScope(); renderScope();
+  const u=new URL(location.href);
+  ['region','city','branch'].forEach(k=>{ if(SCOPE[k]) u.searchParams.set(k,SCOPE[k]); else u.searchParams.delete(k); });
+  history.replaceState(null,'',u);
+  // Re-apply whatever the last frame carried: no need to wait for the next
+  // push. Only when the scope genuinely changed — this also runs on the
+  // periodic index refresh, and a forced re-render there would restart every
+  // tile animation for nothing.
+  const after=[SCOPE.region,SCOPE.city,SCOPE.branch,SCOPE.sites&&[...SCOPE.sites].sort().join(',')].join('|');
+  if(after===before) return;
+  Object.assign(SIG,{cams:null,zones:null,alerts:null});
+  if(LAST_FRAME) apply(LAST_FRAME);
+  if(LAST_CAMS_RAW.length) renderCameras(scoped(LAST_CAMS_RAW));
+}
+async function loadScopeIndex(){
+  try{
+    SCOPE.index=await fetch(`${API}/api/v1/org/index`).then(r=>r.json());
+  }catch(e){ SCOPE.index=null; }
+  const q=new URL(location.href).searchParams;
+  setScope(q.get('region')||SCOPE.region, q.get('city')||SCOPE.city, q.get('branch')||SCOPE.branch);
+}
+$('scRegion').addEventListener('change',e=>setScope(e.target.value,'',''));
+$('scCity').addEventListener('change',e=>setScope(SCOPE.region,e.target.value,''));
+$('scBranch').addEventListener('change',e=>setScope(SCOPE.region,SCOPE.city,e.target.value));
+let LAST_FRAME=null, LAST_CAMS_RAW=[];
 
 // zone status vocabulary (NORMAL/WARNING/CRITICAL); AMBER/RED kept for alert severities
 const SEVCLASS={NORMAL:'normal',WARNING:'warning',CRITICAL:'critical',AMBER:'warning',RED:'critical',INFO:'normal'};
@@ -656,7 +783,8 @@ function renderCameras(cameras){
 async function pollCameras(){
   try{
     const {cameras}=await fetch(`${API}/api/v1/cameras`).then(r=>r.json());
-    renderCameras(cameras||[]);
+    LAST_CAMS_RAW=cameras||[];
+    renderCameras(scoped(LAST_CAMS_RAW));
   }catch(e){}
 }
 
@@ -844,23 +972,26 @@ const sigZones=z=>JSON.stringify((z||[]).map(x=>[x.zone_id,x.camera_id,x.zone_na
 const sigAlerts=a=>JSON.stringify((a||[]).map(x=>[x.alert_id,x.status,x.severity,x.message,x.frame]));
 
 function apply(d){
+  LAST_FRAME=d;
   // Sort zones to a FIXED order. The server returns them in whatever order the
   // underlying map yields, which varies between responses — so the cards were
   // being reshuffled on screen on every update, and no change-detection could
   // work because an identical set of zones produced a different signature each
   // time. An operator watching a wall display should find a given zone in the
   // same place every time they look at it.
-  const zones=(d.zones||[]).slice().sort((a,b)=>
+  // Scope first: everything below sees only the selected Region/City/Branch.
+  const zones=scoped(d.zones).slice().sort((a,b)=>
     String(a.camera_id).localeCompare(String(b.camera_id)) ||
     String(a.zone_id).localeCompare(String(b.zone_id)));
-  const alerts=d.alerts||[];
-  if(zones[0]&&zones[0].camera_id)$('site').textContent=zones[0].camera_id;
+  const alerts=scoped(d.alerts);
   if(d.cameras){
+    LAST_CAMS_RAW=d.cameras;
+    const cams=scoped(d.cameras);
     // LAST_CAMS must be updated every time even when the DOM is not, because
     // renderKpis reads it for the live people count.
-    LAST_CAMS=d.cameras;
-    const s=sigCams(d.cameras);
-    if(s!==SIG.cams){SIG.cams=s;renderCameras(d.cameras);}
+    LAST_CAMS=cams;
+    const s=sigCams(cams);
+    if(s!==SIG.cams){SIG.cams=s;renderCameras(cams);}
   }
   // Cheap: a handful of textContent writes, no innerHTML. Left unguarded so the
   // headline figures stay live at socket rate.
@@ -986,6 +1117,7 @@ async function clearAlerts(scope,btn){
 $('clearClosed').addEventListener('click',()=>clearAlerts('closed'));
 $('clearAll').addEventListener('click',()=>clearAlerts('all'));
 
+loadScopeIndex();setInterval(loadScopeIndex,30000);   // org chart: rarely changes, cheap to re-read
 pollCameras();setInterval(pollCameras,3000);   // cameras/feeds refresh independently of WS
 pollCounts();setInterval(pollCounts,3000);     // unique-people counts (zone-independent)
 pollFacility();setInterval(pollFacility,FACILITY_MS);  // door-counted facility roster (WS-independent)

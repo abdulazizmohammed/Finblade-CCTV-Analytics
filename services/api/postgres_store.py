@@ -754,6 +754,84 @@ class PostgresStore(Store):
             "WHERE area_id=%s AND ts BETWEEN %s AND %s ORDER BY ts",
             (str(area_id), float(t0), float(t1)))
 
+    # ---- organisation hierarchy -------------------------------------------
+    # Region -> City -> Branch. The foreign keys in ddl_pg.sql are ON DELETE
+    # RESTRICT, so deleting a parent with children raises; the check runs
+    # first so the answer is a clean False, identical to InMemoryStore, and
+    # the service can report 409 rather than the API log a stack trace.
+    def save_region(self, row: dict) -> None:
+        self._x(
+            "INSERT INTO regions(region_id,name,sort_order,updated_at) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (region_id) DO UPDATE SET "
+            "name=excluded.name, sort_order=excluded.sort_order, "
+            "updated_at=excluded.updated_at",
+            (str(row["region_id"]), row.get("name") or row["region_id"],
+             int(row.get("sort_order") or 0), time.time()))
+
+    def list_regions(self) -> List[dict]:
+        return self._q("SELECT region_id,name,sort_order,updated_at FROM regions "
+                       "ORDER BY sort_order, name, region_id")
+
+    def delete_region(self, region_id: str) -> bool:
+        rid = str(region_id)
+        if self._one("SELECT COUNT(*) FROM cities WHERE region_id=%s", (rid,)):
+            return False
+        return self._x("DELETE FROM regions WHERE region_id=%s", (rid,)) > 0
+
+    def save_city(self, row: dict) -> None:
+        self._x(
+            "INSERT INTO cities(city_id,region_id,name,updated_at) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (city_id) DO UPDATE SET "
+            "region_id=excluded.region_id, name=excluded.name, "
+            "updated_at=excluded.updated_at",
+            (str(row["city_id"]), str(row["region_id"]),
+             row.get("name") or row["city_id"], time.time()))
+
+    def list_cities(self) -> List[dict]:
+        return self._q("SELECT city_id,region_id,name,updated_at FROM cities "
+                       "ORDER BY name, city_id")
+
+    def delete_city(self, city_id: str) -> bool:
+        cid = str(city_id)
+        if self._one("SELECT COUNT(*) FROM branches WHERE city_id=%s", (cid,)):
+            return False
+        return self._x("DELETE FROM cities WHERE city_id=%s", (cid,)) > 0
+
+    def save_branch(self, row: dict) -> None:
+        self._x(
+            "INSERT INTO branches(branch_id,city_id,name,branch_type,address,"
+            "timezone,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (branch_id) DO UPDATE SET city_id=excluded.city_id, "
+            "name=excluded.name, branch_type=excluded.branch_type, "
+            "address=excluded.address, timezone=excluded.timezone, "
+            "updated_at=excluded.updated_at",
+            (str(row["branch_id"]), str(row["city_id"]),
+             row.get("name") or row["branch_id"],
+             row.get("branch_type") or "LAB", row.get("address"),
+             row.get("timezone"), time.time()))
+
+    def list_branches(self) -> List[dict]:
+        return self._q("SELECT branch_id,city_id,name,branch_type,address,"
+                       "timezone,updated_at FROM branches ORDER BY name, branch_id")
+
+    def delete_branch(self, branch_id: str) -> bool:
+        return self._x("DELETE FROM branches WHERE branch_id=%s",
+                       (str(branch_id),)) > 0
+
+    def get_org_meta(self) -> dict:
+        return {r["key"]: r["value"] for r in self._q("SELECT key,value FROM org_meta")}
+
+    def set_org_meta(self, meta: dict) -> None:
+        with self._pool.connection() as conn:
+            for k, v in (meta or {}).items():
+                if v is None:
+                    conn.execute("DELETE FROM org_meta WHERE key=%s", (str(k),))
+                else:
+                    conn.execute(
+                        "INSERT INTO org_meta(key,value) VALUES (%s,%s) "
+                        "ON CONFLICT (key) DO UPDATE SET value=excluded.value",
+                        (str(k), str(v)))
+
     # ---- identity merge write-back ----------------------------------------
     def rebind_global_ref(self, drop_ref: str, keep_ref: str) -> int:
         """Point stored events at the surviving ref after two identities merge.

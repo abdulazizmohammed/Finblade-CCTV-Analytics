@@ -12,11 +12,65 @@ database:
   views_source: services/api/analytics_views.py
   views_applied_by: scripts/pg_apply.py       # out of band; not created by the app
   timestamps: epoch_seconds_double_precision_utc
-  foreign_keys: none                          # all relationships are logical
+  foreign_keys: org_hierarchy_only            # cities->regions, branches->cities; everything else is logical
   materialized_views: none
-  sites_table: absent                         # site_id is an unvalidated label
+  sites_table: branches                       # site_id == branches.branch_id (Region -> City -> Branch); unmatched site_ids are "unassigned"
 
 tables:
+  - name: regions
+    purpose: Top level of the customer's organisation (Region -> City -> Branch).
+    recommended_for_chatbot: yes
+    primary_key: [region_id]
+    columns:
+      region_id: {type: text}
+      name: {type: text}
+      sort_order: {type: bigint, meaning: "display order"}
+      updated_at: {type: double}
+    relationships: []
+    warnings:
+      - Prefer v_org_hierarchy, which joins all three levels into one row per branch.
+
+  - name: cities
+    purpose: Middle level of the organisation; every city belongs to one region.
+    recommended_for_chatbot: yes
+    primary_key: [city_id]
+    columns:
+      city_id: {type: text}
+      region_id: {type: text, meaning: "FK regions.region_id, ON DELETE RESTRICT"}
+      name: {type: text}
+      updated_at: {type: double}
+    relationships:
+      - region_id -> regions.region_id
+    warnings: []
+
+  - name: branches
+    purpose: A site. branch_id IS the site_id carried by cameras, zone readings, events and alerts.
+    recommended_for_chatbot: yes
+    primary_key: [branch_id]
+    columns:
+      branch_id: {type: text, meaning: "== site_id everywhere else"}
+      city_id: {type: text, meaning: "FK cities.city_id, ON DELETE RESTRICT"}
+      name: {type: text}
+      branch_type: {type: text, meaning: "LAB | COLLECTION | HQ | WAREHOUSE | OTHER"}
+      address: {type: text}
+      timezone: {type: text}
+      updated_at: {type: double}
+    relationships:
+      - city_id -> cities.city_id
+      - branch_id <- cameras.site_id, zone_state_ts.site_id, events.site_id, alerts.site_id (logical, not enforced)
+    warnings:
+      - A site_id on the fact tables with no row here is a camera nobody has placed on the org chart. LEFT JOIN if those must be included.
+
+  - name: org_meta
+    purpose: Tenant-level text facts (tenant_name, tenant_country, tenant_short).
+    recommended_for_chatbot: yes
+    primary_key: [key]
+    columns:
+      key: {type: text}
+      value: {type: text}
+    relationships: []
+    warnings: []
+
   - name: events
     purpose: Every discrete occurrence — zone movement, camera state, facility crossings, rule-derived events.
     recommended_for_chatbot: caution
@@ -434,6 +488,26 @@ views:
       updated_utc: {type: timestamptz}
     warnings:
       - Always pair zone_id with camera_id.
+
+  - name: v_org_hierarchy
+    purpose: Region -> City -> Branch flattened to one row per branch, for rolling any site-keyed figure up to a city or region.
+    recommended_for: ["which region/city a site belongs to", "occupancy or alerts per region", "listing branches"]
+    source: [branches, cities, regions]
+    columns:
+      branch_id: {type: text, meaning: "== site_id on every other view; join on it"}
+      branch_name: {type: text}
+      branch_type: {type: text}
+      timezone: {type: text}
+      city_id: {type: text}
+      city_name: {type: text}
+      region_id: {type: text}
+      region_name: {type: text}
+      region_order: {type: bigint}
+      updated_at: {type: double}
+      updated_utc: {type: timestamptz}
+    warnings:
+      - "Example: SELECT h.region_name, SUM(i.occupancy * i.duration_seconds) FROM v_zone_intervals i JOIN v_org_hierarchy h ON h.branch_id = i.site_id GROUP BY 1."
+      - A site_id with no matching row is unassigned; an inner join drops it silently.
 
   - name: v_zone_entries
     purpose: One row per person arriving in a zone, safe to count.

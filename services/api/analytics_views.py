@@ -564,6 +564,31 @@ FROM zones z
 LEFT JOIN physical_areas a ON a.area_id = z.physical_area_id
 """.strip()))
 
+    # ---------------------------------------------------------- organisation --
+    # Region -> City -> Branch, flattened to one row per branch. site_id on
+    # every other view IS a branch_id, so "occupancy in the Western region
+    # today" is v_zone_intervals JOIN v_org_hierarchy ON site_id = branch_id
+    # WHERE region_id = 'WESTERN'. Deliberately does NOT reference cameras —
+    # that table holds credentials and exactly one view may touch it.
+    views.append(("v_org_hierarchy", f"""
+CREATE VIEW v_org_hierarchy AS
+SELECT
+    b.branch_id,                    -- == site_id everywhere else
+    b.name          AS branch_name,
+    b.branch_type,
+    b.timezone,
+    c.city_id,
+    c.name          AS city_name,
+    r.region_id,
+    r.name          AS region_name,
+    r.sort_order    AS region_order,
+    b.updated_at,
+    {ts('b.updated_at')} AS updated_utc
+FROM branches b
+JOIN cities  c ON c.city_id   = b.city_id
+JOIN regions r ON r.region_id = c.region_id
+""".strip()))
+
     # ------------------------------------------------------------- timeline --
     # The single view the chatbot points at. UNION ALL, not a join: this is the
     # SUM of the three tables (3.3M rows), where joining them is the PRODUCT
@@ -955,6 +980,11 @@ SAFE_COLUMNS = {
         "critical_density", "loitering_threshold_sec", "physical_area_id",
         "area_name", "updated_at", "updated_utc",
     ),
+    "v_org_hierarchy": (
+        "branch_id", "branch_name", "branch_type", "timezone", "city_id",
+        "city_name", "region_id", "region_name", "region_order",
+        "updated_at", "updated_utc",
+    ),
     # Journey reconstruction. person_key appears here for the same reason it
     # does above — it is the column that can be counted correctly — and
     # person_ref does not appear at all. fragment_id embeds person_key, so it
@@ -1034,6 +1064,11 @@ _VIEW_COMMENTS = {
     "v_zone_config": (
         "Zone definitions and their thresholds. zone_id is unique only within a "
         "camera — always pair it with camera_id."),
+    "v_org_hierarchy": (
+        "Region -> City -> Branch, one row per branch. branch_id equals the "
+        "site_id column on every other view, so join on that to roll any "
+        "figure up to a city or a region. A site_id with no row here is a "
+        "camera nobody has placed on the org chart."),
     "v_timeline": (
         "Every record on one time axis: a UNION, not a join. Joining the fact "
         "tables instead would produce 5.66 trillion rows from a 1.15GB source. "

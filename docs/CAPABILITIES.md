@@ -143,6 +143,31 @@ The spatial model is **symbolic, not metric**. It records that two polygons are
 the same room; it does not know where either sits in space. Nothing projects a
 detection into shared world coordinates yet.
 
+### Organisation hierarchy: Region → City → Branch
+
+The customer's network is a strict tree and every camera hangs off a branch.
+**A camera's `site_id` is its branch id** — the key every camera, zone
+reading, event and alert already carried, so the hierarchy attaches to the
+data that exists rather than adding a second key that could disagree with it.
+
+| Capability | Status | Implementation |
+|---|---|---|
+| Regions, cities, branches as tables with `ON DELETE RESTRICT` foreign keys | Built | `ddl_pg.sql` `regions` `cities` `branches` `org_meta` |
+| Validation and referential checks (422 bad parent, 409 has children) | Built | `finblade/org.py`, `service.py` `save_region/city/branch`, `delete_*` |
+| Tree with camera / zone / alert counts rolled up per level | Built | `GET /api/v1/org`, `org.build_tree` |
+| Cameras whose `site_id` matches no branch listed as **unassigned**, counted in the network total only | Built | `org.build_tree`; `POST /cameras` returns a `warning` |
+| A branch that still owns cameras refuses deletion | Built | `service.delete_branch` |
+| `region_id` / `city_id` / `branch_id` narrowing on `cameras`, `zones/state`, `alerts`, `summary`, `history/events`, `history/alerts` | Built | `app.py` `_scope`; filters intersect, an unknown id returns nothing |
+| Whole-tree import, idempotent | Built | `POST /api/v1/org/import`, `scripts/seed_org.py`, `config/org.wareed.yaml` |
+| Tenant name / country on the tree | Built | `org_meta`, `POST /api/v1/org/meta` |
+| `v_org_hierarchy` view for chatbot roll-ups by region | Built | `analytics_views.py`; join `site_id = branch_id` |
+
+Not a foreign key from `cameras.site_id`, deliberately: workers post `site_id`
+before anyone has drawn the org chart, and a camera that names an unknown
+branch must be visible as unassigned, not rejected. Tests:
+`tests/test_org.py` (logic, both store backends, service, HTTP routes),
+`tests/test_analytics_views.py::TestOrgHierarchy`.
+
 ## 4. Metrics
 
 | Capability | Status | Implementation |
@@ -380,16 +405,18 @@ crossing publishes immediately.
 Postgres is the only durable backend. `FINBLADE_INMEMORY=1` selects an in-memory
 store for tests; it is explicitly opt-in and never a fallback.
 
-**14 tables** — `alerts` `area_state_ts` `camera_transits` `cameras` `events`
-`facility_doors` `facility_meta` `facility_presence` `forwarder_cursors`
-`physical_areas` `reports` `zone_live` `zone_state_ts` `zones`
+**18 tables** — `alerts` `area_state_ts` `branches` `camera_transits` `cameras`
+`cities` `events` `facility_doors` `facility_meta` `facility_presence`
+`forwarder_cursors` `org_meta` `physical_areas` `regions` `reports` `zone_live`
+`zone_state_ts` `zones`
 (`services/api/ddl_pg.sql`, idempotent `CREATE`/`ALTER ... IF NOT EXISTS`).
 
-**17 SQL views** for direct chatbot querying (`services/api/analytics_views.py`):
+**18 SQL views** for direct chatbot querying (`services/api/analytics_views.py`):
 `v_zone_intervals` `v_zone_current` `v_zone_events` `v_zone_entries` `v_alerts`
 `v_facility_current` `v_facility_roster` `v_facility_crossings` `v_facility_doors`
 `v_area_current` `v_area_intervals` `v_camera_status` `v_zone_config`
-`v_timeline` `v_journey_fragments` `v_journey_links` `v_journey_traces`
+`v_org_hierarchy` `v_timeline` `v_journey_fragments` `v_journey_links`
+`v_journey_traces`
 
 | Capability | Status | Implementation |
 |---|---|---|
@@ -400,7 +427,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**66 routes** — 63 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**76 routes** — 73 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 
@@ -416,6 +443,7 @@ WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 | Alerts | list, get, `ack`, `resolve`, bulk delete |
 | Reports | `generate`, `{id}`, `occupancy` as HTML / JSON / CSV |
 | Zones & areas | zone CRUD, area CRUD |
+| Organisation | `org` (tree + roll-ups), `org/index`, `org/import`, `org/meta`, `org/regions`, `org/cities`, `org/branches` (upsert + delete) |
 | Ops | `health`, `healthz`, `readyz`, `finblade/status`, `finblade/flush`, `frames/orphaned` |
 
 | Capability | Status | Implementation |
@@ -436,9 +464,10 @@ than cosmetic.
 
 | Page | Contents | Status |
 |---|---|---|
-| `web/dashboard.html` | live feeds, zone cards, alert feed with acknowledge, unique-people counts, facility occupancy | Built |
-| `web/cameras.html` | camera provisioning and pipeline control | Built |
-| `web/history.html` | event and alert history, movement | Built |
+| `web/dashboard.html` | live feeds, zone cards, alert feed with acknowledge, unique-people counts, facility occupancy; Region › City › Branch scope selector (client-side, `?region=` `?city=` `?branch=`) | Built |
+| `web/network.html` | the Region → City → Branch tree with per-level roll-ups, camera pills, unassigned cameras, and add/rename/delete for every level; tenant name in the bar | Built |
+| `web/cameras.html` | camera provisioning and pipeline control; cameras grouped by branch under city and region, branch picked from a dropdown, `?branch=` narrowing | Built |
+| `web/history.html` | event and alert history, movement; `?region_id=` `?city_id=` `?branch_id=` passed through to the API | Built |
 | `web/report.html` | occupancy report generation | Built |
 | `tools/zone-editor.html` | draw and save zone polygons, map zones to physical areas, set required PPE | Built |
 

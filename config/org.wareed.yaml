@@ -1,0 +1,114 @@
+# Organisation hierarchy for Wareed Medical Laboratories, KSA.
+#
+#     Region  ->  City  ->  Branch  ->  cameras
+#
+# Load with:   .venv/bin/python scripts/seed_org.py --config config/org.wareed.yaml
+# or POST the same document as JSON to /api/v1/org/import. Upserts by id and
+# deletes nothing, so it is safe to re-run after editing.
+#
+# A camera's site_id IS its branch_id. Register a camera with site_id JED-01
+# and it belongs to the Jeddah branch below; register it with a site_id that
+# matches nothing here and it shows under "Unassigned" on the Network page.
+#
+# IDS ARE PLACEHOLDERS. The regions and cities are the KSA administrative
+# split Wareed's network spans; the BRANCH rows are a starting shape (one
+# laboratory per city, with two sample-collection points in Riyadh and Jeddah)
+# so the UI has something to show. Replace them with the real branch list from
+# Wareed before the client sees this. Ids only allow letters, digits, '_', '-'
+# and '.', because they appear in URLs and query strings unquoted.
+#
+# branch_type: LAB | COLLECTION | HQ | WAREHOUSE | OTHER
+
+tenant:
+  name: Wareed Medical Laboratories
+  short: Wareed
+  country: KSA
+
+regions:
+  - region_id: CENTRAL
+    name: Central Region
+    cities:
+      - city_id: RUH
+        name: Riyadh
+        branches:
+          - {branch_id: RUH-HQ,  name: Riyadh Head Office,         branch_type: HQ,         timezone: Asia/Riyadh}
+          - {branch_id: RUH-01,  name: Riyadh Main Laboratory,     branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: RUH-02,  name: Riyadh Olaya Collection,    branch_type: COLLECTION, timezone: Asia/Riyadh}
+          - {branch_id: RUH-03,  name: Riyadh Al Nakheel Collection, branch_type: COLLECTION, timezone: Asia/Riyadh}
+      - city_id: KHJ
+        name: Al Kharj
+        branches:
+          - {branch_id: KHJ-01,  name: Al Kharj Laboratory,        branch_type: LAB,        timezone: Asia/Riyadh}
+      - city_id: QSM
+        name: Buraydah
+        branches:
+          - {branch_id: QSM-01,  name: Buraydah Laboratory,        branch_type: LAB,        timezone: Asia/Riyadh}
+
+  - region_id: WESTERN
+    name: Western Region
+    cities:
+      - city_id: JED
+        name: Jeddah
+        branches:
+          - {branch_id: JED-01,  name: Jeddah Main Laboratory,     branch_type: LAB,        timezone: Asia/Riyadh}
+          - {branch_id: JED-02,  name: Jeddah Al Rawdah Collection, branch_type: COLLECTION, timezone: Asia/Riyadh}
+      - city_id: MAK
+        name: Makkah
+        branches:
+          - {branch_id: MAK-01,  name: Makkah Laboratory,          branch_type: LAB,        timezone: Asia/Riyadh}
+      - city_id: MED
+        name: Madinah
+        branches:
+          - {branch_id: MED-01,  name: Madinah Laboratory,         branch_type: LAB,        timezone: Asia/Riyadh}
+      - city_id: TIF
+        name: Taif
+        branches:
+          - {branch_id: TIF-01,  name: Taif Laboratory,            branch_type: LAB,        timezone: Asia/Riyadh}
+
+  - region_id: EASTERN
+    name: Eastern Region
+    cities:
+      - city_id: DMM
+        name: Dammam
+        branches:
+          - {branch_id: DMM-01,  name: Dammam Main Laboratory,     branch_type: LAB,        timezone: Asia/Riyadh}
+      - city_id: KHB
+        name: Al Khobar
+        branches:
+          - {branch_id: KHB-01,  name: Al Khobar Laboratory,       branch_type: LAB,        timezone: Asia/Riyadh}
+      - city_id: HOF
+        name: Al Ahsa
+        branches:
+          - {branch_id: HOF-01,  name: Al Ahsa Laboratory,         branch_type: LAB,        timezone: Asia/Riyadh}
+      - city_id: JUB
+        name: Jubail
+        branches:
+          - {branch_id: JUB-01,  name: Jubail Laboratory,          branch_type: LAB,        timezone: Asia/Riyadh}
+
+  - region_id: NORTHERN
+    name: Northern Region
+    cities:
+      - city_id: TUU
+        name: Tabuk
+        branches:
+          - {branch_id: TUU-01,  name: Tabuk Laboratory,           branch_type: LAB,        timezone: Asia/Riyadh}
+      - city_id: HAS
+        name: Hail
+        branches:
+          - {branch_id: HAS-01,  name: Hail Laboratory,            branch_type: LAB,        timezone: Asia/Riyadh}
+
+  - region_id: SOUTHERN
+    name: Southern Region
+    cities:
+      - city_id: AHB
+        name: Abha
+        branches:
+          - {branch_id: AHB-01,  name: Abha Laboratory,            branch_type: LAB,        timezone: Asia/Riyadh}
+      - city_id: GIZ
+        name: Jazan
+        branches:
+          - {branch_id: GIZ-01,  name: Jazan Laboratory,           branch_type: LAB,        timezone: Asia/Riyadh}
+      - city_id: EAM
+        name: Najran
+        branches:
+          - {branch_id: EAM-01,  name: Najran Laboratory,          branch_type: LAB,        timezone: Asia/Riyadh}

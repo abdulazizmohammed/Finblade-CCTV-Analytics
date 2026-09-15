@@ -863,10 +863,12 @@ class PostgresStore(Store):
 
     def delete_tracker(self, tracker_id: str) -> bool:
         tid = str(tracker_id)
+        # An UNREGISTERED reporter has a live row and no trackers row; deleting
+        # it must still count, or the Trackers page could never clear it.
         with self._pool.connection() as conn:
-            conn.execute("DELETE FROM tracker_live WHERE tracker_id=%s", (tid,))
+            live = conn.execute("DELETE FROM tracker_live WHERE tracker_id=%s", (tid,)).rowcount
             gone = conn.execute("DELETE FROM trackers WHERE tracker_id=%s", (tid,)).rowcount
-        return gone > 0
+        return (gone + live) > 0
 
     def save_position(self, p: dict, at_branch_id: str = None,
                       at_since: float = None) -> None:

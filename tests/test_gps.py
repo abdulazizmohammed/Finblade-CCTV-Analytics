@@ -196,6 +196,13 @@ class GpsStoreContract:
         self.assertIsNone(live[0]["at_branch_id"])
         self.assertEqual([], self.store.positions_range("V-9", T0, T0 + 100))
 
+    def test_an_unregistered_reporter_can_be_removed(self):
+        self.store.save_position(pos("PHONE-7", ts=T0).to_dict())
+        self.assertEqual(1, len(self.store.latest_positions()))
+        self.assertTrue(self.store.delete_tracker("PHONE-7"), "no trackers row, but it was listed")
+        self.assertEqual([], self.store.latest_positions())
+        self.assertFalse(self.store.delete_tracker("PHONE-7"))
+
     def test_a_late_report_does_not_rewind_the_live_row(self):
         self.store.save_position(pos(ts=T0 + 50, lat=RUH[0] + 0.005).to_dict())
         self.store.save_position(pos(ts=T0 + 10, lat=RUH[0]).to_dict())

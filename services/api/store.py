@@ -647,8 +647,8 @@ class InMemoryStore(Store):
 
     def delete_tracker(self, tracker_id):
         tid = str(tracker_id)
-        self._tracker_live.pop(tid, None)
-        return self._trackers.pop(tid, None) is not None
+        live = self._tracker_live.pop(tid, None) is not None
+        return (self._trackers.pop(tid, None) is not None) or live
 
     def save_position(self, p, at_branch_id=None, at_since=None):
         row = dict(p, received_at=time.time(), site_id=at_branch_id)

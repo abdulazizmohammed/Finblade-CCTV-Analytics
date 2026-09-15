@@ -244,12 +244,17 @@ CREATE TABLE IF NOT EXISTS zones (
     -- is the default: compliance is opt-in per zone so a corridor never
     -- accuses anyone.
     required_ppe           TEXT,
+    -- Which PPE vocabulary required_ppe is drawn from: 'industrial' or
+    -- 'medical'. Defaulted, never NULL, so a pre-profile zone reads as
+    -- industrial without every caller having to coalesce it.
+    ppe_profile            TEXT DEFAULT 'industrial',
     PRIMARY KEY (camera_id, zone_id)
 );
 
 -- Bring an EXISTING database up to the schema above. Every
 -- statement is idempotent; on a current database all are no-ops.
 ALTER TABLE zones ADD COLUMN IF NOT EXISTS required_ppe TEXT;
+ALTER TABLE zones ADD COLUMN IF NOT EXISTS ppe_profile TEXT DEFAULT 'industrial';
 -- The local tracker id a per-person alert is about (R-11). Identifies a BOX in
 -- a frame, not a human: private to one camera process and reused after a
 -- restart. It is what lets a compliance alert be tied to the crop of the person

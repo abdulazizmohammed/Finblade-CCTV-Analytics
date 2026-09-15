@@ -248,6 +248,19 @@ See [DECISIONS.md](../DECISIONS.md) D-31.
   violation belongs to somebody, and an alert that cannot say who is not
   actionable. Chain is camera → track → zone → associated detections →
   temporal state → alert.
+- **Two vocabularies, one rule engine.** A zone's `ppe_profile` picks which:
+  `industrial` (hardhat, safety_vest, mask) or `medical` (surgical gloves /
+  mask / gown / cap / scrubs, face shield, goggles, coverall, shoe covers).
+  Defaults to `industrial`, so every zone predating profiles keeps working with
+  no migration. The state machine and `evaluate_ppe` are item-agnostic — a
+  profile is data, not a second pipeline. Items whose profile does not own them
+  are dropped with a warning rather than judged, because a medical detector
+  asked for a hardhat would convict everyone on silence.
+- **The medical detector is a separate model** (`medical_ppe:` config block),
+  off by default and additionally inert unless a zone asks for the medical
+  profile. Both detectors run on the same tick when both are active, so neither
+  one's items read as "absent" on a frame the other owned.
+  **Not runnable today** — see BLOCKERS.md B-8.
 - **Zone-scoped requirements.** `required_ppe` on a zone, e.g. `[hardhat,
   safety_vest]`. A worker without a mask in a zone that does not require masks
   is not in violation. Empty (the default) means no PPE rule applies — and the

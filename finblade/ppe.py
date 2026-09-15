@@ -32,10 +32,126 @@ provable without a model.
 from typing import Dict, Iterable, List, Optional, Tuple
 
 # --- PPE types -------------------------------------------------------------
+#
+# TWO VOCABULARIES, ONE RULE ENGINE. A profile is DATA, not a second pipeline:
+# evaluate_ppe() takes ppe_type as an opaque string and PPETracker is keyed on
+# (track, ppe_type), so neither knows or cares which profile an item came from.
+# What differs per profile is only the model's class map, the anatomical band,
+# and the capability status. Building a parallel rule engine for medical PPE
+# would duplicate the grace/confirm/recover machinery and the absence weighting
+# — the parts that took the longest to get right and would drift apart first.
 HARDHAT = "hardhat"
 VEST = "safety_vest"
 MASK = "mask"
-PPE_TYPES = (HARDHAT, VEST, MASK)
+
+# Medical / laboratory vocabulary. Names are lower_snake_case like the
+# industrial ones, and are GLOBALLY UNIQUE across profiles — "mask" is the
+# industrial dust mask, "surgical_mask" is the medical one. That uniqueness is
+# what lets one ANATOMY table and one state machine serve both.
+SURGICAL_GLOVES = "surgical_gloves"
+SURGICAL_MASK = "surgical_mask"
+SURGICAL_GOWN = "surgical_gown"
+SURGICAL_CAP = "surgical_cap"
+SURGICAL_SCRUBS = "surgical_scrubs"
+FACE_SHIELD = "face_shield"
+GOGGLES = "goggles"
+COVERALL = "coverall"
+SHOE_COVERS = "shoe_covers"
+
+PROFILE_INDUSTRIAL = "industrial"
+PROFILE_MEDICAL = "medical"
+
+# The profile a zone gets when it does not say. MUST stay "industrial": every
+# zone that existed before profiles were introduced declared industrial items
+# and named no profile, so any other default would invalidate them all on the
+# next load. Backward compatibility is a hard requirement here, not a courtesy.
+DEFAULT_PROFILE = PROFILE_INDUSTRIAL
+
+PPE_PROFILES: Dict[str, Tuple[str, ...]] = {
+    PROFILE_INDUSTRIAL: (HARDHAT, VEST, MASK),
+    PROFILE_MEDICAL: (SURGICAL_GLOVES, SURGICAL_MASK, SURGICAL_GOWN,
+                      SURGICAL_CAP, SURGICAL_SCRUBS, FACE_SHIELD, GOGGLES,
+                      COVERALL, SHOE_COVERS),
+}
+
+# UNCHANGED, and deliberately still the industrial tuple rather than the union.
+# Existing code and tests read PPE_TYPES to mean "what an industrial zone may
+# require"; quietly widening it to include surgical items would make a hardhat
+# zone accept "shoe_covers" and the zone editor offer surgical gloves to a
+# building site.
+PPE_TYPES = PPE_PROFILES[PROFILE_INDUSTRIAL]
+
+ALL_PPE_TYPES: Tuple[str, ...] = tuple(
+    item for profile in PPE_PROFILES.values() for item in profile)
+
+# --- capability status -----------------------------------------------------
+# What we are willing to claim about each item, and nothing more.
+#
+#   validated     measured on representative site footage, thresholds tuned
+#   evaluation    the model emits this class; accuracy on OUR cameras unknown
+#   experimental  known to associate unreliably — see the note per item
+#
+# NOTHING IS "validated" AND NOTHING MAY BE MARKED SO without measurements on
+# real footage from the site it will run on. The industrial items are only
+# "evaluation" after weeks of running, because running is not measuring.
+STATUS_VALIDATED = "validated"
+STATUS_EVALUATION = "evaluation"
+STATUS_EXPERIMENTAL = "experimental"
+
+PPE_STATUS: Dict[str, str] = {
+    # Industrial — the checkpoint's published performance is markedly weaker
+    # for NO-Safety Vest and Mask/NO-Mask than for Hardhat (DECISIONS.md D-32),
+    # and on our own footage Mask/NO-Mask never fired at all.
+    HARDHAT: STATUS_EVALUATION,
+    VEST: STATUS_EVALUATION,
+    MASK: STATUS_EVALUATION,
+    # Medical — no model is wired yet, and the candidate publishes no
+    # precision/recall at all, so none of these can be better than evaluation.
+    SURGICAL_MASK: STATUS_EVALUATION,
+    SURGICAL_GOWN: STATUS_EVALUATION,
+    SURGICAL_CAP: STATUS_EVALUATION,
+    SURGICAL_SCRUBS: STATUS_EVALUATION,
+    FACE_SHIELD: STATUS_EVALUATION,
+    GOGGLES: STATUS_EVALUATION,
+    COVERALL: STATUS_EVALUATION,
+    SHOE_COVERS: STATUS_EVALUATION,
+    # EXPERIMENTAL, and the reason is structural rather than a tuning problem.
+    # Association places an item inside a fixed vertical band of the person box.
+    # Hands have no fixed height — waist when idle, chest when pipetting, above
+    # the head when reaching a shelf — so gloves fall to the whole-body fallback
+    # band, which reduces the test to "inside this person". Two people at one
+    # bench then overlap, and the margin rule correctly refuses to arbitrate,
+    # so most glove detections end up unattributable. Measured on our own
+    # footage: one glove box in 200 frames. Pose keypoints would fix it and are
+    # out of scope; until then this must not be presented as working.
+    SURGICAL_GLOVES: STATUS_EXPERIMENTAL,
+}
+
+
+def types_for(profile: Optional[str]) -> Tuple[str, ...]:
+    """Items a zone on this profile may require. Unknown profile -> ()."""
+    return PPE_PROFILES.get(normalize_profile(profile), ())
+
+
+def normalize_profile(profile: Optional[str]) -> str:
+    """Config is written by humans: Medical / MEDICAL / ' medical ' all mean
+    the same thing. An empty or absent profile is the default, NOT an error —
+    that is what keeps pre-profile zones loading."""
+    p = str(profile or "").strip().lower()
+    return p or DEFAULT_PROFILE
+
+
+def profile_of(ppe_type: str) -> Optional[str]:
+    """Which profile owns this item. None if nothing does."""
+    for name, items in PPE_PROFILES.items():
+        if ppe_type in items:
+            return name
+    return None
+
+
+def status_of(ppe_type: str) -> str:
+    """Never optimistic about an item nobody has listed."""
+    return PPE_STATUS.get(ppe_type, STATUS_EXPERIMENTAL)
 
 # --- states ----------------------------------------------------------------
 UNKNOWN = "UNKNOWN"

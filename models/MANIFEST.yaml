@@ -1,0 +1,163 @@
+# FinBlade CCTV — model manifest
+#
+# WHY THIS FILE EXISTS. Weights arrive from third parties, are gitignored, and
+# are the one part of the system nobody can read. Without a manifest, "which
+# checkpoint produced this evidence?" has no answer six months later, and
+# "is this licence acceptable?" gets answered from memory.
+#
+# Hashes are generated LOCALLY from the files actually present:
+#     sha256sum models/*.pt
+# They are not copied from a model card — the point is to detect a file that
+# is not what we think it is.
+#
+# LICENCE FIELDS ARE CLAIMS, NOT CLEARANCES. `license` records what the source
+# states. `license_verified: false` means nobody has checked it against the
+# actual repository, model and dataset terms, and it MUST stay false until
+# someone has. Do not treat any of these as cleared for commercial deployment
+# on the strength of this file.
+
+models:
+
+  person_detector:
+    purpose: person detection (COCO class 0 only; the other 79 are discarded)
+    file: models/yolo11s.pt
+    sha256: 85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5
+    bytes: 19313732
+    source: Ultralytics YOLO11s (pretrained COCO)
+    framework: ultralytics==8.3.40
+    classes: 80 COCO classes
+    consumed_classes: [person]
+    status: evaluation
+    production_validated: false
+    site_validated: false
+    license: AGPL-3.0 (Ultralytics)
+    license_verified: false
+    notes: >-
+      Commercial deployment requires the approved Ultralytics commercial
+      licensing arrangement. See DECISIONS.md D-31.
+
+  tracker:
+    purpose: per-camera track IDs
+    file: null                       # built into ultralytics, not a weights file
+    source: ByteTrack via ultralytics (tracker="bytetrack.yaml")
+    framework: ultralytics==8.3.40
+    status: evaluation
+    notes: >-
+      NOT A SEPARATE FILE, and the reason it is listed anyway: the tracker ships
+      inside ultralytics, so any change to that pin changes track ID assignment
+      — and track IDs key the ReID bindings, dwell, loitering and the PPE state
+      machine. Upgrading ultralytics is a tracking change, not a detector change.
+
+  reid:
+    purpose: cross-camera appearance embeddings
+    file: models/osnet_x0_25_msmt17.pt
+    sha256: 6f57607fed9f502b9efed546108132ee715df5a5b6e6932c6269bacb47f59f99
+    bytes: 3057863
+    source: OSNet x0.25, MSMT17 weights, via boxmot
+    framework: torch==2.11.0+cu128
+    classes: null                    # an embedder, not a classifier
+    status: evaluation
+    production_validated: false
+    site_validated: false
+    license: "MSMT17 is RESEARCH USE ONLY — verify before any deployment"
+    license_verified: false
+    notes: >-
+      Embeddings are held in RAM only and never reach disk, a log, the database
+      or a response body. See CLAUDE.md and DECISIONS.md D-9 / D-30.
+
+  hazard:
+    purpose: fire and smoke detection (R-10)
+    file: models/fire_smoke_yolov8n.pt
+    sha256: b91633799ceb052c814b4f8b77a37efc9a40f002d528df97d74463585fa4f28f
+    bytes: 6229802
+    source: rabahdev/fire-smoke-yolov8n (D-Fire derived; D-Fire is CC0 1.0)
+    framework: ultralytics==8.3.40
+    classes: [smoke, fire]
+    consumed_classes: [smoke, fire]
+    status: evaluation
+    production_validated: false
+    site_validated: false
+    license: AGPL-3.0 (based on Ultralytics YOLOv8)
+    license_verified: false
+    notes: >-
+      Evaluation checkpoint, NOT a production-validated fire alarm. See
+      DECISIONS.md D-31.
+
+  industrial_ppe:
+    purpose: industrial PPE compliance (R-11, industrial profile)
+    file: models/ppe_safetyvision_v2.pt
+    sha256: 7863be4700dcf831579d610bb3fe3668fb29fb22ab17ca027b55e94b88bfff7a
+    bytes: 22547434
+    source: ayushgupta7777/safetyvision-yolov8, v2/best.pt
+    framework: ultralytics==8.3.40
+    classes: [Fall-Detected, Gloves, Goggles, Hardhat, Mask, NO-Gloves,
+              NO-Goggles, NO-Hardhat, NO-Mask, NO-Safety Vest, No_Harness,
+              Person, Safety Vest]
+    consumed_classes: [Hardhat, NO-Hardhat, Safety Vest, NO-Safety Vest,
+                       Mask, NO-Mask, Person]
+    ignored_classes: [Fall-Detected, Gloves, Goggles, NO-Gloves, NO-Goggles,
+                      No_Harness]
+    status: evaluation
+    production_validated: false
+    site_validated: false
+    license: AGPL-3.0 (based on Ultralytics YOLOv8)
+    license_verified: false
+    measured_on_our_footage:
+      clip: media/PPEVideo.mp4
+      frames_sampled: 200
+      conf_threshold: 0.35
+      boxes_per_frame:
+        Safety Vest: 1.48          # median confidence 0.71
+        NO-Hardhat: 1.28           # 0.63
+        NO-Safety Vest: 1.27       # 0.42 — barely above min_confidence 0.40
+        Hardhat: 0.65              # 0.56
+        NO-Gloves: 0.01            # 0.36, one box in 200 frames
+      never_fired: [Gloves, Goggles, NO-Goggles, No_Harness, Fall-Detected,
+                    Mask, NO-Mask, Person]
+    notes: >-
+      Mask and NO-Mask produce NOTHING on our footage, so mask compliance is
+      untested rather than demonstrated. No_Harness has no positive Harness
+      counterpart, so a harness could only ever be judged on absence — unusable
+      with the evidence model, not merely unmapped. See DECISIONS.md D-32.
+
+  medical_ppe:
+    purpose: medical / laboratory PPE compliance (R-11, medical profile)
+    file: models/medical_ppe_yolo26s_v2.pt
+    present: false                   # NOT IN models/ — nothing has been run
+    sha256: null                     # generate locally once the file exists
+    bytes: null
+    source: stormbreaker20/yolo26s-mppe-detector-v2
+    source_verified: 2026-09-14      # repo read; weights never downloaded
+    download_date: null
+    framework: "ultralytics >= 8.4.x REQUIRED — we are pinned at 8.3.40"
+    base_model: yolo26s.pt (Ultralytics)
+    training: 2931 images, 60 epochs, imgsz 512, batch 32
+    published_metrics: null          # the model card publishes none at all
+    classes_documented: [Person, Shoe_Covers, Surgical_Cap, Surgical_Gloves,
+                         Surgical_Gown, Surgical_Mask, Surgical_Scrubs,
+                         Face_Shield, Goggles, Coverall, No_Facial_Gear,
+                         No_Medical_Attire, No_Surgical_Cap,
+                         No_Surgical_Gloves]
+    classes_verified_from_weights: false
+    status: evaluation
+    production_validated: false
+    site_validated: false
+    license: "MIT is STATED by the repo — but see the note"
+    license_verified: false
+    blockers:
+      - "Weights absent from models/."
+      - >-
+        ultralytics 8.3.40 has NO YOLO26 support (model families are
+        3/5/6/8/9/10/11/rt-detr, zero source references to yolo26). YOLO26
+        requires 8.4.x, and that pin change moves ByteTrack underneath the
+        tracking layer.
+    notes: >-
+      LICENCE CONFLICT TO RESOLVE BEFORE ANY COMMERCIAL USE: the repository
+      states MIT, but the stated base model is yolo26s.pt, which is Ultralytics
+      AGPL-3.0. An AGPL derivative relabelled MIT is not something to rely on.
+      Verify the repository, model and dataset terms independently.
+
+      The class names above come from the MODEL CARD and use underscores, while
+      the integration brief used spaces. The adapter matches on a case- and
+      separator-folded key so either spelling resolves, but nothing is verified
+      until the weights are read.

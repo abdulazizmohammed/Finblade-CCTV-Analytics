@@ -519,11 +519,19 @@ class InMemoryStore(Store):
         self._zones[camera_id] = [dict(z, camera_id=camera_id) for z in zones]
 
     def list_zones(self, camera_id=None):
+        # ppe_profile is defaulted on the way out, exactly as the Postgres
+        # store does it. The two backends must agree on what an absent profile
+        # means, or a zone would be judged against a different vocabulary
+        # depending on which store happened to be running.
+        def _out(z):
+            z = dict(z)
+            z["ppe_profile"] = z.get("ppe_profile") or "industrial"
+            return z
         if camera_id is not None:
-            return [dict(z) for z in self._zones.get(camera_id, [])]
+            return [_out(z) for z in self._zones.get(camera_id, [])]
         out = []
         for zs in self._zones.values():
-            out.extend(dict(z) for z in zs)
+            out.extend(_out(z) for z in zs)
         return out
 
     def save_area(self, area):

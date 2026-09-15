@@ -72,6 +72,7 @@ from finblade.events import (                            # noqa: E402
 )
 from finblade.geometry import associate_items                   # noqa: E402
 from finblade.ppe import (PPEThresholds, PPETracker,            # noqa: E402
+                          normalize_profile, status_of as ppe_status_of,
                           evidence_for as ppe_evidence_for)
 from finblade.crowding import (                           # noqa: E402
     CrowdEstimator, TrackingQualityMonitor, select_mode,
@@ -88,11 +89,14 @@ from finblade.metrics import (                           # noqa: E402
 from finblade.rules import SEV_AMBER, Alert, RuleEngine  # noqa: E402
 from finblade.tracking import TrackReaper                # noqa: E402
 from finblade.tracks import TrackRegistry                # noqa: E402
-from finblade.zones import in_ignored_region, zone_of        # noqa: E402
+from finblade.zones import (in_ignored_region, zone_of,      # noqa: E402
+                            ppe_requirements, ppe_requirements_rejected)
 from services.inference.camera_worker import CameraWorker, CameraState  # noqa: E402
 from services.inference.reid_client import ReIDResolver                 # noqa: E402
 from services.inference.hazard_client import HazardDetector             # noqa: E402
-from services.inference.ppe_client import PPEDetector                   # noqa: E402
+from services.inference.ppe_client import (PPEDetector,                 # noqa: E402
+                                           MEDICAL_CLASS_MAP,
+                                           MEDICAL_IGNORED_CLASSES)
 
 # Shared handle so the MJPEG server can drive the demo simulate/restore controls.
 _worker = {"ref": None}
@@ -283,7 +287,11 @@ def _zone_sig(data):
                         # What this zone demands people wear. Changing it is the
                         # edit most likely to be made DURING a shift, and the
                         # one whose staleness accuses people wrongly.
-                        z.get("required_ppe")]
+                        z.get("required_ppe"),
+                        # Which vocabulary those items are drawn from. Switching
+                        # a zone from industrial to medical changes which model
+                        # judges it, so it is as material as the list itself.
+                        z.get("ppe_profile")]
                        for z in data], sort_keys=True)
 
 
@@ -429,6 +437,38 @@ def _draw_dashed_poly(frame, pts, color, thickness=2, dash=14):
 # Overlay layers the live stream can toggle on/off (evidence always draws all).
 OVERLAY_DEFAULT = {"zones": True, "boxes": True, "ids": True, "feet": True,
                    "dwell": True, "gid": True, "hazards": True}
+
+
+def ppe_maps(zones, camera_id):
+    """(requirements, profiles) for every zone that asks for PPE.
+
+    ONE FUNCTION, called from setup AND from the hot-reload, because these two
+    maps drifting apart is exactly the bug that let a removed vest requirement
+    keep firing: the reload rebuilt the polygons and left the requirements at
+    whatever they were when the process started.
+
+    Requirements are filtered to items the zone's own profile recognises. A zone
+    can end up with profile=medical and required_ppe=[hardhat] — switch the
+    profile after picking items, or hand-edit the YAML — and asking a medical
+    checkpoint for a hardhat would judge it on silence: nobody in a pathology
+    lab wears one, so everybody would be convicted of not wearing it. Dropping
+    it is the safe direction, and it is logged rather than dropped quietly.
+    """
+    req, prof = {}, {}
+    for z in zones:
+        rejected = ppe_requirements_rejected(z)
+        if rejected:
+            log.warning(
+                "camera %s zone %s: required_ppe %s are not in the '%s' "
+                "profile's vocabulary and will NOT be judged. Either switch "
+                "the zone's profile or remove them.",
+                camera_id, z.zone_id, rejected,
+                normalize_profile(getattr(z, "ppe_profile", None)))
+        items = ppe_requirements(z)
+        if items:
+            req[z.zone_id] = items
+            prof[z.zone_id] = normalize_profile(getattr(z, "ppe_profile", None))
+    return req, prof
 
 
 def ppe_state_fields(zone_id, occupancy, ppe_zones, counts, camera_id):
@@ -763,8 +803,16 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     # there is nothing to judge and the model is not loaded at all, so a site
     # that does not do PPE pays nothing for the feature existing.
     _ppe_cfg = getattr(cfg, "ppe", None) or {}
-    _ppe_zones = {z.zone_id: list(getattr(z, "required_ppe", []) or [])
-                  for z in cfg.zones if getattr(z, "required_ppe", None)}
+    _med_cfg = getattr(cfg, "medical_ppe", None) or {}
+    _ppe_zones, _ppe_profiles = ppe_maps(cfg.zones, cfg.camera_id)
+
+    def _wants(profile):
+        """Does any zone on this camera use that vocabulary? A detector whose
+        profile nobody asks for is never loaded, so a lab pays nothing for the
+        industrial model existing and a building site pays nothing for the
+        medical one."""
+        return any(p == profile for p in _ppe_profiles.values())
+
     ppe = PPEDetector(
         cfg.camera_id,
         weights=_ppe_cfg.get("weights"),
@@ -772,9 +820,43 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         interval_s=float(_ppe_cfg.get("interval_seconds", 0.5)),
         conf_threshold=float(_ppe_cfg.get("conf_threshold", 0.35)),
         imgsz=int(_ppe_cfg.get("imgsz", 640)),
-        enabled=bool(_ppe_cfg.get("enabled", False)) and bool(_ppe_zones),
+        enabled=bool(_ppe_cfg.get("enabled", False)) and _wants("industrial"),
     )
     ppe.load()
+    # SECOND, INDEPENDENT DETECTOR. Same class, different vocabulary — not a
+    # second rule engine. Off unless medical_ppe.enabled AND some zone declares
+    # ppe_profile: medical. Its weights are expected to be absent for now, in
+    # which case load() disables it with a clear message and every other rule
+    # carries on; that is the same failure path the industrial detector uses.
+    ppe_med = PPEDetector(
+        cfg.camera_id,
+        weights=_med_cfg.get("weights") or _med_cfg.get("model_path")
+        or "models/medical_ppe_yolo26s_v2.pt",
+        device=str(_med_cfg.get("device", _ppe_cfg.get("device", "0"))),
+        # Same cadence as the industrial detector by default, deliberately: the
+        # two run on the same tick so neither contributes "absent" evidence
+        # merely because the other one happened to run this frame.
+        interval_s=float(_med_cfg.get("interval_seconds",
+                                      _ppe_cfg.get("interval_seconds", 0.5))),
+        conf_threshold=float(_med_cfg.get("conf_threshold", 0.35)),
+        imgsz=int(_med_cfg.get("imgsz", 640)),
+        enabled=bool(_med_cfg.get("enabled", False)) and _wants("medical"),
+        class_map=MEDICAL_CLASS_MAP,
+        ignored_classes=MEDICAL_IGNORED_CLASSES,
+        profile="medical",
+    )
+    ppe_med.load()
+    # Only the ones that actually came up. detect() on a not-ready detector
+    # returns [] rather than raising, but keeping the list tight means the
+    # per-frame loop does no work for a model that is not there.
+    _ppe_detectors = [d for d in (ppe, ppe_med) if d.enabled]
+    if ppe_med.enabled:
+        log.warning(
+            "camera %s: MEDICAL PPE is an EVALUATION capability — the "
+            "checkpoint is unvalidated on this site's footage, surgical_gloves "
+            "is EXPERIMENTAL, and this is not a certified safety system. "
+            "AI-assisted monitoring only; site validation required.",
+            cfg.camera_id)
     ppe_tracker = PPETracker(cfg.camera_id, PPEThresholds(
         entry_grace_s=float(_ppe_cfg.get("entry_grace_seconds", 5.0)),
         violation_confirm_s=float(_ppe_cfg.get("violation_confirm_seconds", 8.0)),
@@ -927,10 +1009,9 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     # the PPE requirements stayed frozen at whatever they were
                     # when the process started.
                     _prev_ppe = _ppe_zones
-                    _ppe_zones = {z.zone_id: list(getattr(z, "required_ppe", []) or [])
-                                  for z in cfg.zones
-                                  if getattr(z, "required_ppe", None)}
-                    if _ppe_zones != _prev_ppe:
+                    _prev_prof = _ppe_profiles
+                    _ppe_zones, _ppe_profiles = ppe_maps(cfg.zones, cfg.camera_id)
+                    if _ppe_zones != _prev_ppe or _ppe_profiles != _prev_prof:
                         # A verdict already reached for an item nobody requires
                         # any more must go, or zone_summary keeps counting that
                         # person non-compliant: it scans every state held for the
@@ -950,13 +1031,16 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                         # effect until it restarts — say so plainly rather than
                         # leaving an operator watching for alerts that no model
                         # is running to produce.
-                        if _ppe_zones and not ppe.enabled:
-                            log.warning(
-                                "camera %s: zones now require PPE %s but the PPE "
-                                "model was not loaded at startup (no zone asked "
-                                "for any). RESTART THIS CAMERA for PPE to be "
-                                "judged; nothing is being checked until you do.",
-                                cfg.camera_id, _ppe_zones)
+                        for _p, _det in (("industrial", ppe), ("medical", ppe_med)):
+                            if any(v == _p for v in _ppe_profiles.values()) \
+                                    and not _det.enabled:
+                                log.warning(
+                                    "camera %s: zones now use the '%s' PPE "
+                                    "profile but that model was not loaded at "
+                                    "startup (no zone asked for it). RESTART "
+                                    "THIS CAMERA for those items to be judged; "
+                                    "nothing is being checked until you do.",
+                                    cfg.camera_id, _p)
                     zone_sig = sig
                     log.info("hot-reloaded %d zone(s) for %s (%s)", len(cfg.zones),
                              cfg.camera_id, "editor" if raw else "reverted to config")
@@ -1447,9 +1531,16 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # Per TRACK, inside a compliance ZONE. Not a camera-level verdict: a
         # violation belongs to a person, and an alert that cannot say who is
         # not actionable.
-        if ppe.due(vnow) and _ppe_zones:
+        if _ppe_zones and any(d.due(vnow) for d in _ppe_detectors):
             ppe_roll = []
-            _dets = ppe.detect(frame, vnow)
+            # EVERY enabled detector runs on this tick, not just the one that
+            # tripped the cadence. Letting them run on separate frames would
+            # make each one's items read as "absent" on the frames the other
+            # owned, and absence is evidence toward a violation — the models
+            # would slowly convict each other's people.
+            _dets = []
+            for _d in _ppe_detectors:
+                _dets.extend(_d.detect(frame, vnow))
             # Only people currently standing in a PPE zone are judged.
             _people = {}
             for t in registry.active():
@@ -1481,7 +1572,9 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                 ppe_roll.append((_tid, _zid, _ok))
                 if not _ok or ppe_tracker.in_grace(_tid, _zid, vnow):
                     continue
-                _dt = vnow - ppe_last_seen.get(_tid, vnow - ppe.interval_s)
+                _dt = vnow - ppe_last_seen.get(
+                    _tid, vnow - (_ppe_detectors[0].interval_s
+                                  if _ppe_detectors else 0.5))
                 ppe_last_seen[_tid] = vnow
                 for _req in _ppe_zones[_zid]:
                     _ev, _conf = ppe_evidence_for(_req, _owned.get(_tid, []))
@@ -1682,7 +1775,20 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # from "ran and everybody was compliant". A run with no PPE alerts
         # looks identical either way without this.
         "ppe": dict(ppe.snapshot(), zones=_ppe_zones,
+                    profiles=_ppe_profiles,
                     tracked_states=ppe_tracker.tracked()),
+        # Reported separately and ALWAYS, even when disabled — the evidence file
+        # must be able to answer "was medical PPE judged on this run?" and
+        # "disabled" has to be distinguishable from "ran and found nothing".
+        # item_status carries the evaluation/experimental marking with the run,
+        # so a reader of metrics.json cannot mistake an experimental item's
+        # output for a measured one.
+        "medical_ppe": dict(
+            ppe_med.snapshot(),
+            item_status={item: ppe_status_of(item)
+                         for zid, items in _ppe_zones.items()
+                         if _ppe_profiles.get(zid) == "medical"
+                         for item in items}),
         # Zone sanity: a high outside fraction means occupancy will read low
         # even though people are being tracked.
         # Detections discarded by an UNMONITORED mask zone (reflections, screens,

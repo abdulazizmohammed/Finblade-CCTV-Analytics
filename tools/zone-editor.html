@@ -101,6 +101,17 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
 .ppe .opts input{accent-color:var(--fb-teal);cursor:pointer;}
 .ppe .opts input:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
 .zone .ppe{margin-top:9px;}
+/* Capability status beside an item. Shown rather than hidden: an operator
+   ticking a box has to be able to see what we are willing to claim about it.
+   Muted --fb-ok grey for "evaluation" and amber for "experimental" — amber is
+   the measurement-warning colour and this IS a warning about the measurement.
+   Deliberately NOT --fb-critical: nothing is wrong right now, and not
+   --fb-compliance either, which means a person is in breach. */
+.ppe .cap{margin-left:auto;font-family:var(--fb-font-data);font-size:8px;
+  letter-spacing:.08em;text-transform:uppercase;padding:1px 5px;border-radius:2px;
+  border:1px solid currentColor;}
+.ppe .cap.evaluation{color:var(--fb-ok);}
+.ppe .cap.experimental{color:var(--fb-warning);}
 </style>
 
 <header>
@@ -176,17 +187,25 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
        Per zone and not per site, because that is the real shape of the problem
        — a lab bench and a plant room want different things, and a requirement
        that applied everywhere would accuse people in the car park. -->
+  <label class="lbl" for="ppeprofile">PPE profile</label>
+  <select id="ppeprofile">
+    <option value="industrial">Industrial</option>
+    <option value="medical">Medical / Laboratory</option>
+  </select>
   <label class="lbl">Required PPE</label>
   <details class="ppe" id="ppe">
     <summary><span data-ppe-lbl class="none">none — not enforced here</span></summary>
     <div class="opts">
-      <label><input type="checkbox" value="hardhat"> Hard hat</label>
-      <label><input type="checkbox" value="safety_vest"> Safety vest</label>
-      <label><input type="checkbox" value="mask"> Mask</label>
+      <label><input type="checkbox" value="hardhat"> Hard hat<span class="cap evaluation">evaluation</span></label>
+      <label><input type="checkbox" value="safety_vest"> Safety vest<span class="cap evaluation">evaluation</span></label>
+      <label><input type="checkbox" value="mask"> Mask<span class="cap evaluation">evaluation</span></label>
     </div>
   </details>
   <p class="hint">Leave empty and no PPE rule applies here — the zone reports no
-    compliance figures at all rather than reporting everyone as fine.</p>
+    compliance figures at all rather than reporting everyone as fine.
+    <b>Medical PPE is an evaluation capability</b>: the checkpoint is not
+    validated on this site's footage, surgical gloves are experimental, and this
+    is AI-assisted monitoring rather than a certified safety system.</p>
 
   <label class="lbl" for="adj">Adjacent zone IDs (comma-separated)</label>
   <input type="text" id="adj" placeholder="ZONE-02, ZONE-03">
@@ -320,8 +339,48 @@ $('btn-load').onclick=loadServer;
 // The vocabulary is fixed by finblade.ppe.PPE_TYPES. Anything outside it is
 // dropped server-side with a warning, so offering a free-text field here would
 // only let an operator type a requirement that silently never applies.
-const PPE_ITEMS=[['hardhat','Hard hat'],['safety_vest','Safety vest'],['mask','Mask']];
-const ppeName=k=>(PPE_ITEMS.find(p=>p[0]===k)||[k,k])[1];
+// Two vocabularies, mirroring finblade.ppe.PPE_PROFILES. A zone draws its
+// required_ppe from exactly ONE of them, chosen by ppe_profile — offering a
+// hardhat in a pathology lab would let an operator set a requirement that the
+// medical detector has no class for, and the item would then be judged on
+// silence and convict everyone.
+//
+// Third column is capability status, mirroring finblade.ppe.PPE_STATUS. It is
+// shown, not hidden: an operator ticking "surgical gloves" has to be able to
+// see it is experimental before they rely on it.
+const PPE_PROFILES={
+  industrial:[
+    ['hardhat','Hard hat','evaluation'],
+    ['safety_vest','Safety vest','evaluation'],
+    ['mask','Mask','evaluation'],
+  ],
+  medical:[
+    ['surgical_gloves','Surgical gloves','experimental'],
+    ['surgical_mask','Surgical mask','evaluation'],
+    ['surgical_gown','Surgical gown','evaluation'],
+    ['surgical_cap','Surgical cap','evaluation'],
+    ['surgical_scrubs','Surgical scrubs','evaluation'],
+    ['face_shield','Face shield','evaluation'],
+    ['goggles','Goggles','evaluation'],
+    ['coverall','Coverall','evaluation'],
+    ['shoe_covers','Shoe covers','evaluation'],
+  ],
+};
+const DEFAULT_PROFILE='industrial';
+const ppeProfileOf=z=>((z&&z.ppe_profile)||DEFAULT_PROFILE);
+const ppeItemsFor=p=>PPE_PROFILES[p]||[];
+// Only items the profile actually owns. A zone switched from industrial to
+// medical keeps its old list in the database until saved; showing those ticked
+// would claim they are enforced when the worker has already dropped them.
+const ppeKept=(p,list)=>(list||[]).filter(k=>ppeItemsFor(p).some(i=>i[0]===k));
+const PPE_ITEMS=PPE_PROFILES[DEFAULT_PROFILE];
+const ppeName=k=>{
+  for(const items of Object.values(PPE_PROFILES)){
+    const hit=items.find(p=>p[0]===k);
+    if(hit) return hit[1];
+  }
+  return k;
+};
 const ppeLabel=list=>(list&&list.length) ? list.map(ppeName).join(' + ')
                                          : 'none — not enforced here';
 const ppeGet=root=>[...root.querySelectorAll('.opts input:checked')].map(i=>i.value);
@@ -335,15 +394,37 @@ function ppeSet(root,list){
   root.querySelectorAll('.opts input').forEach(i=>{ i.checked=want.has(i.value); });
   ppeSyncLabel(root);
 }
-const ppePicker=(i,list)=>
-  `<details class="ppe zppe" data-i="${i}">`+
-  `<summary><span data-ppe-lbl class="${(list&&list.length)?'':'none'}">`+
-  `${ppeLabel(list)}</span></summary><div class="opts">`+
-  PPE_ITEMS.map(([k,lbl])=>
-    `<label><input type="checkbox" value="${k}"`+
-    `${(list||[]).includes(k)?' checked':''}> ${lbl}</label>`).join('')+
-  `</div></details>`;
+// Rebuild a picker's checkbox list for a profile, keeping whatever selection
+// still belongs to it. Used by both the form and the per-zone cards.
+function ppeRender(root, profile, list){
+  const kept=new Set(ppeKept(profile, list));
+  root.querySelector('.opts').innerHTML = ppeItemsFor(profile).map(
+    ([k,lbl,st])=>
+      `<label><input type="checkbox" value="${k}"${kept.has(k)?' checked':''}>`+
+      ` ${lbl}${st==='evaluation'||st==='experimental'
+                 ? `<span class="cap ${st}">${st}</span>` : ''}</label>`
+  ).join('') || '<span class="none">no PPE items in this profile</span>';
+  ppeSyncLabel(root);
+}
+const ppePicker=(i,profile,list)=>{
+  const kept=ppeKept(profile,list);
+  return `<details class="ppe zppe" data-i="${i}">`+
+    `<summary><span data-ppe-lbl class="${kept.length?'':'none'}">`+
+    `${ppeLabel(kept)}</span></summary><div class="opts">`+
+    ppeItemsFor(profile).map(([k,lbl,st])=>
+      `<label><input type="checkbox" value="${k}"`+
+      `${kept.includes(k)?' checked':''}> ${lbl}`+
+      `${st==='evaluation'||st==='experimental'
+         ? `<span class="cap ${st}">${st}</span>` : ''}</label>`).join('')+
+    `</div></details>`;
+};
 $('ppe').addEventListener('change', ()=> ppeSyncLabel($('ppe')));
+// Switching the form's profile swaps which items are on offer. Selections that
+// do not exist in the new profile are dropped here rather than carried
+// invisibly into the saved zone.
+$('ppeprofile').addEventListener('change', ()=>{
+  ppeRender($('ppe'), v('ppeprofile'), ppeGet($('ppe')));
+});
 
 function closeZone(){
   if(pts.length<3){ $('coord').innerHTML=`<b style="color:${C.draft}">Needs at least 3 points</b>`; return; }
@@ -356,6 +437,7 @@ function closeZone(){
     capacity_max:+v('cap'), area_sqm:+v('area'),
     warning_density:+v('warn'), critical_density:+v('crit'),
     loitering_threshold_sec:+v('loiter'), colour:v('colour'),
+    ppe_profile: v('ppeprofile'),
     required_ppe: ppeGet($('ppe')),
     adjacency_list: v('adj').split(',').map(s=>s.trim()).filter(Boolean),
     polygon:polyPx, norm:polyPx.map(norm),
@@ -386,7 +468,13 @@ function render(){
         `<label class="p ap"><span>Physical area</span>`+
         `<input type="text" list="area-list" data-i="${i}" `+
         `value="${z.physical_area_id||''}" placeholder="none"></label>`+
-        ppePicker(i, z.required_ppe)+
+        `<label class="p ap zprof"><span>PPE profile</span>`+
+        `<select data-i="${i}">`+
+        Object.keys(PPE_PROFILES).map(p=>
+          `<option value="${p}"${ppeProfileOf(z)===p?' selected':''}>`+
+          `${p==='medical'?'Medical / Laboratory':'Industrial'}</option>`).join('')+
+        `</select></label>`+
+        ppePicker(i, ppeProfileOf(z), z.required_ppe)+
         `<div class="props">`+
           prop(i,'capacity_max','Capacity',z.capacity_max,1)+
           prop(i,'area_sqm','Area m²',z.area_sqm,0.1)+
@@ -422,6 +510,23 @@ function render(){
     // numbers below. Deliberately does NOT call render(): rebuilding the list
     // would tear down and recreate this <details>, closing the dropdown after
     // every single tick. The label is refreshed in place instead.
+    // Switching a card's profile changes which vocabulary its items come from,
+    // so any item the new profile does not own is dropped. render() IS called
+    // here (unlike the checkbox handler below) because the whole picker has to
+    // be rebuilt for the new list.
+    box.querySelectorAll('.zprof select').forEach(sel=> sel.onchange=async()=>{
+      const z=zones[+sel.dataset.i];
+      if(!z) return;
+      const dropped=(z.required_ppe||[]).filter(
+        k=>!ppeKept(sel.value, z.required_ppe).includes(k));
+      z.ppe_profile=sel.value;
+      z.required_ppe=ppeKept(sel.value, z.required_ppe);
+      const ok=await persistZones();
+      setStatus(ok ? `${z.zone_id} → ${sel.value} profile — saved`
+                     + (dropped.length ? ` (dropped ${dropped.join(', ')})` : '')
+                   : `update FAILED — ${saveFailureReason()}`);
+      render();
+    });
     box.querySelectorAll('.zppe').forEach(d=> d.addEventListener('change', async()=>{
       const z=zones[+d.dataset.i];
       if(!z) return;
@@ -457,7 +562,8 @@ function editZone(i){
   $('parea').value=z.physical_area_id||'';
   $('warn').value=z.warning_density; $('crit').value=z.critical_density;
   $('loiter').value=z.loitering_threshold_sec; $('colour').value=z.colour||'#4fdce0';
-  ppeSet($('ppe'), z.required_ppe);
+  $('ppeprofile').value=ppeProfileOf(z);
+  ppeRender($('ppe'), ppeProfileOf(z), z.required_ppe);
   $('adj').value=(z.adjacency_list||[]).join(', ');
   zones.splice(i,1);
   draw(); render();
@@ -475,6 +581,7 @@ function yaml(){
            `    restricted: ${z.restricted}\n    capacity_max: ${z.capacity_max}\n    area_sqm: ${z.area_sqm}\n`+
            `    warning_density: ${z.warning_density}\n    critical_density: ${z.critical_density}\n`+
            `    loitering_threshold_sec: ${z.loitering_threshold_sec}\n    colour: "${z.colour}"\n`+
+           `    ppe_profile: ${ppeProfileOf(z)}\n`+
            `    required_ppe: [${(z.required_ppe||[]).join(', ')}]\n`+
            `    adjacency_list: [${z.adjacency_list.join(', ')}]\n    polygon: ${px}\n    normalized_polygon: ${nm}`;
   }).join('\n');
@@ -491,6 +598,7 @@ function zonesPayload(cam){
     // nowhere and reports success — the exact way physical_area_id and
     // required_ppe were each lost once already, one layer further down.
     required_ppe: z.required_ppe || [],
+    ppe_profile: z.ppe_profile || 'industrial',
     normalized_polygon: (z.norm && z.norm.length) ? z.norm : z.polygon.map(norm),
   }))};
 }
@@ -573,6 +681,7 @@ async function loadServer(){
       colour:z.colour||'#4fdce0', adjacency_list:z.adjacency_list||[],
       physical_area_id:z.physical_area_id||null,
       required_ppe:z.required_ppe||[],
+      ppe_profile:z.ppe_profile||'industrial',
       norm:(z.normalized_polygon||[]),
       polygon:(z.normalized_polygon||[]).map(n=>[Math.round(n[0]*nat.w), Math.round(n[1]*nat.h)]),
     }));

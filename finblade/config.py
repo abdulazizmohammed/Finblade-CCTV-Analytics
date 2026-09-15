@@ -41,6 +41,13 @@ class CameraConfig:
     # least one zone declares required_ppe — a site that does not do PPE pays
     # nothing for the feature existing.
     ppe: dict = field(default_factory=dict)
+    # Second, INDEPENDENT PPE detector for the medical/laboratory vocabulary.
+    # Separate block rather than a variant of `ppe` because the two are
+    # different checkpoints with different cadences and thresholds, and because
+    # an operator must be able to turn one off without touching the other.
+    # Off by default, and additionally inert unless a zone declares
+    # ppe_profile: medical.
+    medical_ppe: dict = field(default_factory=dict)
 
 
 def load_camera_config(path: str) -> CameraConfig:
@@ -74,4 +81,5 @@ def load_camera_config(path: str) -> CameraConfig:
         reid=cfg.get("reid") or {},
         hazard=cfg.get("hazard") or {},
         ppe=cfg.get("ppe") or {},
+        medical_ppe=cfg.get("medical_ppe") or {},
     )

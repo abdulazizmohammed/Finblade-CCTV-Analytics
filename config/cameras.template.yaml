@@ -198,4 +198,50 @@ ppe:
   # lower it only with evidence that the model still resolves PPE at that size.
   min_person_height_px: 120.0
 
+# --- medical / laboratory PPE (R-11, medical profile) -----------------------
+#
+# A SECOND, INDEPENDENT DETECTOR — not a replacement for the industrial one
+# above. Both can run on the same camera; each judges only the zones whose
+# ppe_profile names it. A zone says which vocabulary it speaks:
+#
+#   zones:
+#     - zone_id: SAMPLE-PREP
+#       ppe_profile: medical
+#       required_ppe: [surgical_gloves, surgical_gown, surgical_mask, goggles]
+#
+#     - zone_id: PLANT-ROOM
+#       ppe_profile: industrial          # the default; omitting it means this
+#       required_ppe: [hardhat, safety_vest]
+#
+# EVALUATION CAPABILITY — SITE VALIDATION REQUIRED. This is AI-assisted PPE
+# compliance monitoring. It is NOT a certified medical, safety or
+# infection-control system, and it does not replace human supervision, IPC
+# policy or regulatory inspection.
+#
+# DISABLED, AND CURRENTLY UNRUNNABLE — two reasons, both recorded in
+# BLOCKERS.md:
+#   1. The weights are not present in models/.
+#   2. The candidate checkpoint (stormbreaker20/yolo26s-mppe-detector-v2) is a
+#      YOLO26 model, and the PINNED ultralytics 8.3.40 has no YOLO26 support
+#      whatsoever — its model families are 3/5/6/8/9/10/11/rt-detr. YOLO26
+#      needs ultralytics 8.4.x. Changing that pin is not a decision this file
+#      gets to make: ByteTrack is Ultralytics' built-in tracker, so the upgrade
+#      moves the ground under tracking, ReID, dwell, loitering and the PPE
+#      state machine all at once.
+#
+# The vocabulary, anatomy, rules, UI and tests are complete and exercised, so
+# ANY medical checkpoint can be wired in by changing the mapping alone — one
+# built on YOLOv8 or YOLO11 would run on the pinned version today.
+medical_ppe:
+  enabled: false
+  weights: models/medical_ppe_yolo26s_v2.pt
+  device: "0"
+  # Defaults to the industrial detector's cadence when omitted. Keep them
+  # equal: the two models run on the same tick, so that neither one's items
+  # read as "absent" on a frame the other owned.
+  interval_seconds: 0.5
+  conf_threshold: 0.35
+  imgsz: 640
+  status: evaluation
+
 zones: []

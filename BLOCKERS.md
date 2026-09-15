@@ -162,6 +162,46 @@ One command, and 12 real tests start running.
 
 ---
 
+## B-8 — Medical PPE cannot run: no weights, and YOLO26 needs a pin change  [MEDIUM]
+
+**What:** the medical/laboratory PPE profile is implemented, tested and
+configurable, but no medical detector can be loaded.
+
+**Two independent causes:**
+
+1. **Weights absent.** `models/` has no medical checkpoint. The candidate,
+   `stormbreaker20/yolo26s-mppe-detector-v2`, was never downloaded.
+2. **The pinned framework cannot load it.** `ultralytics==8.3.40` has **no
+   YOLO26 support at all** — its model families are 3/5/6/8/9/10/11/rt-detr and
+   zero files in the package reference yolo26. YOLO26 requires **8.4.x**.
+
+**Why I did not just lift the pin.** CLAUDE.md forbids changing pinned versions,
+and the risk is real rather than procedural: **ByteTrack ships inside
+ultralytics** and we call `model.track(tracker="bytetrack.yaml")`. A version
+bump can change track-ID assignment, and track IDs key the ReID bindings, dwell,
+R-05 loitering, the PPE state machine and the evidence crops. It would also
+reload yolo11s and both YOLOv8 checkpoints under new code, and torch
+2.11.0+cu128 compatibility with 8.4.x is unverified.
+
+**Licence conflict, unresolved.** The repository states **MIT**, but its stated
+base is `yolo26s.pt`, which is Ultralytics **AGPL-3.0**. An AGPL derivative
+relabelled MIT is not something to rely on. Verify repository, model and dataset
+terms before any commercial claim. Recorded in `models/MANIFEST.yaml` with
+`license_verified: false`.
+
+**Also worth knowing about the candidate:** 2,931 images, 60 epochs, trained at
+**512px** against our 1920×1080 cameras, and the model card publishes **no
+mAP/precision/recall at all**. Only 4 of its 14 classes are negatives, so gown,
+scrubs, face shield, goggles, coverall and shoe covers could be judged only on
+absence.
+
+**What it needs:** a decision on the pin, or a medical checkpoint built on
+YOLOv8/YOLO11 — which would run on 8.3.40 today. The vocabulary, anatomy, rules,
+UI and tests are all model-agnostic, so swapping in a different checkpoint is a
+change to `MEDICAL_CLASS_MAP` alone.
+
+---
+
 ## B-1 — Vision pipeline cannot execute (detection deps + weights absent)  [RESOLVED]
 
 > RESOLVED in a later session once the human authorised installs: bootstrapped

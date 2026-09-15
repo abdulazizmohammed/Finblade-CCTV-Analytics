@@ -47,6 +47,66 @@ CLASS_MAP = {
 IGNORED_CLASSES = {"Fall-Detected", "Gloves", "Goggles", "NO-Gloves",
                    "NO-Goggles", "No_Harness"}
 
+# --- medical / laboratory checkpoint ---------------------------------------
+# Candidate: stormbreaker20/yolo26s-mppe-detector-v2.
+#
+# NOT WIRED TO A FILE YET. The weights are absent from models/ and the pinned
+# ultralytics 8.3.40 has no YOLO26 support at all (its model families are
+# 3/5/6/8/9/10/11/rt-detr), so nothing here has been exercised against real
+# weights. The map exists so the vocabulary, the bands and the rules can be
+# built and tested now, and so swapping in ANY medical checkpoint later is a
+# mapping change rather than a pipeline change.
+#
+# SPELLING IS NOT ASSUMED. The model card lists these names with UNDERSCORES
+# ("Surgical_Gloves") while the integration brief wrote them with spaces
+# ("Surgical Gloves"). Rather than bet on either, lookup is done through
+# _canon() below, which folds case, spaces and hyphens — so all of
+# "Surgical Gloves", "Surgical_Gloves" and "surgical-gloves" resolve alike.
+# The literal keys here are documentation of what we expect to see; the
+# matching is what actually decides.
+MEDICAL_CLASS_MAP = {
+    "Surgical_Gloves": "surgical_gloves",
+    "Surgical_Mask": "surgical_mask",
+    "Surgical_Gown": "surgical_gown",
+    "Surgical_Cap": "surgical_cap",
+    "Surgical_Scrubs": "surgical_scrubs",
+    "Face_Shield": "face_shield",
+    "Goggles": "goggles",
+    "Coverall": "coverall",
+    "Shoe_Covers": "shoe_covers",
+    "Person": "person",
+    # The four negative classes this checkpoint publishes. Note what is NOT
+    # here: there is no No_Surgical_Gown, No_Goggles, No_Face_Shield,
+    # No_Coverall, No_Shoe_Covers or No_Surgical_Scrubs. Those six items can
+    # therefore only ever be judged on ABSENCE of a positive detection, which
+    # the state machine weights at absence_weight (0.25) precisely because
+    # absence is ambiguous. That is a property of the checkpoint, not a bug
+    # here, and it is why none of them can be better than "evaluation".
+    "No_Surgical_Gloves": "no_surgical_gloves",
+    "No_Surgical_Cap": "no_surgical_cap",
+    # Two BROAD negatives that do not map onto one item each. "No_Facial_Gear"
+    # means no mask AND no shield AND no goggles; "No_Medical_Attire" means no
+    # gown/scrubs/coverall. Mapping either onto a single item would invent
+    # evidence the model did not give — a person with goggles but no mask is
+    # "No_Facial_Gear" to this model, and calling that "no_surgical_mask" would
+    # be right by luck. They are carried through under their own names and are
+    # NOT consumed as per-item evidence until someone decides what they mean.
+    "No_Facial_Gear": "no_facial_gear",
+    "No_Medical_Attire": "no_medical_attire",
+}
+MEDICAL_IGNORED_CLASSES = set()
+
+
+def _canon(name: str) -> str:
+    """Fold a checkpoint's class name to a comparable key.
+
+    Checkpoints are trained by other people and their label files are
+    inconsistent about case, spaces, hyphens and underscores. Matching on the
+    raw string means a checkpoint that spells it "Safety-Vest" silently
+    contributes nothing, and a zone requiring a vest is then judged on silence.
+    """
+    return str(name).strip().lower().replace(" ", "_").replace("-", "_")
+
 
 class PPEDetector:
     """One PPE model per camera worker, sampled on a cadence."""
@@ -54,8 +114,22 @@ class PPEDetector:
     def __init__(self, camera_id: str, weights: Optional[str] = None,
                  device: str = "0", interval_s: float = 0.5,
                  conf_threshold: float = 0.35, imgsz: int = 640,
-                 enabled: bool = False):
+                 enabled: bool = False,
+                 # Which vocabulary this instance speaks. Defaulting to the
+                 # industrial map keeps every existing call site working
+                 # unchanged; the medical detector is the same class with a
+                 # different map, NOT a second implementation.
+                 class_map: Optional[Dict[str, str]] = None,
+                 ignored_classes=None,
+                 profile: str = "industrial"):
         self.camera_id = camera_id
+        self.profile = str(profile)
+        self.class_map = dict(class_map if class_map is not None else CLASS_MAP)
+        self.ignored_classes = set(
+            ignored_classes if ignored_classes is not None else IGNORED_CLASSES)
+        # Canonical lookup built once — see _canon. The literal map stays as
+        # written so it still reads as documentation.
+        self._canon_map = {_canon(k): v for k, v in self.class_map.items()}
         self.weights = weights or "models/ppe_safetyvision_v2.pt"
         self.device = str(device)
         self.interval_s = float(interval_s)
@@ -91,21 +165,35 @@ class PPEDetector:
             self._model = YOLO(self.weights)
             self._model.to("cuda:" + self.device if self.device.isdigit()
                            else self.device)
+            # READ THE CLASSES FROM THE WEIGHTS, never from documentation. The
+            # medical model card and the integration brief disagreed about
+            # whether the names use spaces or underscores; only the file knows.
             self._names = dict(self._model.names)
-            known = set(self._names.values()) & set(CLASS_MAP)
+            present = {_canon(n) for n in self._names.values()}
+            known = present & set(self._canon_map)
             if not known:
                 raise ValueError(
-                    "checkpoint classes %r contain none of the PPE classes "
-                    "Phase 3 needs (%s)" % (sorted(self._names.values()),
-                                            ", ".join(sorted(CLASS_MAP))))
-            missing = set(CLASS_MAP) - set(self._names.values())
+                    "checkpoint classes %r contain none of the %s PPE classes "
+                    "expected (%s)" % (sorted(self._names.values()),
+                                       self.profile,
+                                       ", ".join(sorted(self.class_map))))
+            missing = {k for k in self.class_map if _canon(k) not in present}
             if missing:
                 # Not fatal - a checkpoint with hardhat but no mask class is
                 # still useful for hardhat zones - but it must be visible, or a
                 # mask requirement would silently never be judged.
-                log.warning("camera %s: checkpoint lacks PPE classes %s; zones "
-                            "requiring those items cannot be judged",
-                            self.camera_id, sorted(missing))
+                log.warning("camera %s: %s checkpoint lacks PPE classes %s; "
+                            "zones requiring those items cannot be judged",
+                            self.camera_id, self.profile, sorted(missing))
+            # The converse, and just as important: a class the checkpoint has
+            # that we do not consume. Named so the omission is a decision on
+            # the record rather than a silent drop.
+            unmapped = sorted(n for n in self._names.values()
+                              if _canon(n) not in self._canon_map)
+            if unmapped:
+                log.info("camera %s: %s checkpoint emits unmapped classes %s "
+                         "(ignored by design)", self.camera_id, self.profile,
+                         unmapped)
             self.status = "ready"
             self.stats["loads"] += 1
             log.info("camera %s: PPE detection ready (%s, %d classes mapped, "
@@ -157,7 +245,7 @@ class PPEDetector:
         for box, cls_i, conf in zip(boxes.xyxy.tolist(), boxes.cls.tolist(),
                                     boxes.conf.tolist()):
             raw = self._names.get(int(cls_i))
-            mapped = CLASS_MAP.get(raw)
+            mapped = self._canon_map.get(_canon(raw))
             if mapped is None:
                 self.stats["ignored"] += 1
                 continue

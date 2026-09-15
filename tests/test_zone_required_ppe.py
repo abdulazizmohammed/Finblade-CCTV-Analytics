@@ -105,10 +105,20 @@ class TestPostgresColumnIsDeclared(unittest.TestCase):
         """INSERT columns, ON CONFLICT update, params, and the SELECT. Missing
         any one of them is a silent data-loss bug, which is what happened."""
         src = self._store_src()
-        self.assertIn("required_ppe,updated_at) ", src)          # INSERT columns
-        self.assertIn("required_ppe=excluded.required_ppe", src)  # upsert
-        self.assertIn('json.dumps(z.get("required_ppe")', src)    # params
-        self.assertIn("physical_area_id,required_ppe,updated_at ", src)  # SELECT
+        self.assertIn("required_ppe,ppe_profile,", src)            # INSERT columns
+        self.assertIn("required_ppe=excluded.required_ppe", src)   # upsert
+        self.assertIn('json.dumps(z.get("required_ppe")', src)     # params
+        self.assertIn("physical_area_id,required_ppe,ppe_profile,", src)  # SELECT
+
+    def test_the_profile_column_is_wired_at_all_four_sites_too(self):
+        """ppe_profile is the sixth field to travel this path. The first five
+        were each lost at exactly one of these four points."""
+        src = self._store_src()
+        sql = self._sql()
+        self.assertIn("ppe_profile            TEXT", sql)
+        self.assertIn("ALTER TABLE zones ADD COLUMN IF NOT EXISTS ppe_profile", sql)
+        self.assertIn("ppe_profile=excluded.ppe_profile", src)
+        self.assertIn('z.get("ppe_profile")', src)
 
 class TestZoneEditorCollectsIt(unittest.TestCase):
     """The browser end of the same round trip.
@@ -144,26 +154,67 @@ class TestZoneEditorCollectsIt(unittest.TestCase):
 
     def test_editing_a_zone_restores_the_checkboxes(self):
         """Without this, opening a zone to move one corner silently clears its
-        PPE requirement when the zone is re-added on Close."""
-        self.assertIn("ppeSet($('ppe')", self._fn(self._src(), "editZone"))
+        PPE requirement when the zone is re-added on Close. The profile has to
+        be restored too, or the rebuilt checkbox list is the wrong vocabulary."""
+        body = self._fn(self._src(), "editZone")
+        self.assertIn("ppeRender($('ppe')", body)
+        self.assertIn("$('ppeprofile').value", body)
 
     def test_the_offered_values_are_exactly_the_accepted_ones(self):
         """A checkbox for an item the rule engine does not know would be
         dropped server-side with a warning nobody reads — the operator would
-        believe they had set a requirement that never applies."""
-        from finblade.ppe import PPE_TYPES
-        src = self._src()
-        at = src.index("const PPE_ITEMS=")
-        # To "];", not to the first "]" — that one closes the first
-        # ['hardhat','Hard hat'] pair, so the slice saw a single item and the
-        # assertion failed against a control that was in fact correct.
-        decl = src[at:src.index("];", at) + 2]
-        offered = set(re.findall(r"\['([a-z_]+)',", decl))
-        self.assertEqual(offered, set(PPE_TYPES))
+        believe they had set a requirement that never applies.
 
-        # And the checkboxes must offer the same set the constant does.
-        boxes = set(re.findall(r'<input type="checkbox" value="([a-z_]+)"', src))
-        self.assertEqual(boxes, set(PPE_TYPES))
+        Now checked PER PROFILE: the editor keeps its own copy of the
+        vocabulary (it is a standalone page with no build step), so the two
+        copies drifting apart is a real risk, and the failure mode is an
+        operator setting a requirement that is silently discarded.
+        """
+        from finblade.ppe import PPE_PROFILES
+        src = self._src()
+        at = src.index("const PPE_PROFILES={")
+        decl = src[at:src.index("\n};", at)]
+
+        # Each profile block in the JS, as {profile: {items}}.
+        #
+        # Bracket MATCHING, not "up to the first ]," — that closes the first
+        # ['hardhat','Hard hat','evaluation'] entry, so the slice saw one item
+        # per profile and failed against code that was correct. Second time a
+        # naive delimiter scan has produced a false failure in this file.
+        def _block(text, start):
+            depth, i = 0, text.index("[", start)
+            for j in range(i, len(text)):
+                if text[j] == "[":
+                    depth += 1
+                elif text[j] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        return text[i:j + 1]
+            raise AssertionError("unbalanced brackets after index %d" % start)
+
+        offered = {}
+        for name in PPE_PROFILES:
+            block = _block(decl, decl.index(name + ":["))
+            offered[name] = set(re.findall(r"\['([a-z_]+)',", block))
+
+        self.assertEqual(set(offered), set(PPE_PROFILES),
+                         "the editor and finblade.ppe disagree on which "
+                         "profiles exist")
+        for name, items in PPE_PROFILES.items():
+            self.assertEqual(offered[name], set(items),
+                             "profile %r: editor offers %s, rule engine accepts "
+                             "%s" % (name, sorted(offered[name]), sorted(items)))
+
+    def test_every_checkbox_value_is_a_real_ppe_type(self):
+        """The static checkboxes in the form markup are the industrial ones the
+        page ships with before any JS runs. Every value must still be real."""
+        from finblade.ppe import ALL_PPE_TYPES
+        boxes = set(re.findall(r'<input type="checkbox" value="([a-z_]+)"',
+                               self._src()))
+        self.assertTrue(boxes)
+        self.assertTrue(boxes <= set(ALL_PPE_TYPES),
+                        "unknown PPE values in the editor: %s"
+                        % sorted(boxes - set(ALL_PPE_TYPES)))
 
 
 class TestPostgresRoundTrip(unittest.TestCase):
@@ -209,6 +260,38 @@ class TestPostgresRoundTrip(unittest.TestCase):
             # physical_area_id had this identical bug one release earlier;
             # assert it too so the pair cannot regress independently.
             self.assertEqual(got[0]["physical_area_id"], "AREA-1")
+        finally:
+            self.store.save_zones(cam, [])
+
+    def test_the_profile_survives_a_real_save_and_read(self):
+        """Sixth field down this path. The first five were each lost at exactly
+        one of the four wiring points."""
+        cam = "__test_ppe_zone__"
+        try:
+            self.store.save_zones(cam, [{
+                "zone_id": "Z-LAB", "zone_name": "Sample prep",
+                "polygon": [[0, 0], [10, 0], [10, 10]],
+                "ppe_profile": "medical",
+                "required_ppe": ["surgical_gloves", "surgical_mask"]}])
+            got = self.store.list_zones(cam)[0]
+            self.assertEqual(got["ppe_profile"], "medical")
+            self.assertEqual(got["required_ppe"],
+                             ["surgical_gloves", "surgical_mask"])
+        finally:
+            self.store.save_zones(cam, [])
+
+    def test_a_zone_saved_without_a_profile_reads_back_industrial(self):
+        """BACKWARD COMPATIBILITY against a live cluster: rows written before
+        the column existed read NULL, and NULL must surface as the default
+        rather than as None for every caller to coalesce."""
+        cam = "__test_ppe_zone__"
+        try:
+            self.store.save_zones(cam, [{
+                "zone_id": "Z-OLD",
+                "polygon": [[0, 0], [10, 0], [10, 10]],
+                "required_ppe": ["hardhat"]}])
+            got = self.store.list_zones(cam)[0]
+            self.assertEqual(got["ppe_profile"], "industrial")
         finally:
             self.store.save_zones(cam, [])
 

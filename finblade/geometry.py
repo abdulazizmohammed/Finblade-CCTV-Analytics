@@ -100,6 +100,51 @@ ANATOMY = {
     # Torso. Starts below the head so a white hardhat cannot satisfy a vest
     # requirement, ends above the knees.
     "safety_vest": (0.15, 0.70),
+
+    # --- medical / laboratory profile --------------------------------------
+    # REASONED / NOT YET SITE VALIDATED. Every band below is derived from where
+    # the garment sits on a body, not from measurement on lab footage. None has
+    # been checked against a real camera angle, and a ceiling camera looking
+    # steeply down compresses all of them.
+    #
+    # Tighter than the hardhat band: a surgical cap is fabric ON the skull
+    # rather than a shell sitting above it, so it does not overshoot the box
+    # the way a hard hat does when someone looks up.
+    "surgical_cap":   (-0.05, 0.30),
+    # Same reasoning as the industrial mask, and the same band: it is the same
+    # part of the same face. Kept as a separate entry rather than aliased so
+    # the two can diverge when one of them is measured.
+    "surgical_mask":  (-0.05, 0.32),
+    # Above the mask band. Goggles are on the eyes, and letting this reach the
+    # chin would let a mask satisfy a goggles requirement.
+    "goggles":        (-0.05, 0.25),
+    # Head plus upper chest: a face shield hangs from a headband and its lower
+    # edge reaches the sternum, so it is genuinely taller than mask or goggles.
+    "face_shield":    (-0.08, 0.45),
+    # A surgical gown is LONG — mid-calf on many people — so this runs further
+    # down the body than a hi-vis vest. Starting at 0.10 keeps a cap or shield
+    # from satisfying it.
+    "surgical_gown":  (0.10, 0.85),
+    # Scrubs are a torso garment like a vest, and share its band for the same
+    # reason: below the head, above the knees.
+    "surgical_scrubs": (0.15, 0.70),
+    # A coverall is nearly the whole person. Deliberately NOT the full body —
+    # leaving a margin at each end means a detection covering the entire box
+    # (which is what a mis-fired whole-person detection looks like) does not
+    # automatically satisfy it.
+    "coverall":       (0.05, 0.95),
+    # Feet. Overshoots the bottom because a person box is routinely clipped at
+    # the ankle by the frame edge or by the detector, and shoe covers are then
+    # partly outside it.
+    "shoe_covers":    (0.85, 1.05),
+
+    # NOTE: "surgical_gloves" is deliberately ABSENT from this table. Hands
+    # have no fixed vertical position — waist when idle, chest when pipetting,
+    # above the head when reaching — so any band would be wrong most of the
+    # time. Gloves therefore fall to _DEFAULT_BAND below, which is the honest
+    # behaviour, and finblade.ppe.PPE_STATUS marks them EXPERIMENTAL because of
+    # it. Adding a band here to make gloves "work" would make them worse: a
+    # wrong band silently drops correct detections.
 }
 # Applied when the item type is not in ANATOMY: the whole body, which reduces
 # the check to "inside this person" and is the honest fallback for an item

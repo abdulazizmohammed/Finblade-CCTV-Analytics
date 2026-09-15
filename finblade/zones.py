@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from .geometry import Point, point_in_polygon
+# ppe imports nothing from finblade, so this direction cannot cycle.
+from .ppe import DEFAULT_PROFILE, normalize_profile, types_for
 
 # Zone types (Req 5). RESTRICTED drives the no-go behaviour; the rest are metadata
 # used by later analytics (e.g. ENTRANCE/EXIT bias inflow/outflow).
@@ -97,6 +99,10 @@ class Zone:
     # assembly area without a mask is only in violation if THAT zone requires
     # masks. Values are finblade.ppe PPE_TYPES: "hardhat", "safety_vest", "mask".
     required_ppe: List[str] = field(default_factory=list)
+    # Which PPE vocabulary required_ppe is drawn from — see finblade.ppe.
+    # Defaults to industrial so every zone written before profiles existed keeps
+    # working with no migration.
+    ppe_profile: str = DEFAULT_PROFILE
 
     def contains(self, point: Point) -> bool:
         return point_in_polygon(point, self.polygon)
@@ -125,6 +131,7 @@ class Zone:
             "group_threshold": self.group_threshold,
             "group_window_s": self.group_window_s,
             "required_ppe": list(self.required_ppe),
+            "ppe_profile": self.ppe_profile,
             "colour": self.colour,
             "enabled": self.enabled,
             "polygon": [[x, y] for x, y in self.polygon],
@@ -183,9 +190,37 @@ def zone_from_dict(d: dict, frame_width: float = None, frame_height: float = Non
         # by the config validator rather than silently accepted here.
         required_ppe=[str(p).strip().lower().replace(" ", "_").replace("-", "_")
                       for p in (d.get("required_ppe") or []) if str(p).strip()],
+        # Which vocabulary required_ppe is drawn from. Absent means industrial,
+        # which is what every zone written before profiles existed meant.
+        ppe_profile=normalize_profile(d.get("ppe_profile")),
         colour=d.get("colour"),
         enabled=bool(d.get("enabled", True)),
     )
+
+
+def ppe_requirements(zone) -> List[str]:
+    """The items on this zone that its profile actually recognises.
+
+    THE FILTER IS THE POINT. required_ppe and ppe_profile are two independent
+    fields an operator can set, and nothing stops a zone ending up with
+    profile=medical and required_ppe=[hardhat] — by switching the profile after
+    choosing items, or by hand-editing YAML. Returning that hardhat would ask a
+    medical detector for a class it does not have, and the item would be judged
+    on silence: the person is wearing no hardhat, because nobody in a pathology
+    lab wears one, so they would be convicted of it.
+
+    Dropping it is the safe direction. An item that cannot be judged must not be
+    judged, and the caller logs what it dropped rather than discarding quietly.
+    """
+    allowed = set(types_for(getattr(zone, "ppe_profile", None)))
+    return [p for p in (getattr(zone, "required_ppe", None) or []) if p in allowed]
+
+
+def ppe_requirements_rejected(zone) -> List[str]:
+    """Items dropped by ppe_requirements, so a caller can say so out loud."""
+    allowed = set(types_for(getattr(zone, "ppe_profile", None)))
+    return [p for p in (getattr(zone, "required_ppe", None) or [])
+            if p not in allowed]
 
 
 def in_ignored_region(point: Point, zones) -> bool:

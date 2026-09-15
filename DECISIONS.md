@@ -622,6 +622,76 @@ minimum person-box height gate is the obvious mitigation and is NOT implemented.
 `geometry.py`, `evaluate_ppe`, the two event types, `required_ppe` on Zone, and
 `models/ppe_safetyvision_v2.pt`.
 
+## D-34 — Medical PPE is a second VOCABULARY, not a second pipeline
+
+**Choice:** `ppe_profile` on a zone selects between an `industrial` and a
+`medical` item vocabulary. One rule engine, one tracker, one association layer,
+one state machine serve both. A second `medical_ppe:` detector block loads a
+separate checkpoint, off by default and inert unless a zone asks for it.
+
+**WHY NOT A PARALLEL MEDICAL RULE ENGINE.** `evaluate_ppe` already takes
+`ppe_type` as an opaque string and `PPETracker` is keyed on
+`(track, ppe_type)` — neither needs to know a profile exists. Duplicating them
+would fork the grace/confirm/recover machinery and the absence weighting, which
+are the parts that took longest to get right and would drift apart first. What
+genuinely differs per profile is three pieces of DATA: the class map, the
+anatomical band, and the capability status.
+
+**ITEM NAMES ARE GLOBALLY UNIQUE**, and that is what makes one ANATOMY table
+and one state machine sufficient. `mask` is the industrial dust mask,
+`surgical_mask` is the medical one — deliberately separate entries sharing a
+band today, so either can be measured and moved without dragging the other.
+
+**DEFAULT industrial, and it MUST stay that way.** Every zone in the database
+was written before profiles existed and declared industrial items while naming
+no profile. Any other default invalidates all of them on the next load.
+
+**AN ITEM FROM THE WRONG PROFILE IS DROPPED, NOT JUDGED.** A zone can end up
+with `profile=medical, required_ppe=[hardhat]` — switch the profile after
+picking items, or hand-edit the YAML. Asking a medical checkpoint for a hardhat
+means it is judged on SILENCE, and nobody in a pathology lab wears one, so
+everybody would be convicted of it. Dropped and logged, never quietly.
+
+**BOTH DETECTORS RUN ON THE SAME TICK** when both are active. Letting them run
+on alternate frames would make each one's items read as "absent" on the frames
+the other owned — and absence is evidence toward a violation, so the two models
+would slowly convict each other's people.
+
+**GLOVES ARE EXPERIMENTAL, and the reason is structural.** Association places an
+item in a fixed vertical band of the person box. Hands have no fixed height, so
+gloves fall to the whole-body fallback, which reduces the test to "inside this
+person"; two people at one bench then overlap and the margin rule correctly
+refuses to arbitrate. Adding a band to make gloves "work" would make them worse,
+because a wrong band silently drops CORRECT detections. Pose keypoints would fix
+it and are out of scope.
+
+**NOTHING IS MARKED VALIDATED.** `PPE_STATUS` has no `validated` entry — not for
+the medical items and not for the industrial ones either. Running for weeks is
+not measuring. The status is shown in the zone editor beside each checkbox
+rather than hidden, so an operator ticking "surgical gloves" sees it is
+experimental before relying on it.
+
+**NOT BUILT: the candidate model.** `stormbreaker20/yolo26s-mppe-detector-v2` is
+a YOLO26 checkpoint and the pinned `ultralytics==8.3.40` has no YOLO26 support
+whatsoever. Lifting that pin moves ByteTrack — and therefore every track id —
+underneath tracking, ReID, dwell, loitering and PPE at once. Its licence is also
+unresolved: the repo says MIT over an AGPL-3.0 Ultralytics base. See
+BLOCKERS.md B-8. Because everything above is model-agnostic, a YOLOv8/YOLO11
+medical checkpoint would run on the current pin with only `MEDICAL_CLASS_MAP`
+changed.
+
+**Phase 9's multi-item alert block was NOT implemented, deliberately.** R-11
+raises one alert per `(track, zone, item)`. A single "Required / Detected /
+Missing" alert per person is a different granularity that would change dedup,
+the evidence crop and the stored alert contract. That is a decision to take
+explicitly, not a formatting change to slip in.
+
+**Reverse:** set every zone's `ppe_profile` back to `industrial` (or drop the
+column — it is nullable and defaults correctly). To remove entirely: delete the
+medical entries from `PPE_PROFILES`, `PPE_STATUS`, `ANATOMY` and
+`MEDICAL_CLASS_MAP`, the `medical_ppe:` config block, and `ppe_med` in
+`run_cpu.py`.
+
 ## D-33 — Compliance is a fifth alert kind, and carries a crop of the person
 
 **Choice:** a `COMPLIANCE` severity of its own with its own colour

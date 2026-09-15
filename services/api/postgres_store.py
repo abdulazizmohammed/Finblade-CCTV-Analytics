@@ -632,8 +632,9 @@ class PostgresStore(Store):
                     # add a Zone field, it needs FOUR edits here: the CREATE,
                     # an ALTER, this INSERT (columns, placeholders, params AND
                     # the ON CONFLICT clause) and the SELECT in list_zones.
-                    "adjacency_list,physical_area_id,required_ppe,updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "adjacency_list,physical_area_id,required_ppe,ppe_profile,"
+                    "updated_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                     "ON CONFLICT (camera_id,zone_id) DO UPDATE SET "
                     "zone_name=excluded.zone_name, zone_type=excluded.zone_type, "
                     "restricted=excluded.restricted, capacity_max=excluded.capacity_max, "
@@ -645,6 +646,7 @@ class PostgresStore(Store):
                     "polygon=excluded.polygon, adjacency_list=excluded.adjacency_list, "
                     "physical_area_id=excluded.physical_area_id, "
                     "required_ppe=excluded.required_ppe, "
+                    "ppe_profile=excluded.ppe_profile, "
                     "updated_at=excluded.updated_at",
                     (camera_id, z.get("zone_id"), z.get("zone_name"),
                      z.get("zone_type", "MONITORED"),
@@ -657,7 +659,12 @@ class PostgresStore(Store):
                      json.dumps(z.get("polygon") or []),
                      json.dumps(z.get("adjacency_list") or []),
                      z.get("physical_area_id"),
-                     json.dumps(z.get("required_ppe") or []), time.time()))
+                     json.dumps(z.get("required_ppe") or []),
+                     # Default rather than NULL: a zone with no profile means
+                     # industrial, and writing that explicitly stops the
+                     # question being re-answered by every reader.
+                     (z.get("ppe_profile") or "industrial"),
+                     time.time()))
 
     def list_zones(self, camera_id: str = None) -> List[dict]:
         q = ("SELECT camera_id,zone_id,zone_name,zone_type,restricted,capacity_max,"
@@ -665,7 +672,7 @@ class PostgresStore(Store):
              "colour,enabled,normalized_polygon,polygon,adjacency_list,"
              # Missing from the SELECT as well as the INSERT, so the editor
              # could not even display a mapping set by hand in SQL.
-             "physical_area_id,required_ppe,updated_at "
+             "physical_area_id,required_ppe,ppe_profile,updated_at "
              "FROM zones")
         p = []
         if camera_id is not None:
@@ -681,6 +688,11 @@ class PostgresStore(Store):
                     r[k] = json.loads(r[k]) if r[k] else []
                 except Exception:                       # noqa: BLE001
                     r[k] = []
+            # A scalar, not JSON, so it is not in the loop above. Rows written
+            # before this column existed read NULL and must come back as the
+            # default rather than as None — every caller would otherwise have to
+            # remember to coalesce it, and one of them would forget.
+            r["ppe_profile"] = r.get("ppe_profile") or "industrial"
         return rows
 
     @staticmethod

@@ -260,7 +260,17 @@ def _zones_from_raw(data, frame_width, frame_height):
 
 def _zone_sig(data):
     """Change signature so a live edit is detected without rebuilding every tick.
-    Includes every editable field (capacity/area too) so any edit hot-reloads."""
+
+    EVERY EDITABLE FIELD MUST BE LISTED HERE. A field the editor can change and
+    this cannot see is an edit the worker never notices: the operator saves, the
+    API stores it, the dashboard shows the new value, and the running pipeline
+    keeps using the old one indefinitely. There is no error and nothing in the
+    log — the change simply does not take.
+
+    That happened to required_ppe. Unticking "safety vest" saved correctly and
+    the worker went on raising vest violations, because this signature was
+    unchanged and the hot-reload below never ran.
+    """
     return json.dumps([[z.get("zone_id"), z.get("zone_type"), z.get("restricted"),
                         z.get("normalized_polygon") or z.get("polygon"),
                         z.get("capacity_max"), z.get("area_sqm"),
@@ -269,7 +279,11 @@ def _zone_sig(data):
                         # Remapping a zone to a different room is an edit like
                         # any other; without it here the worker would keep
                         # stamping the old area id onto its posts.
-                        z.get("physical_area_id")]
+                        z.get("physical_area_id"),
+                        # What this zone demands people wear. Changing it is the
+                        # edit most likely to be made DURING a shift, and the
+                        # one whose staleness accuses people wrongly.
+                        z.get("required_ppe")]
                        for z in data], sort_keys=True)
 
 
@@ -908,6 +922,41 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                                  if raw else list(config_zones))
                     restricted_zone_ids = {z.zone_id for z in cfg.zones if z.restricted}
                     loiter_zone = {z.zone_id: z.loitering_threshold_sec for z in cfg.zones}
+                    # EVERY MAP DERIVED FROM cfg.zones HAS TO BE REBUILT HERE.
+                    # _ppe_zones was not, so a reload swapped the polygons while
+                    # the PPE requirements stayed frozen at whatever they were
+                    # when the process started.
+                    _prev_ppe = _ppe_zones
+                    _ppe_zones = {z.zone_id: list(getattr(z, "required_ppe", []) or [])
+                                  for z in cfg.zones
+                                  if getattr(z, "required_ppe", None)}
+                    if _ppe_zones != _prev_ppe:
+                        # A verdict already reached for an item nobody requires
+                        # any more must go, or zone_summary keeps counting that
+                        # person non-compliant: it scans every state held for the
+                        # track, not just the ones still being asked for. The
+                        # alert stops immediately; without this the ZONE CARD
+                        # would disagree with the alert feed until the track
+                        # left frame.
+                        _keep = {r for reqs in _ppe_zones.values() for r in reqs}
+                        _forgotten = ppe_tracker.retain_types(_keep)
+                        log.info("camera %s: PPE requirements now %s (was %s); "
+                                 "dropped %d stale verdict(s)", cfg.camera_id,
+                                 _ppe_zones or "none", _prev_ppe or "none",
+                                 _forgotten)
+                        # The detector is loaded once, gated on there being at
+                        # least one PPE zone. Adding the FIRST requirement to a
+                        # camera that started with none therefore cannot take
+                        # effect until it restarts — say so plainly rather than
+                        # leaving an operator watching for alerts that no model
+                        # is running to produce.
+                        if _ppe_zones and not ppe.enabled:
+                            log.warning(
+                                "camera %s: zones now require PPE %s but the PPE "
+                                "model was not loaded at startup (no zone asked "
+                                "for any). RESTART THIS CAMERA for PPE to be "
+                                "judged; nothing is being checked until you do.",
+                                cfg.camera_id, _ppe_zones)
                     zone_sig = sig
                     log.info("hot-reloaded %d zone(s) for %s (%s)", len(cfg.zones),
                              cfg.camera_id, "editor" if raw else "reverted to config")

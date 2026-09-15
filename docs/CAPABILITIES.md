@@ -254,8 +254,13 @@ See [DECISIONS.md](../DECISIONS.md) D-31.
   zone then reports no compliance figures at all, rather than reporting everyone
   as fine. Set per zone from the **zone editor**, as a dropdown of checkboxes
   offering exactly `finblade.ppe.PPE_TYPES`; changing it saves immediately and
-  the worker picks it up on its next zone refresh, with no restart. If no zone
-  on a camera declares any requirement, the PPE model is not even loaded.
+  the running worker picks it up within ~4s, with no restart — verdicts already
+  reached for an item that is no longer required are discarded at the same
+  moment, so the zone card and the alert feed never disagree about it.
+  **One exception:** if no zone on a camera declared any PPE when the worker
+  started, the model was never loaded, and adding the *first* requirement needs
+  that camera restarted. The worker logs a warning saying exactly that rather
+  than leaving an operator waiting for alerts nothing is running to produce.
 - **Association is anatomical, not IoU** (`finblade/geometry.py`): a hardhat
   must sit in the top band of the person box, a vest in the torso band. It
   refuses when containment is below 0.5 or when two people are too close to

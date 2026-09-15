@@ -235,6 +235,31 @@ class PPETracker:
                 z["compliant"] += 1
         return out
 
+    def retain_types(self, keep) -> int:
+        """Forget every verdict for a PPE type nobody requires any more.
+
+        Returns how many were dropped.
+
+        WHY THIS IS NEEDED AT ALL. A verdict is held per (track, ppe_type) and
+        outlives any single frame — that persistence is the point, it is what
+        stops a momentary occlusion clearing a violation. But it means a zone's
+        requirement changing mid-shift leaves verdicts behind for items that are
+        no longer asked for, and zone_summary above scans EVERY state held for a
+        track rather than only the ones still required. Without this, unticking
+        "safety vest" stops the alerts but leaves the zone card reporting that
+        person non-compliant with a vest violation until they leave frame — the
+        card and the alert feed disagreeing about the same instant.
+
+        Deliberately keyed on the TYPE, not the zone: a track moves between
+        zones, so "still required somewhere on this camera" is the only question
+        that can be answered correctly from here.
+        """
+        keep = set(keep or ())
+        gone = [k for k in self._states if k[1] not in keep]
+        for k in gone:
+            del self._states[k]
+        return len(gone)
+
     def verdict(self, track_id: object, ppe_type: str) -> str:
         st = self._states.get((track_id, ppe_type))
         return st.state if st else UNKNOWN

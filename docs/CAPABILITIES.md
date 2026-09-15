@@ -178,7 +178,8 @@ is dropped on parse.
 
 | Capability | Status | Implementation |
 |---|---|---|
-| KSA map with every placed branch pinned, coloured by its roll-up; city clusters when zoomed out | Built | `web/map.html` — inline SVG, no tiles, no CDN |
+| Street map (OpenStreetMap tiles, darkened into the brand palette) with every placed branch pinned, coloured by its roll-up; city clusters when zoomed out | Built | `web/map.html` on **vendored** Leaflet 1.9.4 (`web/vendor/leaflet`, BSD) — no CDN for code; tiles need internet |
+| Automatic fallback to the built-in schematic outline when tiles cannot load; manual Streets / Schematic toggle | Built | `web/map.html` `setBase` — after 4 tile errors with none loaded |
 | Tap a branch → counts, cameras, vehicles present, and doors to its dashboard / cameras / history / reports / settings | Built | `web/map.html` panel; `?branch=` deep link |
 | Place or move a branch pin by tapping the map; edit name, type, city, geofence | Built | `web/map.html` Settings → `POST /api/v1/org/branches` |
 | Position ingest, three dialects: OsmAnd/Traccar Client (`?id=&lat=&lon=…`), OpenGTS `gprmc`, JSON | Built | `GET|POST /api/v1/trackers/ingest`, `finblade/gps.py` |
@@ -193,12 +194,15 @@ is dropped on parse.
 | Region / City / Branch scope on trackers, by home branch | Built | `GET /api/v1/trackers?region_id=…`, `/summary` |
 | Position history under retention | Built | `tracker_positions` pruned by `FINBLADE_RETENTION_DAYS` |
 | Route replay for a demo without a vehicle | Built | `scripts/replay_route.py --from RUH-01 --to KHJ-01` |
-| Street-level tiles | **Planned** | self-hosted PMTiles + vendored MapLibre; needs a one-time offline data download |
+| Self-hosted (offline) street tiles for an air-gapped site | **Planned** | a Saudi Arabia vector extract (Protomaps / OpenMapTiles, ODbL) served from `media/tiles/`; the OSM public servers are for light use only |
 | BLE tags (the Xiaomi Tag) as "arrived at branch" / "on board" beacons | **Planned** | `kind: BLE_TAG` is accepted; no gateway yet — needs a hardware test of address rotation |
 
-The country outline in `map.html` is a **hand-drawn ~40-vertex schematic**,
-not a survey boundary. Tests: `tests/test_gps.py` (dialects, geometry,
-geofence, both store backends, service, HTTP).
+The fallback outline in `map.html` is a **hand-drawn ~40-vertex schematic**,
+not a survey boundary. Leaflet is the one vendored third-party UI library in
+the repo — an exception to "no framework, no chart library" made because a
+slippy map is not something to rewrite; it loads from our own server, never a
+CDN. Tests: `tests/test_gps.py` (dialects, geometry, geofence, both store
+backends, service, HTTP).
 
 ## 4. Metrics
 

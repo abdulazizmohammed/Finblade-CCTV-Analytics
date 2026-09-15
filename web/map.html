@@ -6,19 +6,22 @@
 <title>FinBlade — Map</title>
 <!-- Brand tokens first; every colour below comes from these variables. -->
 <link rel="stylesheet" href="finblade-theme.css">
+<!-- Leaflet is VENDORED (web/vendor/leaflet, BSD) — nothing loads from a CDN. -->
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <style>
 /* KSA map with every Wareed branch pinned and every vehicle tracker moving.
-   NO TILES, NO CDN: FinBlade deploys air-gapped, so the country is an inline
-   SVG outline projected from lat/lon, and everything on it is drawn from the
-   API. Tap a branch -> its panel: counts, cameras, vehicles present, and the
-   doors to its dashboard, cameras, history, reports and settings.
+   Base layer: OpenStreetMap street tiles when the network allows, darkened
+   with a CSS filter so pins and amber/red states keep carrying the urgency;
+   when tiles cannot load (air-gapped site) the page falls back to the
+   built-in schematic outline of the Kingdom, automatically. Everything on
+   top is drawn from the API in real WGS84 coordinates.
 
    Colour rules (see CLAUDE.md): a branch pin is grey when calm, amber, red.
    Teal is chrome — the selected outline, buttons — never "this branch is
-   fine". Vehicles are neutral (text colour) so they never read as a status;
-   an OFFLINE tracker gets a red ring because that IS a status. */
+   fine". Vehicles are neutral (text colour); an OFFLINE tracker gets a red
+   ring because that IS a status. */
 body{background:var(--fb-void);min-height:100vh;}
-.topbar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:10;flex-wrap:wrap;}
+.topbar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:1000;flex-wrap:wrap;}
 .brand-logo{height:28px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
 .tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
 .tenant{font-family:var(--fb-font-data);font-size:11px;letter-spacing:.04em;color:var(--fb-text-muted);padding-left:14px;border-left:1px solid var(--fb-line);}
@@ -33,51 +36,55 @@ body{background:var(--fb-void);min-height:100vh;}
 
 .layout{display:grid;grid-template-columns:1fr 380px;height:calc(100vh - 57px);}
 @media(max-width:900px){.layout{grid-template-columns:1fr;grid-template-rows:60vh auto;height:auto;}}
-.mapwrap{position:relative;overflow:hidden;background:radial-gradient(900px 500px at 70% 20%,var(--fb-teal-ghost),transparent 60%),var(--fb-void);}
-svg.map{width:100%;height:100%;display:block;cursor:grab;touch-action:none;}
-svg.map.drag{cursor:grabbing;}
-svg.map.pick{cursor:crosshair;}
-.country{fill:var(--fb-surface);stroke:var(--fb-line-bright);stroke-width:1.2;vector-effect:non-scaling-stroke;}
-.grat{stroke:var(--fb-line);stroke-width:.6;vector-effect:non-scaling-stroke;opacity:.5;}
-.pin{cursor:pointer;}
-.pin circle.dot{fill:var(--fb-ok);stroke:var(--fb-void);stroke-width:1.5;vector-effect:non-scaling-stroke;}
-.pin[data-tone="warning"] circle.dot{fill:var(--fb-warning);}
-.pin[data-tone="critical"] circle.dot{fill:var(--fb-critical);}
-.pin circle.halo{fill:none;stroke:var(--fb-teal);stroke-width:2;vector-effect:non-scaling-stroke;opacity:0;}
-.pin.sel circle.halo{opacity:1;}
-.pin[data-tone="critical"] circle.dot{animation:blink 1.2s ease-in-out infinite;}
+.mapwrap{position:relative;overflow:hidden;background:var(--fb-void);}
+#map{position:absolute;inset:0;background:var(--fb-void);}
+#map.pick{cursor:crosshair;}
+/* Street tiles, darkened into the brand palette. Inverting OSM gives a dark
+   basemap with legible roads; the low saturation keeps it from competing
+   with the status colours drawn on top. */
+.leaflet-tile-pane{filter:invert(1) hue-rotate(185deg) brightness(.72) contrast(.95) saturate(.28);}
+.leaflet-container{font-family:var(--fb-font-ui);}
+.leaflet-control-attribution{background:rgba(8,19,26,.75)!important;color:var(--fb-text-faint)!important;font-family:var(--fb-font-data);font-size:9px!important;}
+.leaflet-control-attribution a{color:var(--fb-text-muted)!important;}
+.leaflet-control-zoom a{background:var(--fb-surface-2)!important;color:var(--fb-text)!important;border-color:var(--fb-line-bright)!important;font-family:var(--fb-font-data);}
+.leaflet-control-zoom a:hover{color:var(--fb-teal)!important;}
+.leaflet-bar{border:1px solid var(--fb-line-bright)!important;box-shadow:none!important;}
+.leaflet-tooltip{background:var(--fb-surface);color:var(--fb-text);border:1px solid var(--fb-line-bright);border-radius:var(--fb-r);font-family:var(--fb-font-data);font-size:11px;box-shadow:none;}
+.leaflet-tooltip-top:before{border-top-color:var(--fb-line-bright);}
+.country{fill:var(--fb-surface);fill-opacity:1;stroke:var(--fb-line-bright);}
+/* branch pins: a dot + label as one div icon, sized in real px */
+.pin{position:relative;width:0;height:0;}
+.pin .dot{position:absolute;left:-7px;top:-7px;width:14px;height:14px;border-radius:50%;background:var(--fb-ok);border:2px solid var(--fb-void);box-sizing:border-box;}
+.pin[data-tone="warning"] .dot{background:var(--fb-warning);}
+.pin[data-tone="critical"] .dot{background:var(--fb-critical);animation:blink 1.2s ease-in-out infinite;}
 @keyframes blink{50%{opacity:.35}}
-/* NO font-size / stroke-width in CSS for SVG text: a CSS px here is a map
-   unit (one degree of latitude), so 11px was an 11° letter. Sizes are set as
-   attributes from JS, scaled to the current zoom. */
-.pin text{font-family:var(--fb-font-data);fill:var(--fb-text);paint-order:stroke;stroke:var(--fb-void);stroke-linejoin:round;pointer-events:none;}
-.pin text.n{fill:var(--fb-void);stroke:none;font-weight:600;text-anchor:middle;dominant-baseline:central;}
-.pin.cluster circle.dot{fill:var(--fb-surface-2);stroke:var(--fb-line-bright);}
-.pin.cluster[data-tone="warning"] circle.dot{stroke:var(--fb-warning);stroke-width:2;}
-.pin.cluster[data-tone="critical"] circle.dot{stroke:var(--fb-critical);stroke-width:2;}
-.pin.cluster text.n{fill:var(--fb-text);}
-.pin.cluster[data-tone="warning"] text.n{fill:var(--fb-warning);}
-.pin.cluster[data-tone="critical"] text.n{fill:var(--fb-critical);}
-.veh{cursor:pointer;}
-.veh path{fill:var(--fb-text);stroke:var(--fb-void);stroke-width:1.2;vector-effect:non-scaling-stroke;}
-.veh[data-state="STOPPED"] path{fill:var(--fb-text-muted);}
-.veh[data-state="OFFLINE"] path{fill:var(--fb-text-faint);}
-.veh circle.ring{fill:none;stroke:var(--fb-critical);stroke-width:2;vector-effect:non-scaling-stroke;display:none;}
-.veh[data-state="OFFLINE"] circle.ring{display:block;}
-.veh.sel circle.halo{opacity:1;}
-.veh circle.halo{fill:none;stroke:var(--fb-teal);stroke-width:2;vector-effect:non-scaling-stroke;opacity:0;}
-.veh text{font-family:var(--fb-font-data);fill:var(--fb-text);paint-order:stroke;stroke:var(--fb-void);pointer-events:none;}
-.trail{fill:none;stroke:var(--fb-text-muted);stroke-width:1.5;vector-effect:non-scaling-stroke;opacity:.8;}
-.fence{fill:var(--fb-teal-ghost);stroke:var(--fb-teal-dim);stroke-width:1;vector-effect:non-scaling-stroke;}
-.zoomctl{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:6px;}
-.zoomctl .fb-btn{width:34px;padding:6px 0;text-align:center;font-family:var(--fb-font-data);}
-.legend{position:absolute;left:12px;bottom:12px;background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:8px 12px;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-muted);display:flex;gap:14px;flex-wrap:wrap;}
+.pin .halo{position:absolute;left:-12px;top:-12px;width:24px;height:24px;border-radius:50%;border:2px solid var(--fb-teal);box-sizing:border-box;display:none;}
+.pin.sel .halo{display:block;}
+.pin .lbl{position:absolute;left:11px;top:-8px;white-space:nowrap;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text);text-shadow:0 0 3px var(--fb-void),0 0 3px var(--fb-void),0 0 5px var(--fb-void);}
+.pin.cluster .dot{left:-13px;top:-13px;width:26px;height:26px;background:var(--fb-surface-2);border:2px solid var(--fb-line-bright);display:flex;align-items:center;justify-content:center;font-family:var(--fb-font-data);font-size:11px;font-weight:600;color:var(--fb-text);animation:none;}
+.pin.cluster[data-tone="warning"] .dot{border-color:var(--fb-warning);color:var(--fb-warning);}
+.pin.cluster[data-tone="critical"] .dot{border-color:var(--fb-critical);color:var(--fb-critical);}
+.pin.cluster .lbl{left:17px;}
+.pin.cluster .halo{left:-18px;top:-18px;width:36px;height:36px;}
+/* vehicles: an arrow when moving, a diamond when not */
+.veh{position:relative;width:0;height:0;}
+.veh .shape{position:absolute;left:-9px;top:-9px;width:18px;height:18px;background:var(--fb-text);clip-path:polygon(50% 0,85% 100%,50% 75%,15% 100%);}
+.veh[data-state="STOPPED"] .shape{background:var(--fb-text-muted);clip-path:polygon(50% 10%,90% 50%,50% 90%,10% 50%);}
+.veh[data-state="OFFLINE"] .shape{background:var(--fb-text-faint);clip-path:polygon(50% 10%,90% 50%,50% 90%,10% 50%);}
+.veh .ring{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid var(--fb-critical);box-sizing:border-box;display:none;}
+.veh[data-state="OFFLINE"] .ring{display:block;}
+.veh .halo{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid var(--fb-teal);box-sizing:border-box;display:none;}
+.veh.sel .halo{display:block;}
+.veh .lbl{position:absolute;left:12px;top:-16px;white-space:nowrap;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text);text-shadow:0 0 3px var(--fb-void),0 0 3px var(--fb-void),0 0 5px var(--fb-void);}
+.ctl{position:absolute;right:12px;top:12px;z-index:800;display:flex;flex-direction:column;gap:6px;}
+.ctl .fb-btn{padding:6px 10px;font-family:var(--fb-font-data);font-size:11px;}
+.legend{position:absolute;left:12px;bottom:22px;z-index:800;background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:8px 12px;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-muted);display:flex;gap:14px;flex-wrap:wrap;}
 .legend span{display:inline-flex;align-items:center;gap:5px;}
 .legend i{width:9px;height:9px;border-radius:50%;background:var(--fb-ok);display:inline-block;}
 .legend i.w{background:var(--fb-warning);} .legend i.c{background:var(--fb-critical);}
 .legend i.v{border-radius:0;background:var(--fb-text);clip-path:polygon(50% 0,100% 100%,50% 75%,0 100%);}
-.note{position:absolute;left:12px;top:12px;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);letter-spacing:.06em;}
-.pickhint{position:absolute;left:50%;top:12px;transform:translateX(-50%);background:var(--fb-teal-ghost);border:1px solid var(--fb-teal);color:var(--fb-teal-bright);font-family:var(--fb-font-data);font-size:11px;padding:6px 12px;border-radius:var(--fb-r);}
+.note{position:absolute;left:12px;top:12px;z-index:800;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);letter-spacing:.06em;background:rgba(8,19,26,.6);padding:3px 6px;border-radius:2px;}
+.pickhint{position:absolute;left:50%;top:12px;z-index:800;transform:translateX(-50%);background:var(--fb-teal-ghost);border:1px solid var(--fb-teal);color:var(--fb-teal-bright);font-family:var(--fb-font-data);font-size:11px;padding:6px 12px;border-radius:var(--fb-r);}
 
 /* side panel */
 .panel{background:var(--fb-surface);border-left:1px solid var(--fb-line);overflow:auto;padding:16px 18px 30px;}
@@ -98,7 +105,7 @@ svg.map.pick{cursor:crosshair;}
 .doors .fb-btn{text-align:center;}
 .sec{margin-top:16px;padding-top:12px;border-top:1px solid var(--fb-line);}
 .cams,.vehs{display:flex;flex-wrap:wrap;gap:6px;}
-.cam,.vpill{display:inline-flex;align-items:center;gap:6px;font-family:var(--fb-font-data);font-size:10.5px;color:var(--fb-text-muted);border:1px solid var(--fb-line);border-radius:2px;padding:3px 7px;cursor:pointer;}
+.cam,.vpill{display:inline-flex;align-items:center;gap:6px;font-family:var(--fb-font-data);font-size:10.5px;color:var(--fb-text-muted);border:1px solid var(--fb-line);border-radius:2px;padding:3px 7px;cursor:pointer;text-decoration:none;}
 .cam .d,.vpill .d{width:6px;height:6px;border-radius:50%;background:var(--fb-ok);}
 .cam .d.off,.vpill .d.off{background:var(--fb-critical);} .cam .d.deg{background:var(--fb-warning);}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;margin:8px 0;}
@@ -140,19 +147,12 @@ details.settings summary{cursor:pointer;font-family:var(--fb-font-data);font-siz
 
   <div class="layout">
     <div class="mapwrap">
-      <svg class="map" id="map" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Map of Saudi Arabia with Wareed branches and vehicles">
-        <g id="gCountry"></g>
-        <g id="gFences"></g>
-        <g id="gTrails"></g>
-        <g id="gPins"></g>
-        <g id="gVeh"></g>
-      </svg>
-      <div class="note">KSA · schematic outline · WGS84</div>
+      <div id="map" role="application" aria-label="Map of Saudi Arabia with Wareed branches and vehicles"></div>
+      <div class="note" id="basenote">streets · OpenStreetMap</div>
       <div class="pickhint" id="pickhint" hidden>Tap the map to place the pin · Esc to cancel</div>
-      <div class="zoomctl">
-        <button class="fb-btn" id="zIn" title="zoom in">+</button>
-        <button class="fb-btn" id="zOut" title="zoom out">−</button>
-        <button class="fb-btn" id="zFit" title="fit the country">⌂</button>
+      <div class="ctl">
+        <button class="fb-btn" id="baseToggle" title="switch base map">Schematic</button>
+        <button class="fb-btn" id="zFit" title="fit the country">Fit KSA</button>
       </div>
       <div class="legend">
         <span><i></i> branch calm</span><span><i class="w"></i> warning</span><span><i class="c"></i> critical</span>
@@ -163,81 +163,61 @@ details.settings summary{cursor:pointer;font-family:var(--fb-font-data);font-siz
   </div>
 
 <script src="apikey.js"></script>
+<script src="vendor/leaflet/leaflet.js"></script>
 <script>
 const API=location.origin;
 const WS=`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
 const $=id=>document.getElementById(id);
 const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
-const SVGNS='http://www.w3.org/2000/svg';
+// Leaflet path options take colour VALUES, not CSS variables — so read the
+// brand tokens from the theme at runtime rather than hard-coding a hex.
+const themeVar=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
-// ---- projection ------------------------------------------------------------
-// Equirectangular with the x axis scaled by cos(24°), the middle of the
-// Kingdom. Over 16°–32° N that keeps distances within a few percent, which is
-// all a schematic needs. Units: 1 unit = 1° of latitude.
-const LAT0=24.0, KX=Math.cos(LAT0*Math.PI/180);
-const X=lon=>lon*KX, Y=lat=>-lat;
-const toLL=(x,y)=>({lon:x/KX,lat:-y});
-
-// Saudi Arabia outline, clockwise from the Gulf of Aqaba. HAND-DRAWN AND
-// APPROXIMATE (~40 vertices): it places cities in the right part of the
-// country and gives the map a recognisable shape. It is not a survey
-// boundary. Replace with a proper simplified GeoJSON when one is available
-// offline.
+// ---- base map ---------------------------------------------------------------
+// Saudi Arabia outline for the schematic fallback. HAND-DRAWN AND APPROXIMATE
+// (~40 vertices): right shape, not a survey boundary. [lat, lon].
 const KSA=[[29.3,34.95],[29.2,36.0],[30.0,36.7],[31.5,37.0],[32.15,39.2],[31.3,41.0],[30.5,42.0],[29.2,44.7],
   [29.1,46.55],[28.5,47.7],[28.4,48.5],[27.5,49.0],[27.0,49.6],[26.4,50.1],[25.5,50.3],[24.6,51.0],[24.2,51.6],
   [24.1,52.0],[22.7,55.2],[22.0,55.65],[19.0,52.0],[18.9,49.0],[17.4,47.5],[17.1,44.5],[16.6,43.2],[16.4,42.75],
   [16.9,42.55],[18.0,41.8],[19.1,41.1],[20.15,40.27],[21.5,39.15],[22.8,39.0],[24.1,38.05],[25.0,37.27],
-  [26.25,36.45],[27.35,35.7],[28.3,34.8],[29.3,34.95]];
+  [26.25,36.45],[27.35,35.7],[28.3,34.8]];
+const KSA_BOUNDS=L.latLngBounds(KSA);
 
-const svg=$('map');
-let VB={x:0,y:0,w:1,h:1};             // current viewBox in projected units
-function setVB(v){VB=v;svg.setAttribute('viewBox',`${v.x} ${v.y} ${v.w} ${v.h}`);renderAll();}
-function fitCountry(){
-  const xs=KSA.map(p=>X(p[1])),ys=KSA.map(p=>Y(p[0]));
-  const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
-  const pad=0.8, w=(x1-x0)+pad*2, h=(y1-y0)+pad*2;
-  // keep aspect of the element
-  const r=svg.clientWidth/Math.max(1,svg.clientHeight);
-  let W=w,H=h; if(W/H<r) W=H*r; else H=W/r;
-  setVB({x:(x0+x1)/2-W/2,y:(y0+y1)/2-H/2,w:W,h:H});
-}
-function zoomAt(f,cx,cy){
-  const nx=cx-(cx-VB.x)*f, ny=cy-(cy-VB.y)*f;
-  const w=VB.w*f,h=VB.h*f;
-  if(w<0.02||w>60) return;
-  setVB({x:nx,y:ny,w,h});
-}
-function centreOn(lat,lon,w){
-  const r=svg.clientWidth/Math.max(1,svg.clientHeight);
-  const W=w,H=w/r;
-  setVB({x:X(lon)-W/2,y:Y(lat)-H/2,w:W,h:H});
-}
-function ptFromEvent(e){
-  const pt=svg.createSVGPoint(); pt.x=e.clientX; pt.y=e.clientY;
-  const m=svg.getScreenCTM(); if(!m) return {x:0,y:0};
-  const p=pt.matrixTransform(m.inverse()); return {x:p.x,y:p.y};
-}
-// pixels -> units, so marker sizes stay constant on screen while zooming.
-const px=n=>n*VB.w/Math.max(1,svg.clientWidth);
+const map=L.map('map',{zoomControl:true,attributionControl:true,minZoom:4,maxZoom:19,worldCopyJump:false});
+map.fitBounds(KSA_BOUNDS,{padding:[10,10]});
 
-// ---- country ----------------------------------------------------------------
-(function drawCountry(){
-  const g=$('gCountry');
-  const d=KSA.map((p,i)=>`${i?'L':'M'}${X(p[1]).toFixed(3)},${Y(p[0]).toFixed(3)}`).join(' ')+' Z';
-  const path=document.createElementNS(SVGNS,'path'); path.setAttribute('d',d); path.setAttribute('class','country'); g.appendChild(path);
-  // faint graticule every 2°
-  for(let lon=34;lon<=56;lon+=2){const l=document.createElementNS(SVGNS,'line');l.setAttribute('class','grat');l.setAttribute('x1',X(lon));l.setAttribute('x2',X(lon));l.setAttribute('y1',Y(33));l.setAttribute('y2',Y(15));g.appendChild(l);}
-  for(let lat=16;lat<=32;lat+=2){const l=document.createElementNS(SVGNS,'line');l.setAttribute('class','grat');l.setAttribute('y1',Y(lat));l.setAttribute('y2',Y(lat));l.setAttribute('x1',X(33));l.setAttribute('x2',X(57));g.appendChild(l);}
-})();
+// Street tiles from OpenStreetMap's public servers — fine for a demo and light
+// use, not for a 24/7 wall of screens (their usage policy). A self-hosted
+// extract is the deployment answer; see docs/CAPABILITIES.md.
+const streets=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  crossOrigin:true});
+const outline=L.polygon(KSA,{className:'country',weight:1.2,interactive:false});
+let BASE=(()=>{try{return localStorage.getItem('fb_map_base')||'streets';}catch(e){return 'streets';}})();
+let tileOk=0,tileErr=0,autoFell=false;
+streets.on('tileload',()=>{tileOk++;});
+streets.on('tileerror',()=>{
+  tileErr++;
+  // No tile has ever loaded and several have failed: no route to the
+  // internet. Fall back to the outline rather than showing grey squares.
+  if(!tileOk&&tileErr>=4&&BASE==='streets'&&!autoFell){autoFell=true;setBase('schematic',true);}
+});
+function setBase(kind,auto){
+  BASE=kind;
+  if(kind==='streets'){ map.removeLayer(outline); streets.addTo(map); $('basenote').textContent='streets · OpenStreetMap'; $('baseToggle').textContent='Schematic'; }
+  else { map.removeLayer(streets); outline.addTo(map); $('basenote').textContent=auto?'schematic · street tiles unreachable':'schematic outline · WGS84'; $('baseToggle').textContent='Streets'; }
+  if(!auto){ try{localStorage.setItem('fb_map_base',kind);}catch(e){} }
+}
+setBase(BASE,true);
+$('baseToggle').addEventListener('click',()=>{autoFell=true;setBase(BASE==='streets'?'schematic':'streets');});
+$('zFit').addEventListener('click',()=>map.fitBounds(KSA_BOUNDS,{padding:[10,10]}));
 
-// ---- state --------------------------------------------------------------------
-let ORG=null;          // /api/v1/org tree
-let BRANCHES={};       // branch_id -> node (+city, region)
-let TRACKERS=[];       // from /ws or /api/v1/trackers
-let SEL={kind:null,id:null};   // selected branch or vehicle
-let REGION='';
+// ---- state ------------------------------------------------------------------
+let ORG=null, BRANCHES={}, TRACKERS=[], REGION='';
+let SEL={kind:null,id:null};
 let TRAIL={id:null,points:[]};
-let PICK=null;         // {onPick(lat,lon)} while placing a pin
+let PICK=null;
+const layers={pins:L.layerGroup().addTo(map), fences:L.layerGroup().addTo(map), veh:L.layerGroup().addTo(map), trail:L.layerGroup().addTo(map)};
 
 function tone(r){
   if(!r) return '';
@@ -246,101 +226,70 @@ function tone(r){
   return '';
 }
 const TONE_RANK={'':0,warning:1,critical:2};
-function worst(a,b){return TONE_RANK[a]>=TONE_RANK[b]?a:b;}
+const worst=(a,b)=>TONE_RANK[a]>=TONE_RANK[b]?a:b;
+function indexOrg(t){BRANCHES={};t.regions.forEach(r=>r.cities.forEach(c=>c.branches.forEach(b=>{BRANCHES[b.branch_id]=Object.assign({},b,{city:c,region:r});})));}
 
-function indexOrg(t){
-  BRANCHES={};
-  t.regions.forEach(r=>r.cities.forEach(c=>c.branches.forEach(b=>{BRANCHES[b.branch_id]=Object.assign({},b,{city:c,region:r});})));
-}
-
-// ---- rendering ------------------------------------------------------------------
-function clear(g){while(g.firstChild)g.removeChild(g.firstChild);}
-function el(tag,attrs,cls){const e=document.createElementNS(SVGNS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(cls)e.setAttribute('class',cls);return e;}
-// A text label sized in SCREEN pixels: font-size and the halo stroke are
-// converted to map units for the current zoom, so they stay the same size on
-// screen as the map scales.
-function label(x,y,sizePx,text,cls){
-  const t=el('text',{x,y,'font-size':px(sizePx),'stroke-width':px(3)},cls);
-  t.textContent=text; return t;
-}
-
-// Above this viewBox width (degrees) the branches of a city stack on one
-// pixel, so a city shows as ONE marker with a count; tap it to zoom in.
-const CLUSTER_ABOVE=3.0;
+// ---- markers ------------------------------------------------------------------
+// Below this zoom the branches of a city sit on one pixel, so a city shows as
+// ONE marker with a count; tap it to zoom in.
+const CLUSTER_BELOW=9;
+function icon(cls,html){return L.divIcon({className:'',html:`<div class="${cls}">${html}</div>`,iconSize:[0,0],iconAnchor:[0,0]});}
 
 function renderPins(){
-  const g=$('gPins'); clear(g); if(!ORG) return;
+  layers.pins.clearLayers(); if(!ORG) return;
   const regs=ORG.regions.filter(r=>!REGION||r.region_id===REGION);
-  const R=px(7), RC=px(11);
-  if(VB.w>CLUSTER_ABOVE){
+  if(map.getZoom()<CLUSTER_BELOW){
     regs.forEach(r=>r.cities.forEach(c=>{
-      const placed=c.branches.filter(b=>b.lat!=null);
-      if(!placed.length) return;
+      const placed=c.branches.filter(b=>b.lat!=null); if(!placed.length) return;
       const lat=placed.reduce((s,b)=>s+b.lat,0)/placed.length, lon=placed.reduce((s,b)=>s+b.lon,0)/placed.length;
       const t=placed.reduce((w,b)=>worst(w,tone(b.rollup)),'');
-      const pin=el('g',{transform:`translate(${X(lon)},${Y(lat)})`,'data-tone':t},'pin cluster');
-      pin.appendChild(el('circle',{r:RC*1.35},'halo'));
-      pin.appendChild(el('circle',{r:RC},'dot'));
-      pin.appendChild(label(0,0,11,placed.length,'n'));
-      pin.appendChild(label(RC+px(4),px(4),11,c.name));
-      pin.addEventListener('click',e=>{e.stopPropagation();centreOn(lat,lon,0.25);});
-      pin.classList.toggle('sel',SEL.kind==='branch'&&placed.some(b=>b.branch_id===SEL.id));
-      g.appendChild(pin);
+      const sel=SEL.kind==='branch'&&placed.some(b=>b.branch_id===SEL.id);
+      const m=L.marker([lat,lon],{icon:icon(`pin cluster${sel?' sel':''}`,`<span class="halo"></span><span class="dot">${placed.length}</span><span class="lbl">${esc(c.name)}</span>`),keyboard:false});
+      m.on('click',()=>map.setView([lat,lon],11)); m.bindTooltip(`${esc(c.name)} · ${placed.length} branch${placed.length===1?'':'es'}`,{direction:'top',offset:[0,-14]});
+      // data-tone lives on the inner div; set after add
+      m.addTo(layers.pins); const d=m.getElement().querySelector('.pin'); if(d) d.dataset.tone=t;
     }));
     return;
   }
   regs.forEach(r=>r.cities.forEach(c=>c.branches.forEach(b=>{
     if(b.lat==null) return;
-    const pin=el('g',{transform:`translate(${X(b.lon)},${Y(b.lat)})`,'data-tone':tone(b.rollup)},'pin');
-    pin.appendChild(el('circle',{r:R*1.7},'halo'));
-    pin.appendChild(el('circle',{r:R},'dot'));
-    pin.appendChild(label(R+px(4),px(4),11,b.name));
-    pin.addEventListener('click',e=>{e.stopPropagation();select('branch',b.branch_id);});
-    pin.classList.toggle('sel',SEL.kind==='branch'&&SEL.id===b.branch_id);
-    g.appendChild(pin);
+    const sel=SEL.kind==='branch'&&SEL.id===b.branch_id;
+    const m=L.marker([b.lat,b.lon],{icon:icon(`pin${sel?' sel':''}`,`<span class="halo"></span><span class="dot"></span><span class="lbl">${esc(b.name)}</span>`),keyboard:false});
+    m.on('click',()=>select('branch',b.branch_id));
+    m.addTo(layers.pins); const d=m.getElement().querySelector('.pin'); if(d) d.dataset.tone=tone(b.rollup);
   })));
 }
 function renderFences(){
-  const g=$('gFences'); clear(g); if(!ORG||VB.w>0.6) return;   // only when zoomed to a city
+  layers.fences.clearLayers(); if(!ORG||map.getZoom()<12) return;
   Object.values(BRANCHES).forEach(b=>{
     if(b.lat==null||(REGION&&b.region.region_id!==REGION)) return;
-    const m=b.geofence_m||150;
-    // metres -> degrees of latitude (1° ≈ 111.32 km); x is pre-scaled by KX
-    const r=m/111320;
-    g.appendChild(el('ellipse',{cx:X(b.lon),cy:Y(b.lat),rx:r*KX,ry:r,'stroke-dasharray':`${px(3)} ${px(3)}`},'fence'));
+    L.circle([b.lat,b.lon],{radius:b.geofence_m||150,color:themeVar('--fb-teal-dim'),weight:1,dashArray:'3 3',fillColor:themeVar('--fb-teal'),fillOpacity:.08,interactive:false}).addTo(layers.fences);
   });
 }
 function vehVisible(t){
   if(!t.position) return false;
   if(!REGION) return true;
   const home=BRANCHES[t.home_branch_id];
-  return !home || home.region.region_id===REGION;   // unassigned vehicles show everywhere
+  return !home||home.region.region_id===REGION;
 }
 function renderVehicles(){
-  const g=$('gVeh'); clear(g);
-  const S=px(8);
+  layers.veh.clearLayers();
   TRACKERS.filter(vehVisible).forEach(t=>{
     const p=t.position;
-    const grp=el('g',{transform:`translate(${X(p.lon)},${Y(p.lat)})`,'data-state':t.state},'veh');
-    grp.appendChild(el('circle',{r:S*1.6},'halo'));
-    grp.appendChild(el('circle',{r:S*1.3},'ring'));
     const h=(t.state==='MOVING'&&p.heading!=null)?p.heading:0;
-    // an arrow when moving, a diamond when not
-    const d=t.state==='MOVING'?`M0,${-S} L${S*0.7},${S} L0,${S*0.45} L${-S*0.7},${S} Z`:`M0,${-S*0.8} L${S*0.8},0 L0,${S*0.8} L${-S*0.8},0 Z`;
-    grp.appendChild(el('path',{d,transform:`rotate(${h})`}));
-    grp.appendChild(label(S+px(4),-px(3),10,t.name||t.tracker_id));
-    grp.addEventListener('click',e=>{e.stopPropagation();select('vehicle',t.tracker_id);});
-    grp.classList.toggle('sel',SEL.kind==='vehicle'&&SEL.id===t.tracker_id);
-    g.appendChild(grp);
+    const sel=SEL.kind==='vehicle'&&SEL.id===t.tracker_id;
+    const m=L.marker([p.lat,p.lon],{icon:icon(`veh${sel?' sel':''}`,`<span class="halo"></span><span class="ring"></span><span class="shape" style="transform:rotate(${h}deg)"></span><span class="lbl">${esc(t.name||t.tracker_id)}</span>`),keyboard:false,zIndexOffset:1000});
+    m.on('click',()=>select('vehicle',t.tracker_id));
+    m.addTo(layers.veh); const d=m.getElement().querySelector('.veh'); if(d) d.dataset.state=t.state;
   });
 }
 function renderTrail(){
-  const g=$('gTrails'); clear(g);
+  layers.trail.clearLayers();
   if(!TRAIL.id||TRAIL.points.length<2) return;
-  const d=TRAIL.points.map((p,i)=>`${i?'L':'M'}${X(p.lon).toFixed(4)},${Y(p.lat).toFixed(4)}`).join(' ');
-  g.appendChild(el('path',{d,'stroke-dasharray':`${px(4)} ${px(3)}`},'trail'));
+  L.polyline(TRAIL.points.map(p=>[p.lat,p.lon]),{color:themeVar('--fb-text-muted'),weight:2,dashArray:'4 3',opacity:.85,interactive:false}).addTo(layers.trail);
 }
 function renderAll(){renderFences();renderPins();renderVehicles();renderTrail();}
+map.on('zoomend',()=>{renderPins();renderFences();});
 
 // ---- panel ----------------------------------------------------------------------
 function chip(label,n,t){return `<span class="chip"${(t&&n>0)?` data-tone="${t}"`:''}><b>${n}</b> ${label}</span>`;}
@@ -352,7 +301,7 @@ function fmtAt(ts){return ts?new Date(ts*1000).toLocaleTimeString('en-GB'):'—'
 
 function panelNetwork(){
   if(!ORG){$('panel').innerHTML='<p class="eyebrow">Network</p><div class="empty">Loading…</div>';return;}
-  const r=ORG.rollup, k=ORG.counts;
+  const r=ORG.rollup,k=ORG.counts;
   const vehicles=TRACKERS.filter(vehVisible);
   const branches=Object.values(BRANCHES).filter(b=>!REGION||b.region.region_id===REGION)
     .sort((a,b)=>TONE_RANK[tone(b.rollup)]-TONE_RANK[tone(a.rollup)]||a.name.localeCompare(b.name));
@@ -404,7 +353,7 @@ function panelBranch(b){
   $('back').addEventListener('click',e=>{e.preventDefault();select(null);});
   $('s_pick').addEventListener('click',()=>{
     PICK={onPick:(lat,lon)=>{$('s_lat').value=lat.toFixed(5);$('s_lon').value=lon.toFixed(5);$('settings').open=true;}};
-    svg.classList.add('pick'); $('pickhint').hidden=false;
+    $('map').classList.add('pick'); $('pickhint').hidden=false;
   });
   $('s_save').addEventListener('click',async()=>{
     const body={branch_id:b.branch_id,city_id:$('s_city').value,name:$('s_name').value.trim()||null,branch_type:$('s_type').value,
@@ -419,9 +368,7 @@ function panelBranch(b){
   });
 }
 function panelVehicle(t){
-  const p=t.position||{};
-  const home=BRANCHES[t.home_branch_id];
-  const at=BRANCHES[t.at_branch_id];
+  const p=t.position||{}; const home=BRANCHES[t.home_branch_id]; const at=BRANCHES[t.at_branch_id];
   $('panel').innerHTML=`<p class="eyebrow"><a href="#" id="back" style="color:var(--fb-teal)">← network</a> · vehicle</p>
     <h2>${esc(t.name||t.tracker_id)}<span class="btype">${esc(t.asset_type||'VEHICLE')}</span></h2>
     <div class="id">${esc(t.tracker_id)}${t.asset_label?' · '+esc(t.asset_label):''}${t.registered===false?' · <span style="color:var(--fb-warning)">unregistered</span>':''}</div>
@@ -442,7 +389,7 @@ function panelVehicle(t){
       <a class="fb-btn" href="history.html?camera_id=${encodeURIComponent(t.tracker_id)}">Arrivals</a>
     </div>`;
   $('back').addEventListener('click',e=>{e.preventDefault();select(null);});
-  $('v_follow').addEventListener('click',()=>{if(p.lat!=null)centreOn(p.lat,p.lon,Math.min(VB.w,0.2));});
+  $('v_follow').addEventListener('click',()=>{if(p.lat!=null)map.setView([p.lat,p.lon],Math.max(map.getZoom(),14));});
   $('v_trail').addEventListener('click',async()=>{
     if(TRAIL.id===t.tracker_id){TRAIL={id:null,points:[]};renderTrail();panelVehicle(t);return;}
     try{
@@ -452,14 +399,14 @@ function panelVehicle(t){
   });
 }
 // Never rebuild the panel under someone's fingers: an open Settings form is
-// left alone until it is closed or saved.
+// left alone until it is closed or saved. And only rebuild when what it
+// shows has changed — /ws arrives twice a second.
 function editing(){const d=document.getElementById('settings');return !!(d&&d.open);}
 let PANEL_SIG='';
 function renderPanel(force){
   if(editing()&&!force) return;
-  const sig=JSON.stringify([SEL,REGION,TRAIL.id,
-    TRACKERS.map(t=>[t.tracker_id,t.state,t.at_branch_id,t.position&&t.position.ts]),
-    ORG&&ORG.rollup, ORG&&Object.values(BRANCHES).map(b=>[b.branch_id,b.rollup,b.lat,b.lon,b.name])]);
+  const sig=JSON.stringify([SEL,REGION,TRAIL.id,TRACKERS.map(t=>[t.tracker_id,t.state,t.at_branch_id,t.position&&t.position.ts]),
+    ORG&&ORG.rollup,ORG&&Object.values(BRANCHES).map(b=>[b.branch_id,b.rollup,b.lat,b.lon,b.name])]);
   if(sig===PANEL_SIG&&!force) return;
   PANEL_SIG=sig;
   if(SEL.kind==='branch'&&BRANCHES[SEL.id]) panelBranch(BRANCHES[SEL.id]);
@@ -472,35 +419,18 @@ function select(kind,id){
   if(kind==='branch') u.searchParams.set('branch',id); else u.searchParams.delete('branch');
   if(kind==='vehicle') u.searchParams.set('vehicle',id); else u.searchParams.delete('vehicle');
   history.replaceState(null,'',u);
-  if(kind==='branch'){const b=BRANCHES[id]; if(b&&b.lat!=null&&VB.w>CLUSTER_ABOVE) centreOn(b.lat,b.lon,0.25);}
+  if(kind==='branch'){const b=BRANCHES[id]; if(b&&b.lat!=null&&map.getZoom()<CLUSTER_BELOW) map.setView([b.lat,b.lon],13);}
   renderPanel(true); renderPins(); renderVehicles();
 }
 document.addEventListener('click',e=>{
   const r=e.target.closest('[data-branch]'); if(r){select('branch',r.dataset.branch);return;}
   const v=e.target.closest('[data-veh]'); if(v){select('vehicle',v.dataset.veh);}
 });
-
-// ---- interaction: pan / zoom / pick -------------------------------------------------
-let drag=null;
-svg.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,vb:Object.assign({},VB),moved:false};svg.setPointerCapture(e.pointerId);});
-svg.addEventListener('pointermove',e=>{
-  if(!drag) return;
-  const dx=(e.clientX-drag.x)*VB.w/svg.clientWidth, dy=(e.clientY-drag.y)*VB.h/svg.clientHeight;
-  if(Math.abs(e.clientX-drag.x)+Math.abs(e.clientY-drag.y)>3){drag.moved=true;svg.classList.add('drag');}
-  if(drag.moved) setVB({x:drag.vb.x-dx,y:drag.vb.y-dy,w:VB.w,h:VB.h});
+map.on('click',e=>{
+  if(PICK){PICK.onPick(e.latlng.lat,e.latlng.lng);PICK=null;$('map').classList.remove('pick');$('pickhint').hidden=true;return;}
+  if(SEL.kind) select(null);
 });
-svg.addEventListener('pointerup',e=>{
-  const wasDrag=drag&&drag.moved; drag=null; svg.classList.remove('drag');
-  if(wasDrag) return;
-  if(PICK){const p=ptFromEvent(e);const ll=toLL(p.x,p.y);PICK.onPick(ll.lat,ll.lon);PICK=null;svg.classList.remove('pick');$('pickhint').hidden=true;return;}
-  if(e.target===svg||e.target.closest('#gCountry')) { if(SEL.kind) select(null); }
-});
-svg.addEventListener('wheel',e=>{e.preventDefault();const p=ptFromEvent(e);zoomAt(e.deltaY>0?1.25:0.8,p.x,p.y);},{passive:false});
-$('zIn').addEventListener('click',()=>zoomAt(0.7,VB.x+VB.w/2,VB.y+VB.h/2));
-$('zOut').addEventListener('click',()=>zoomAt(1.4,VB.x+VB.w/2,VB.y+VB.h/2));
-$('zFit').addEventListener('click',fitCountry);
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&PICK){PICK=null;svg.classList.remove('pick');$('pickhint').hidden=true;}});
-window.addEventListener('resize',()=>setVB(VB));
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&PICK){PICK=null;$('map').classList.remove('pick');$('pickhint').hidden=true;}});
 $('scRegion').addEventListener('change',e=>{REGION=e.target.value;renderAll();renderPanel(true);});
 
 // ---- data --------------------------------------------------------------------------
@@ -519,7 +449,6 @@ async function loadOrg(){
 function applyTrackers(list){
   TRACKERS=list||[];
   renderVehicles();
-  // Refresh the panel only if it shows something that moves.
   if(SEL.kind==='vehicle'||SEL.kind===null) renderPanel();
   if(TRAIL.id){const t=TRACKERS.find(x=>x.tracker_id===TRAIL.id); if(t&&t.position){const last=TRAIL.points[TRAIL.points.length-1]; if(!last||last.ts!==t.position.ts){TRAIL.points.push(t.position);renderTrail();}}}
 }
@@ -542,10 +471,9 @@ function connect(){
 }
 
 (async function init(){
-  fitCountry();
   await loadOrg();
   const q=new URL(location.href).searchParams;
-  if(q.get('branch')&&BRANCHES[q.get('branch')]){const b=BRANCHES[q.get('branch')]; if(b.lat!=null) centreOn(b.lat,b.lon,0.25); select('branch',b.branch_id);}
+  if(q.get('branch')&&BRANCHES[q.get('branch')]){const b=BRANCHES[q.get('branch')]; if(b.lat!=null) map.setView([b.lat,b.lon],13); select('branch',b.branch_id);}
   else if(q.get('vehicle')) SEL={kind:'vehicle',id:q.get('vehicle')};
   connect(); startPoll();
   setInterval(loadOrg,5000);

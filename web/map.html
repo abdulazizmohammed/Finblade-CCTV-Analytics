@@ -47,7 +47,10 @@ svg.map.pick{cursor:crosshair;}
 .pin.sel circle.halo{opacity:1;}
 .pin[data-tone="critical"] circle.dot{animation:blink 1.2s ease-in-out infinite;}
 @keyframes blink{50%{opacity:.35}}
-.pin text{font-family:var(--fb-font-data);fill:var(--fb-text);font-size:11px;paint-order:stroke;stroke:var(--fb-void);stroke-width:3px;stroke-linejoin:round;pointer-events:none;}
+/* NO font-size / stroke-width in CSS for SVG text: a CSS px here is a map
+   unit (one degree of latitude), so 11px was an 11° letter. Sizes are set as
+   attributes from JS, scaled to the current zoom. */
+.pin text{font-family:var(--fb-font-data);fill:var(--fb-text);paint-order:stroke;stroke:var(--fb-void);stroke-linejoin:round;pointer-events:none;}
 .pin text.n{fill:var(--fb-void);stroke:none;font-weight:600;text-anchor:middle;dominant-baseline:central;}
 .pin.cluster circle.dot{fill:var(--fb-surface-2);stroke:var(--fb-line-bright);}
 .pin.cluster[data-tone="warning"] circle.dot{stroke:var(--fb-warning);stroke-width:2;}
@@ -63,9 +66,9 @@ svg.map.pick{cursor:crosshair;}
 .veh[data-state="OFFLINE"] circle.ring{display:block;}
 .veh.sel circle.halo{opacity:1;}
 .veh circle.halo{fill:none;stroke:var(--fb-teal);stroke-width:2;vector-effect:non-scaling-stroke;opacity:0;}
-.veh text{font-family:var(--fb-font-data);fill:var(--fb-text);font-size:10px;paint-order:stroke;stroke:var(--fb-void);stroke-width:3px;pointer-events:none;}
-.trail{fill:none;stroke:var(--fb-text-muted);stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-dasharray:4 3;opacity:.8;}
-.fence{fill:var(--fb-teal-ghost);stroke:var(--fb-teal-dim);stroke-width:1;vector-effect:non-scaling-stroke;stroke-dasharray:3 3;}
+.veh text{font-family:var(--fb-font-data);fill:var(--fb-text);paint-order:stroke;stroke:var(--fb-void);pointer-events:none;}
+.trail{fill:none;stroke:var(--fb-text-muted);stroke-width:1.5;vector-effect:non-scaling-stroke;opacity:.8;}
+.fence{fill:var(--fb-teal-ghost);stroke:var(--fb-teal-dim);stroke-width:1;vector-effect:non-scaling-stroke;}
 .zoomctl{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:6px;}
 .zoomctl .fb-btn{width:34px;padding:6px 0;text-align:center;font-family:var(--fb-font-data);}
 .legend{position:absolute;left:12px;bottom:12px;background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:8px 12px;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-muted);display:flex;gap:14px;flex-wrap:wrap;}
@@ -253,6 +256,13 @@ function indexOrg(t){
 // ---- rendering ------------------------------------------------------------------
 function clear(g){while(g.firstChild)g.removeChild(g.firstChild);}
 function el(tag,attrs,cls){const e=document.createElementNS(SVGNS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(cls)e.setAttribute('class',cls);return e;}
+// A text label sized in SCREEN pixels: font-size and the halo stroke are
+// converted to map units for the current zoom, so they stay the same size on
+// screen as the map scales.
+function label(x,y,sizePx,text,cls){
+  const t=el('text',{x,y,'font-size':px(sizePx),'stroke-width':px(3)},cls);
+  t.textContent=text; return t;
+}
 
 // Above this viewBox width (degrees) the branches of a city stack on one
 // pixel, so a city shows as ONE marker with a count; tap it to zoom in.
@@ -271,8 +281,8 @@ function renderPins(){
       const pin=el('g',{transform:`translate(${X(lon)},${Y(lat)})`,'data-tone':t},'pin cluster');
       pin.appendChild(el('circle',{r:RC*1.35},'halo'));
       pin.appendChild(el('circle',{r:RC},'dot'));
-      const n=el('text',{},'n'); n.setAttribute('font-size',px(11)); n.textContent=placed.length; pin.appendChild(n);
-      const lbl=el('text',{x:RC+px(4),y:px(4)}); lbl.setAttribute('font-size',px(11)); lbl.textContent=c.name; pin.appendChild(lbl);
+      pin.appendChild(label(0,0,11,placed.length,'n'));
+      pin.appendChild(label(RC+px(4),px(4),11,c.name));
       pin.addEventListener('click',e=>{e.stopPropagation();centreOn(lat,lon,0.25);});
       pin.classList.toggle('sel',SEL.kind==='branch'&&placed.some(b=>b.branch_id===SEL.id));
       g.appendChild(pin);
@@ -284,7 +294,7 @@ function renderPins(){
     const pin=el('g',{transform:`translate(${X(b.lon)},${Y(b.lat)})`,'data-tone':tone(b.rollup)},'pin');
     pin.appendChild(el('circle',{r:R*1.7},'halo'));
     pin.appendChild(el('circle',{r:R},'dot'));
-    const lbl=el('text',{x:R+px(4),y:px(4)}); lbl.setAttribute('font-size',px(11)); lbl.textContent=b.name; pin.appendChild(lbl);
+    pin.appendChild(label(R+px(4),px(4),11,b.name));
     pin.addEventListener('click',e=>{e.stopPropagation();select('branch',b.branch_id);});
     pin.classList.toggle('sel',SEL.kind==='branch'&&SEL.id===b.branch_id);
     g.appendChild(pin);
@@ -297,7 +307,7 @@ function renderFences(){
     const m=b.geofence_m||150;
     // metres -> degrees of latitude (1° ≈ 111.32 km); x is pre-scaled by KX
     const r=m/111320;
-    g.appendChild(el('ellipse',{cx:X(b.lon),cy:Y(b.lat),rx:r*KX,ry:r},'fence'));
+    g.appendChild(el('ellipse',{cx:X(b.lon),cy:Y(b.lat),rx:r*KX,ry:r,'stroke-dasharray':`${px(3)} ${px(3)}`},'fence'));
   });
 }
 function vehVisible(t){
@@ -318,7 +328,7 @@ function renderVehicles(){
     // an arrow when moving, a diamond when not
     const d=t.state==='MOVING'?`M0,${-S} L${S*0.7},${S} L0,${S*0.45} L${-S*0.7},${S} Z`:`M0,${-S*0.8} L${S*0.8},0 L0,${S*0.8} L${-S*0.8},0 Z`;
     grp.appendChild(el('path',{d,transform:`rotate(${h})`}));
-    const lbl=el('text',{x:S+px(4),y:-px(3)}); lbl.setAttribute('font-size',px(10)); lbl.textContent=t.name||t.tracker_id; grp.appendChild(lbl);
+    grp.appendChild(label(S+px(4),-px(3),10,t.name||t.tracker_id));
     grp.addEventListener('click',e=>{e.stopPropagation();select('vehicle',t.tracker_id);});
     grp.classList.toggle('sel',SEL.kind==='vehicle'&&SEL.id===t.tracker_id);
     g.appendChild(grp);
@@ -328,7 +338,7 @@ function renderTrail(){
   const g=$('gTrails'); clear(g);
   if(!TRAIL.id||TRAIL.points.length<2) return;
   const d=TRAIL.points.map((p,i)=>`${i?'L':'M'}${X(p.lon).toFixed(4)},${Y(p.lat).toFixed(4)}`).join(' ');
-  g.appendChild(el('path',{d},'trail'));
+  g.appendChild(el('path',{d,'stroke-dasharray':`${px(4)} ${px(3)}`},'trail'));
 }
 function renderAll(){renderFences();renderPins();renderVehicles();renderTrail();}
 

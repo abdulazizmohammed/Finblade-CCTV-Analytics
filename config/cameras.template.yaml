@@ -182,7 +182,14 @@ ppe:
   entry_grace_seconds: 5.0
   violation_confirm_seconds: 8.0
   recovery_confirm_seconds: 5.0
-  min_confidence: 0.40
+  # SHARED by both detectors: evidence below this is folded in as "absent",
+  # whatever the detector's own threshold said. Lowered 0.40 -> 0.30 on
+  # 2026-09-15 together with medical_ppe.conf_threshold (see there), or the
+  # lab checkpoint's 0.30-0.40 negatives would be discarded before the rule
+  # ever saw them. Side effect on the INDUSTRIAL detector: its 0.35-0.40
+  # detections now count as evidence where before they were absence. Restore
+  # both to their previous values together.
+  min_confidence: 0.30
   absence_weight: 0.25
   # THE MOST IMPORTANT KNOB HERE. Below this person-box height in pixels, PPE
   # is not judged at all — the worker is reported as "not assessable" rather
@@ -262,7 +269,14 @@ medical_ppe:
   # equal: the two models run on the same tick, so that neither one's items
   # read as "absent" on a frame the other owned.
   interval_seconds: 0.5
-  conf_threshold: 0.5        # user-visible floor. RAISE before you lower.
+  # LOWERED 0.5 -> 0.30 on 2026-09-15 at the human's request, to demonstrate
+  # the R-11 alert path on the UHD lab clip: the only class this checkpoint
+  # emits there is "No Haircap", median 0.33 and 1-in-95 above 0.5. At test
+  # precision 0.20 this WILL accuse people who are wearing a cap. Put it back
+  # to 0.5 before anyone reads an alert as evidence. Requires
+  # ppe.min_confidence <= this value or the state machine discards the
+  # detection as "absent" anyway (see that key).
+  conf_threshold: 0.30       # user-visible floor. RAISE before you lower.
   iou_threshold: 0.5         # NMS IoU the model was evaluated with
   imgsz: 640                 # the size it was trained at
   absence_weight: 0.0        # explicit "No X" only — see above

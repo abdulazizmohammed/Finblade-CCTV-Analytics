@@ -177,7 +177,8 @@ person boxes teal, any PPE box ≥ 0.05 drawn), `clip_probe.json`,
 0.25), `ppe_check.log` (the real pipeline path: 20 PPE runs, 0 detections,
 0 journalled), `CAM-LAB.jsonl` (empty journal — that emptiness is the finding).
 
-**Best hypothesis: domain gap, not threshold or scale.** The 47 training-domain
+**Domain gap, not threshold or scale — CONFIRMED by the human on
+2026-09-15 after viewing `evidence/lab_ppe/contact_sheet.jpg`.** The 47 training-domain
 test images are eye-level close-ups — two people fill a 640 px frame, white
 coats, a production-line setting. The site clip is an overhead fisheye at
 1284×716 with five people at ~145 px median height in blue gowns and hair

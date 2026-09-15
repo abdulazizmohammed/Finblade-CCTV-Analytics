@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from finblade.ppe import PPE_PROFILES
 from services.inference.ppe_client import (CLASS_MAP, IGNORED_CLASSES,
+                                           LAB_CLASS_MAP,
+                                           MEDICAL_CHECKPOINTS,
                                            MEDICAL_CLASS_MAP,
                                            MEDICAL_IGNORED_CLASSES,
                                            PPEDetector, _canon)
@@ -39,12 +41,29 @@ class TestCanonicalisation(unittest.TestCase):
 
 
 class TestMedicalClassMap(unittest.TestCase):
-    def test_every_medical_ppe_type_has_a_positive_class(self):
-        """An item with no positive class could never be observed COMPLIANT —
-        only ever accused on absence."""
-        mapped = set(MEDICAL_CLASS_MAP.values())
+    def test_every_medical_item_has_a_positive_class_in_some_checkpoint(self):
+        """An item with no positive class anywhere could never be observed
+        COMPLIANT — only ever accused on absence. No single checkpoint covers
+        the whole profile (the lab model speaks five items, the YOLO26
+        candidate the other nine), which is why ppe_served now filters by
+        served_types: an item the LOADED checkpoint lacks is dropped, not
+        judged on silence."""
+        covered = set()
+        for ck in MEDICAL_CHECKPOINTS.values():
+            covered |= set(ck["class_map"].values())
         for item in PPE_PROFILES["medical"]:
-            self.assertIn(item, mapped, "%s has no positive class" % item)
+            self.assertIn(item, covered, "%s has no positive class" % item)
+
+    def test_no_checkpoint_map_invents_an_item_outside_the_profile(self):
+        """Every positive a medical checkpoint emits must be a medical
+        vocabulary item, or the detector would feed the state machine a key
+        no zone can require and no band describes."""
+        allowed = set(PPE_PROFILES["medical"]) | {"person"}
+        for name, ck in MEDICAL_CHECKPOINTS.items():
+            for v in ck["class_map"].values():
+                if v.startswith("no_"):
+                    continue
+                self.assertIn(v, allowed, "%s maps onto %r" % (name, v))
 
     def test_the_four_negatives_the_checkpoint_actually_publishes(self):
         """Documented deliberately: only gloves and cap have per-item negatives.
@@ -71,6 +90,9 @@ class TestMedicalClassMap(unittest.TestCase):
         requirement."""
         shared = set(CLASS_MAP.values()) & set(MEDICAL_CLASS_MAP.values())
         self.assertEqual(shared, {"person"})       # person is the only overlap
+        # The lab checkpoint has no Person class at all, so nothing overlaps.
+        self.assertEqual(set(CLASS_MAP.values()) & set(LAB_CLASS_MAP.values()),
+                         set())
 
     def test_goggles_appear_in_both_checkpoints_but_only_medical_maps_them(self):
         """The industrial checkpoint HAS a Goggles class and we ignore it —

@@ -57,6 +57,13 @@ FACE_SHIELD = "face_shield"
 GOGGLES = "goggles"
 COVERALL = "coverall"
 SHOE_COVERS = "shoe_covers"
+# A laboratory coat. NOT an alias of surgical_gown: the FinBlade lab checkpoint
+# (models/ppe_yolo11s_best.pt) has a `Labcoat` class, and mapping that onto
+# "surgical_gown" would let the UI claim a gown requirement is being judged by
+# a model that has never seen one. Same profile, because the profile is
+# "Medical / Laboratory" everywhere it is shown; distinct item, because it is
+# a distinct garment.
+LAB_COAT = "lab_coat"
 
 PROFILE_INDUSTRIAL = "industrial"
 PROFILE_MEDICAL = "medical"
@@ -71,7 +78,7 @@ PPE_PROFILES: Dict[str, Tuple[str, ...]] = {
     PROFILE_INDUSTRIAL: (HARDHAT, VEST, MASK),
     PROFILE_MEDICAL: (SURGICAL_GLOVES, SURGICAL_MASK, SURGICAL_GOWN,
                       SURGICAL_CAP, SURGICAL_SCRUBS, FACE_SHIELD, GOGGLES,
-                      COVERALL, SHOE_COVERS),
+                      COVERALL, SHOE_COVERS, LAB_COAT),
 }
 
 # UNCHANGED, and deliberately still the industrial tuple rather than the union.
@@ -115,6 +122,10 @@ PPE_STATUS: Dict[str, str] = {
     GOGGLES: STATUS_EVALUATION,
     COVERALL: STATUS_EVALUATION,
     SHOE_COVERS: STATUS_EVALUATION,
+    # The lab checkpoint's strongest class on its own test split (No Labcoat
+    # mAP50 0.56) — which is still a first-pass model on 226 training images,
+    # so "evaluation" is as far as it goes. See models/MANIFEST.yaml.
+    LAB_COAT: STATUS_EVALUATION,
     # EXPERIMENTAL, and the reason is structural rather than a tuning problem.
     # Association places an item inside a fixed vertical band of the person box.
     # Hands have no fixed height — waist when idle, chest when pipetting, above
@@ -187,7 +198,8 @@ class PPEThresholds:
                  recovery_confirm_s: float = 5.0,
                  min_confidence: float = 0.40,
                  absence_weight: float = 0.25,
-                 min_person_height_px: float = 120.0):
+                 min_person_height_px: float = 120.0,
+                 absence_weight_by_profile: Optional[Dict[str, float]] = None):
         # Time after entering a compliance zone before anything is judged. A
         # worker walking in while still pulling their hat on is not a violation,
         # and the first seconds inside a zone are also where the detector has
@@ -219,6 +231,25 @@ class PPEThresholds:
         # for the model to hold an opinion worth recording. Measure it on real
         # CCTV before trusting it.
         self.min_person_height_px = float(min_person_height_px)
+        # Per-PROFILE override of absence_weight, keyed by profile name. One
+        # tracker serves both vocabularies, but the two checkpoints behind them
+        # do not deserve the same trust in their silence. The industrial model
+        # fires its positive classes often enough that "no Hardhat seen" is
+        # weak-but-real evidence. The lab checkpoint's measured recall is 0.32
+        # on its own test split, and at the user-visible threshold it emitted
+        # NO Gloves, Haircap or Mask positive at all across 47 test images —
+        # so for that profile silence is what the model does when it is
+        # working, and weighting it above zero convicts everyone in the room
+        # on the detector's blindness. Absent profile -> absence_weight.
+        self.absence_weight_by_profile: Dict[str, float] = {
+            str(k): float(v) for k, v in (absence_weight_by_profile or {}).items()}
+
+    def absence_weight_for(self, ppe_type: str) -> float:
+        """How much a silent tick counts against THIS item's profile."""
+        prof = profile_of(ppe_type)
+        if prof is not None and prof in self.absence_weight_by_profile:
+            return self.absence_weight_by_profile[prof]
+        return self.absence_weight
 
 
 class PPEState:
@@ -414,8 +445,9 @@ class PPETracker:
         else:
             st.abs_ticks += 1
             # Absence is weaker evidence of non-compliance than an explicit
-            # NO- detection, and this is where that asymmetry lives.
-            st.credit -= dt * self.t.absence_weight
+            # NO- detection, and this is where that asymmetry lives. How much
+            # weaker depends on the profile — see absence_weight_for.
+            st.credit -= dt * self.t.absence_weight_for(ppe_type)
 
         # Clamp so a long stretch of one verdict cannot bank credit that makes
         # the opposite verdict take minutes to reach afterwards.

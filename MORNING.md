@@ -1,108 +1,130 @@
-# Morning report — 2026-07-26 (cross-camera identity)
+# Morning report — 2026-09-15 (lab PPE checkpoint integration)
 
 ## TL;DR
-You asked for cross-camera person tracking and said to forget the demo. It is
-built, wired, running, and measured. **306 tests pass** (was 168). One person
-walking between two cameras now gets one `global_ref`, and site occupancy stops
-double-counting someone visible to two cameras at once.
+Your YOLO11s lab-PPE model is integrated, tested and running through the real
+pipeline path. **1781 tests pass** (was 1557 in the last CAPABILITIES count;
+184 of them are PPE, 25 new). It loads on the pinned ultralytics 8.3.40 —
+no pin change, no new dependency.
 
-**The number I cannot give you is the one that matters most:** how accurately it
-links people across two *real* cameras. There is no such footage in `media/` —
-every clip is a single scene. I built a ground-truth harness around a synthetic
-second camera to validate the pipeline, but that is a proxy, not an answer. See
-B-4; it needs ~20 minutes of your time to fix.
+**The finding you need before anything else:** on `media/LAB-PPE.mp4` the
+model emits **no box above confidence 0.25** — not on full frames, not on
+person crops. It is not a threshold or a scale problem; the training frames
+are eye-level close-ups of white coats on a production line, and the site
+camera is an overhead fisheye of blue gowns at ~145 px. B-9. The integration
+is complete; the model cannot see this camera until it is retrained on frames
+from it.
 
 ## Status
-Cross-camera identity: **built and running.** Accuracy on real cameras:
-**unvalidated.** Everything from previous sessions still green and untouched.
+Lab checkpoint: **integrated, runs, journalled.** Accuracy on site footage:
+**measured — silent.** Everything from previous sessions green and untouched.
 
 ## What runs
-- **Two independent camera processes → one shared identity registry** over HTTP.
-  Proof: `bash scripts/verify_cross_camera.sh` — 4 identities, all 4 seen by both
-  cameras, 18 matches, site occupancy correctly 2 people from 4 local bindings.
-- **OSNet embeddings** (`models/osnet_x0_25_msmt17.pt`, 3 MB) on the GPU, behind a
-  crop quality gate (size / confidence / aspect / frame-edge / occlusion) and a
-  sampling budget. In the live run the gate rejected ~31% of candidate crops.
-- **Three-gate matching:** sticky binding → transit feasibility → appearance with
-  a runner-up margin. Ambiguity creates a new identity rather than guessing.
-- **Topology config** (`config/topology.yaml`) distinguishing overlapping pairs
-  (dt≈0 expected) from non-overlapping ones (a walk is required).
-- **No FPS cost:** 24.7 FPS with ReID vs 22.0 without, uncapped, same clip.
-- **Endpoints:** resolve / release / merge / stats / list / `{ref}` journey.
-- **Privacy:** embeddings are RAM-only, cleared on track reap and TTL expiry,
-  never persisted or logged. Tests assert no endpoint returns a vector.
+- **`models/ppe_yolo11s_best.pt`** (sha256 `09e28044…`, 19 MB, gitignored like
+  every other `.pt`) is the medical profile's detector. `medical_ppe.checkpoint:
+  finblade_lab_yolo11s` selects it from a registry that binds class map,
+  default weights and a **class-order assertion** — a retrain whose
+  `model.names` differ from `PPE_CLASSES` is refused at load, not adapted.
+- **Class map:** Gloves/Goggles/Haircap/Mask → `surgical_gloves` / `goggles` /
+  `surgical_cap` / `surgical_mask`; **Labcoat → new item `lab_coat`** (not
+  `surgical_gown` — different garment). `No X` → `no_<item>`, `is_violation`
+  on every detection dict.
+- **Compliance over time:** the existing grace 5 s → confirm 8 s → recover 5 s
+  state machine, **with absence weighted 0 for the medical profile** so a
+  violation needs sustained explicit `No X` and silence never convicts (see
+  "Decisions").
+- **Raw journal:** every box ≥ 0.25 → `evidence/ppe_raw/<camera>.jsonl`
+  (class, conf, box, frame, ts, camera; no crops, no track ids). The rule
+  engine only sees boxes ≥ 0.5.
+- **Item-level serving guard:** the checkpoint covers 5 of the medical
+  profile's 10 items; a zone requiring gown/scrubs/face shield/coverall/shoe
+  covers has those dropped with a warning instead of judged on silence.
+- **Config:** `config/cameras.template.yaml` `medical_ppe:` block — enabled,
+  conf 0.5, iou 0.5, imgsz 640, absence_weight 0.0, raw_log_dir, raw_log_conf.
+- **Manual runner:** `scripts/ppe_check.py --profile medical --raw-log …`.
+- CPU speed: 0.18 s/frame for the PPE model alone at 640.
 
-## NEEDS YOUR EYES (do this first, ~20 min)
-1. **Record real two-camera footage.** This is the blocker on everything else
-   (B-4). Same people, two cameras, roughly synced clocks — one overlapping pair
-   and one non-overlapping pair if you can. A rough note of who appears where and
-   when is enough for me to score against.
-2. **Pace the walks between cameras** and fill in `config/topology.yaml`. The
-   transit times there are placeholders. This gate is what stops two similar
-   strangers being merged; wrong numbers fail in both directions (B-5).
-3. **Read `evidence/cross_camera_eval_dense.json`**, specifically `separability`.
-   True-pair similarities min 0.80 / median 0.90; false pairs median 0.61 but
-   **max 0.83**. They overlap. That is the honest risk picture.
-4. **Decide the privacy posture with the client** (D-9). The system now holds
-   biometric templates in memory, where before it held none. I kept them
-   ephemeral and un-persisted, but "we hold no PII" is a weaker statement than it
-   was, and that is a conversation, not a code change.
+## NEEDS YOUR EYES (do this first, ~5 min)
+1. **Open `evidence/lab_ppe/contact_sheet.jpg`.** 21 frames of LAB-PPE.mp4;
+   teal = person boxes (yolo11s), red/green = any lab-PPE box ≥ 0.05. There
+   are almost none. Does that look like the same kind of footage the model
+   was trained on? (One of your test images is 640 px of two people in white
+   coats at eye level. This clip is not that.)
+2. **Open `evidence/lab_ppe/crops/`** — the only person crops that produced a
+   box at ≥ 0.10. All below 0.25. Are the labels even the right items?
+3. **Confirm the vocabulary choices** in D-35: Haircap → `surgical_cap`,
+   Labcoat → its own `lab_coat`. If you'd rather Labcoat be `surgical_gown`,
+   that's one line in `LAB_CLASS_MAP` plus removing `lab_coat` from three
+   lists.
+4. **Confirm `medical_ppe.enabled: true` in the shared template** is what you
+   want. It is inert on cameras with no medical zone, but it does load a
+   third model on any camera that has one.
 
 ## Blockers (I could not resolve these)
-- **B-4 — no genuine two-camera footage.** Cross-camera accuracy is unvalidated.
-  Proxy result on a synthetic second camera: 26/27 pairs matched (96.3%), 1 false
-  merge. Do not quote that to a client — camera B was a transformed copy of
-  camera A, sharing clothing, pose and lighting.
-- **B-5 — topology transit times are placeholders.** Site knowledge I cannot
-  infer from video.
-- **Threshold is provisional** (D-11). Raised 0.62 → 0.70 because 0.62 sat at the
-  false-pair median. Cannot be finalised without real footage.
+- **B-9 — the checkpoint is silent on the site camera.** Full-frame boxes at
+  0.25: zero. On 84 padded person crops at 0.25: zero. Evidence in
+  `evidence/lab_ppe/`. Needs frames from the actual cameras in the training
+  set; the raw journal measures precision on what the model emits but cannot
+  manufacture recall.
+- **The zone card counts UNKNOWN as compliant** (pre-existing, `zone_summary`).
+  With absence weight 0 and a silent model, everyone in a lab zone reads
+  "compliant". I did not change it — it's a UI-contract decision — but it is
+  now the visible consequence of B-9 and worth deciding.
+- **Sample images live outside the repo.** The real-weights test reads
+  `/mnt/c/Users/ICSADMIN/ppe-dataset/test/images` (override with
+  `FINBLADE_PPE_SAMPLES`) and skips if absent. I didn't copy frames with
+  people in them into git.
 
-## Decisions I made without you (all reversible, detail in DECISIONS.md)
-- **D-7** Built a feature CLAUDE.md explicitly cuts — you overrode it. Fully
-  off-switchable (`reid.enabled: false`); nothing else in the pipeline calls it.
-- **D-8** Used the network and added `boxmot`. **Caught a landmine:** the plain
-  install wanted numpy 2.2.6 over your pinned 1.26.4 — an ABI break that could
-  have taken torch/ultralytics/opencv down. Installed under a constraints file;
-  every pin verified untouched. Pre-change venv snapshot at
-  `/tmp/venv_before_reid.txt`.
-- **D-9** Embeddings RAM-only, never persisted.
-- **D-10** Bias toward splitting over merging.
-- **D-11** Threshold 0.70, provisional.
+## Decisions I made without you (all reversible, detail in DECISIONS.md D-35)
+- **Medical profile, not a third profile.** The profile is already "Medical /
+  Laboratory" everywhere, and the template said any YOLO8/11 medical
+  checkpoint should drop in by mapping.
+- **Absence weight 0.0 for medical.** On the model's own 47 test images at
+  conf 0.5 it produced *no* Gloves, Haircap or Mask positive at all. Under the
+  industrial weight (0.25) every person in a lab zone would be convicted in
+  ~32 s on the detector's silence. `medical_ppe.absence_weight` overrides.
+- **Visible 0.5 / journal 0.25.** As your brief asked; both in config.
+- **`detect()` gained `class_id`, `raw_class`, `is_violation`.** Two adapter
+  tests that pinned the exact key set were widened; the original four keys
+  and every consumer are unchanged.
+- **`ppe_served` is now item-granular.** Without it, wiring a 5-item model
+  into a 10-item profile would have reintroduced the "judged on silence" bug
+  the profile guard was written for.
+- **Enabled in the shared template** (one line to flip back).
 
 ## Tests
-**306 passed / 0 failed** (~1.4s). Was 168 at the start of this session.
-New: topology gating, crop quality + sampling, feature banks, the matcher
-(including "physics beats appearance" and the ambiguity case), the identity
-service, the ReID client, and **11 HTTP tests**.
+**1781 passed / 0 failed / 17 skipped** (73 s, full suite). PPE files alone:
+184 passed, none skipped — the two real-weights tests ran on CPU and asserted
+`model.names == PPE_CLASSES` and that inference runs and journals on the first
+10 sample images.
 
-Two real bugs the tests caught, both fixed:
-- `IdentityService` did `registry or GlobalIdentityRegistry(...)`, but the
-  registry defines `__len__` — so an empty one is falsy and the caller's registry
-  and topology were silently discarded at startup, exactly when it is always
-  empty.
-- With the API unreachable, every track retried resolve on every frame — 1877
-  failed POSTs in a 30s benchmark. Now backed off to one attempt per track per 2s.
-
-**Also unblocked:** the FastAPI TestClient blocker from the last report. `httpx`
-was the missing piece and it arrived as a boxmot dependency, so the HTTP layer is
-now covered by unit tests rather than only the live demo script.
+New file: `tests/test_lab_ppe_model.py` — class order vs the brief, worn/
+missing pairing at offset 5, refusal of a shuffled retrain, threshold split
+and journal contents (and that the journal names nobody), item-level serving,
+absence weight per profile, sustained-negative-only conviction.
 
 ## Suggested next steps (ordered)
-1. Record the two-camera footage (B-4) and fill in `config/topology.yaml` (B-5).
-2. I retune the threshold on that footage and give you a real precision/recall
-   figure, replacing the proxy.
-3. Decide the client-facing privacy position (D-9).
-4. Surface identity in the dashboard — a `global_ref` badge on tracked people and
-   a journey view. Deliberately not built yet: showing identities whose accuracy
-   is unvalidated invites more trust than the numbers currently support.
-5. Persist completed journeys. `Track.summary()` and `GlobalIdentity.summary()`
-   both produce persistable rows that nothing currently writes.
+1. Look at the contact sheet (2 min). If you agree it's a domain gap, the fix
+   is data, not code: extract ~200 frames from LAB-PPE.mp4 and the live lab
+   cameras, label the five items, retrain with the same class order.
+2. Drop the retrained `best.pt` over `models/ppe_yolo11s_best.pt` and run
+   `pytest tests/test_lab_ppe_model.py` — it will refuse a reordered class
+   list and tell you if the model went fully silent on its own test split.
+3. Then `scripts/ppe_check.py --source media/LAB-PPE.mp4 --profile medical
+   --required surgical_gloves,goggles,surgical_cap,lab_coat,surgical_mask
+   --raw-log evidence/ppe_raw --save-frames evidence/ppe_stills --device cpu`
+   and read the journal for per-class confidence distributions.
+4. Decide what UNKNOWN should mean on the zone card.
+5. Journal rotation, if `raw_log_dir` stays on in production — it's unbounded
+   append (~100 bytes/box).
 
 ## Where things are
-- Identity core: `finblade/{appearance,globalid,topology}.py`
-- Service + routes: `services/api/identity.py`, routes in `app.py`
-- Worker side: `services/inference/reid_client.py` (wired into `run_cpu.py`)
-- Config: `config/topology.yaml`, test rig `config/{cameras,topology}.xcam.yaml`
-- Proof: `scripts/verify_cross_camera.sh` (live), `scripts/eval_cross_camera.py`
-  (measured), `evidence/cross_camera_eval_dense.json`
+- Vocabulary + state machine: `finblade/ppe.py` (`LAB_COAT`,
+  `absence_weight_by_profile`), band in `finblade/geometry.py`
+- Adapter + registry: `services/inference/ppe_client.py` (`PPE_CLASSES`,
+  `LAB_CLASS_MAP`, `MEDICAL_CHECKPOINTS`, `served_types`, `_journal`)
+- Worker wiring: `services/inference/run_cpu.py` (`ppe_served`, `ppe_med`)
+- Config: `config/cameras.template.yaml` `medical_ppe:`; editor item list in
+  `tools/zone-editor.html`
+- Records: `models/MANIFEST.yaml` `medical_ppe`, DECISIONS D-35, BLOCKERS B-9,
+  `docs/CAPABILITIES.md` R-11
+- Evidence: `evidence/lab_ppe/` (contact sheet, probes, crops, journal, log)

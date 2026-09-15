@@ -207,7 +207,7 @@ ppe:
 #   zones:
 #     - zone_id: SAMPLE-PREP
 #       ppe_profile: medical
-#       required_ppe: [surgical_gloves, surgical_gown, surgical_mask, goggles]
+#       required_ppe: [surgical_gloves, lab_coat, surgical_mask, goggles]
 #
 #     - zone_id: PLANT-ROOM
 #       ppe_profile: industrial          # the default; omitting it means this
@@ -218,30 +218,61 @@ ppe:
 # infection-control system, and it does not replace human supervision, IPC
 # policy or regulatory inspection.
 #
-# DISABLED, AND CURRENTLY UNRUNNABLE — two reasons, both recorded in
-# BLOCKERS.md:
-#   1. The weights are not present in models/.
-#   2. The candidate checkpoint (stormbreaker20/yolo26s-mppe-detector-v2) is a
-#      YOLO26 model, and the PINNED ultralytics 8.3.40 has no YOLO26 support
-#      whatsoever — its model families are 3/5/6/8/9/10/11/rt-detr. YOLO26
-#      needs ultralytics 8.4.x. Changing that pin is not a decision this file
-#      gets to make: ByteTrack is Ultralytics' built-in tracker, so the upgrade
-#      moves the ground under tracking, ReID, dwell, loitering and the PPE
-#      state machine all at once.
+# THE CHECKPOINT: FinBlade's own lab model, models/ppe_yolo11s_best.pt
+# (YOLO11s, trained 2026-09-14 on 226 images / 267 boxes, 16-36 per class).
+# Ten classes in five worn/missing pairs: Gloves, Goggles, Haircap, Labcoat,
+# Mask and their "No X" counterparts. It is a FIRST-PASS PLACEHOLDER to be
+# replaced by a retrain with the same class order. Measured on its own splits:
 #
-# The vocabulary, anatomy, rules, UI and tests are complete and exercised, so
-# ANY medical checkpoint can be wired in by changing the mapping alone — one
-# built on YOLOv8 or YOLO11 would run on the pinned version today.
+#     valid  mAP50 0.36   mAP50-95 0.21   precision 0.73   recall 0.32
+#     test   mAP50 0.22   mAP50-95 0.10   precision 0.20   recall 0.34
+#
+# Per-class test mAP50 runs from 0.04 (Gloves) to 0.56 (No Labcoat), and the
+# "No X" classes are the unreliable ones because they look like their "X"
+# twins. Three consequences, all wired below rather than left as advice:
+#   * conf_threshold is 0.5, not the industrial 0.35, and nothing user-visible
+#     rests on a single frame — the same grace / confirm / recover state
+#     machine as every other rule gates a verdict.
+#   * absence_weight is 0.0 for this profile: a violation needs SUSTAINED
+#     explicit "No X" detections. Measured on the 47 test images at conf 0.5,
+#     the model emitted NO Gloves, Haircap or Mask positive at all — silence
+#     is its normal output, so weighting silence would convict every person
+#     in a lab zone on the detector's blindness.
+#   * every raw box the model emits is journalled (raw_log_dir), including
+#     those below conf_threshold, so precision can be measured on real
+#     footage and hard examples gathered for the retrain.
+#
+# This checkpoint serves FIVE of the medical profile's items: surgical_gloves,
+# goggles, surgical_cap (its "Haircap"), lab_coat, surgical_mask. A zone that
+# requires surgical_gown, scrubs, face_shield, coverall or shoe_covers has
+# those items dropped with a warning — never judged on silence.
+#
+# `checkpoint` picks the class map + weights + class-order assertion as a set
+# (services/inference/ppe_client.py MEDICAL_CHECKPOINTS). The other entry,
+# mppe_yolo26s_v2, still cannot load on the pinned ultralytics (BLOCKERS B-8).
 medical_ppe:
-  enabled: false
-  weights: models/medical_ppe_yolo26s_v2.pt
+  # SHARED TEMPLATE, same caveat as the industrial block above: this loads a
+  # model on every UI-provisioned camera that has a medical-profile zone.
+  # Still inert on any camera whose zones declare no medical requirement.
+  enabled: true
+  checkpoint: finblade_lab_yolo11s
+  weights: models/ppe_yolo11s_best.pt
   device: "0"
   # Defaults to the industrial detector's cadence when omitted. Keep them
   # equal: the two models run on the same tick, so that neither one's items
   # read as "absent" on a frame the other owned.
   interval_seconds: 0.5
-  conf_threshold: 0.35
-  imgsz: 640
+  conf_threshold: 0.5        # user-visible floor. RAISE before you lower.
+  iou_threshold: 0.5         # NMS IoU the model was evaluated with
+  imgsz: 640                 # the size it was trained at
+  absence_weight: 0.0        # explicit "No X" only — see above
+  # Raw-detection journal, relative to the repo root: <dir>/<camera_id>.jsonl,
+  # one JSON line per box at or above raw_log_conf, BEFORE mapping and BEFORE
+  # conf_threshold. Class, confidence, box, frame, timestamp — no crops, no
+  # track ids, nothing that names a person. Unbounded append; rotate it
+  # yourself or unset raw_log_dir to switch it off.
+  raw_log_dir: evidence/ppe_raw
+  raw_log_conf: 0.25
   status: evaluation
 
 zones: []

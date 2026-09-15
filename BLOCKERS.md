@@ -162,7 +162,54 @@ One command, and 12 real tests start running.
 
 ---
 
-## B-8 — Medical PPE cannot run: no weights, and YOLO26 needs a pin change  [MEDIUM]
+## B-9 — The in-house lab PPE checkpoint is silent on the site camera  [HIGH]
+
+**What (2026-09-15):** `models/ppe_yolo11s_best.pt` is integrated (D-35), loads
+on the pinned ultralytics, passes its tests and runs at 0.18 s/frame on CPU —
+and on `media/LAB-PPE.mp4` it emits **no box above confidence 0.25**, on full
+frames or on 84 padded person crops. At the visible threshold 0.5 it produces
+nothing at all. The rule engine therefore judges nobody: every track stays
+UNKNOWN (which the zone card counts as compliant — see D-35).
+
+**Evidence:** `evidence/lab_ppe/` — `contact_sheet.jpg` (21 sampled frames,
+person boxes teal, any PPE box ≥ 0.05 drawn), `clip_probe.json`,
+`crop_probe.json`, `crops/` (the only crops that produced anything, all below
+0.25), `ppe_check.log` (the real pipeline path: 20 PPE runs, 0 detections,
+0 journalled), `CAM-LAB.jsonl` (empty journal — that emptiness is the finding).
+
+**Best hypothesis: domain gap, not threshold or scale.** The 47 training-domain
+test images are eye-level close-ups — two people fill a 640 px frame, white
+coats, a production-line setting. The site clip is an overhead fisheye at
+1284×716 with five people at ~145 px median height in blue gowns and hair
+caps. Cropping people to 640 did not help, so it is not only resolution.
+The model has not seen this viewpoint, garment colour, or lighting.
+
+**What I tried:** thresholds down to 0.05 (13 boxes over 21 frames, no class
+above 0.10 more than 4 times); person crops padded 25 %; imgsz 640 (its
+training size). Not tried: larger imgsz (would not fix viewpoint), test-time
+augmentation, lowering the pin (forbidden, and irrelevant — it loads).
+
+**What it needs:** frames from the actual cameras in the training set. The
+raw journal (`evidence/ppe_raw/<camera>.jsonl`) will show precision on
+whatever the model does emit, but it cannot manufacture recall. Concretely:
+sample frames from LAB-PPE.mp4 and the live lab cameras, label the five items,
+add to `~/ppe/data/train` + `valid`, retrain (`~/ppe/train.py`), keep the
+class order, overwrite `models/ppe_yolo11s_best.pt`. The class-order
+assertion and `tests/test_lab_ppe_model.py` will tell you if the retrain
+broke the contract.
+
+**Not a code blocker.** Everything downstream of the detector is exercised
+(184 PPE tests, 1781 total) and the integration is complete; what is missing
+is a model that responds to this footage.
+
+---
+
+## B-8 — Medical PPE cannot run: no weights, and YOLO26 needs a pin change  [SUPERSEDED by D-35 / B-9]
+
+> **2026-09-15:** the medical slot now runs FinBlade's own YOLO11s lab
+> checkpoint (`medical_ppe.checkpoint: finblade_lab_yolo11s`), which loads on
+> the pinned 8.3.40. The YOLO26 candidate below is still selectable and still
+> cannot load. The remaining problem is B-9. Detail kept for the record.
 
 **What:** the medical/laboratory PPE profile is implemented, tested and
 configurable, but no medical detector can be loaded.

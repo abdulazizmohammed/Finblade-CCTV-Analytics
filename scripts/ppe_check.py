@@ -41,7 +41,27 @@ def main():
                     help="comma-separated: hardhat,safety_vest,mask")
     ap.add_argument("--camera", default="CAM-01")
     ap.add_argument("--person-weights", default="models/yolo11s.pt")
-    ap.add_argument("--ppe-weights", default="models/ppe_safetyvision_v2.pt")
+    ap.add_argument("--ppe-weights", default="",
+                    help="override the checkpoint's default weights path")
+    # The medical profile picks its class map, default weights and
+    # class-order assertion from ppe_client.MEDICAL_CHECKPOINTS — the same
+    # registry the worker reads — so this script cannot drift from it.
+    ap.add_argument("--profile", choices=("industrial", "medical"),
+                    default="industrial")
+    ap.add_argument("--checkpoint", default="",
+                    help="medical only: key in MEDICAL_CHECKPOINTS "
+                         "(default finblade_lab_yolo11s)")
+    ap.add_argument("--conf", type=float, default=None,
+                    help="visible threshold (default 0.35 industrial, 0.5 medical)")
+    ap.add_argument("--iou", type=float, default=None,
+                    help="NMS IoU (default: ultralytics' own; 0.5 medical)")
+    ap.add_argument("--absence-weight", type=float, default=None,
+                    help="how much silence counts (default 0.25 industrial, "
+                         "0.0 medical — see cameras.template.yaml)")
+    ap.add_argument("--raw-log", default="",
+                    help="directory for the raw-detection journal "
+                         "<dir>/<camera>.jsonl (every box >= --raw-log-conf)")
+    ap.add_argument("--raw-log-conf", type=float, default=0.25)
     ap.add_argument("--device", default="0")
     ap.add_argument("--frames", type=int, default=1200)
     ap.add_argument("--interval", type=float, default=0.5,
@@ -59,19 +79,48 @@ def main():
 
     import cv2
     from ultralytics import YOLO
-    from services.inference.ppe_client import PPEDetector
+    from services.inference.ppe_client import (DEFAULT_MEDICAL_CHECKPOINT,
+                                               MEDICAL_CHECKPOINTS, PPEDetector)
 
     person = YOLO(args.person_weights)
-    ppe = PPEDetector(args.camera, weights=args.ppe_weights,
-                      device=args.device, interval_s=args.interval,
-                      enabled=True)
+    medical = args.profile == "medical"
+    det_kw = dict(device=args.device, interval_s=args.interval, enabled=True,
+                  profile=args.profile,
+                  conf_threshold=(args.conf if args.conf is not None
+                                  else (0.5 if medical else 0.35)),
+                  iou_threshold=(args.iou if args.iou is not None
+                                 else (0.5 if medical else None)),
+                  raw_log_dir=args.raw_log or None,
+                  raw_log_conf=args.raw_log_conf if args.raw_log else None)
+    if medical:
+        name = args.checkpoint or DEFAULT_MEDICAL_CHECKPOINT
+        if name not in MEDICAL_CHECKPOINTS:
+            sys.exit("unknown --checkpoint %r; choose from %s"
+                     % (name, sorted(MEDICAL_CHECKPOINTS)))
+        ck = MEDICAL_CHECKPOINTS[name]
+        det_kw.update(weights=args.ppe_weights or ck["weights"],
+                      class_map=ck["class_map"],
+                      ignored_classes=ck["ignored_classes"],
+                      expected_names=ck["expected_names"])
+    else:
+        det_kw.update(weights=args.ppe_weights or "models/ppe_safetyvision_v2.pt")
+    ppe = PPEDetector(args.camera, **det_kw)
     if not ppe.load():
         sys.exit("PPE detector unavailable: %s" % ppe.status)
+    unserved = [r for r in required if r not in ppe.served_types]
+    if unserved:
+        # Same rule as the worker's ppe_served: an item the checkpoint has no
+        # class for is not judged, because it would be judged on silence.
+        print("NOT JUDGED (checkpoint has no class for them): %s" % unserved)
+        required = [r for r in required if r in ppe.served_types]
 
+    absence = (args.absence_weight if args.absence_weight is not None
+               else (0.0 if medical else 0.25))
     tracker = PPETracker(args.camera, PPEThresholds(
         entry_grace_s=args.entry_grace,
         violation_confirm_s=args.violation_confirm,
-        recovery_confirm_s=args.recovery_confirm))
+        recovery_confirm_s=args.recovery_confirm,
+        absence_weight_by_profile={args.profile: absence}))
 
     if args.save_frames:
         os.makedirs(args.save_frames, exist_ok=True)
@@ -82,9 +131,14 @@ def main():
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
 
     print("source   : %s" % args.source)
+    print("model    : %s (%s)  conf %.2f  iou %s  absence_weight %.2f"
+          % (ppe.weights, args.profile, ppe.conf_threshold,
+             ppe.iou_threshold, absence))
     print("zone     : %s   required: %s" % (args.zone, ", ".join(required)))
     print("timers   : grace %.0fs  violate %.0fs  recover %.0fs"
           % (args.entry_grace, args.violation_confirm, args.recovery_confirm))
+    if ppe.raw_log_path:
+        print("raw log  : %s (>= %.2f)" % (ppe.raw_log_path, ppe.raw_log_conf))
     print("NOTE: video time, not wall clock. Verdicts are the model's; whether"
           " they are correct needs your eyes.")
     print()
@@ -110,7 +164,8 @@ def main():
         people = {int(t): tuple(map(float, b))
                   for t, b in zip(res.boxes.id.tolist(), res.boxes.xyxy.tolist())}
 
-        dets = [d for d in ppe.detect(frame, vnow) if d["class_name"] != "person"]
+        dets = [d for d in ppe.detect(frame, vnow, frame_id=n)
+                if d["class_name"] != "person"]
         items = [(d["bbox"], d["class_name"].replace("no_", "")) for d in dets]
         owned = defaultdict(list)
         for idx, owner, _ in associate_items(items, people):
@@ -163,9 +218,11 @@ def main():
     cap.release()
 
     print()
-    print("frames %d, %.1fs wall, PPE runs %d, detections %d, ignored %d, errors %d"
+    print("frames %d, %.1fs wall, PPE runs %d, detections %d, below-threshold %d, "
+          "ignored %d, errors %d, journalled %d"
           % (n, time.time() - t_wall0, ppe.stats["runs"], ppe.stats["detections"],
-             ppe.stats["ignored"], ppe.stats["errors"]))
+             ppe.stats["below_threshold"], ppe.stats["ignored"],
+             ppe.stats["errors"], ppe.stats["logged"]))
     if args.save_frames:
         print("wrote %d violation stills to %s/" % (saved, args.save_frames))
     still_open = {t: list(v) for t, v in opens.items() if v}

@@ -8,7 +8,7 @@ For *what each capability is built out of* — library, version, and the
 deliberate non-choices (no pydantic, no ORM, no JS framework, no chart library)
 — see [TECH_STACK.md](TECH_STACK.md).
 
-**Last updated:** 2026-09-01
+**Last updated:** 2026-09-15
 
 ---
 
@@ -250,17 +250,36 @@ See [DECISIONS.md](../DECISIONS.md) D-31.
   temporal state → alert.
 - **Two vocabularies, one rule engine.** A zone's `ppe_profile` picks which:
   `industrial` (hardhat, safety_vest, mask) or `medical` (surgical gloves /
-  mask / gown / cap / scrubs, face shield, goggles, coverall, shoe covers).
-  Defaults to `industrial`, so every zone predating profiles keeps working with
-  no migration. The state machine and `evaluate_ppe` are item-agnostic — a
-  profile is data, not a second pipeline. Items whose profile does not own them
-  are dropped with a warning rather than judged, because a medical detector
-  asked for a hardhat would convict everyone on silence.
+  mask / gown / cap / scrubs, face shield, goggles, coverall, shoe covers,
+  lab coat). Defaults to `industrial`, so every zone predating profiles keeps
+  working with no migration. The state machine and `evaluate_ppe` are
+  item-agnostic — a profile is data, not a second pipeline. Items whose profile
+  does not own them are dropped with a warning rather than judged, because a
+  medical detector asked for a hardhat would convict everyone on silence.
 - **The medical detector is a separate model** (`medical_ppe:` config block),
-  off by default and additionally inert unless a zone asks for the medical
-  profile. Both detectors run on the same tick when both are active, so neither
-  one's items read as "absent" on a frame the other owned.
-  **Not runnable today** — see BLOCKERS.md B-8.
+  inert unless a zone asks for the medical profile. Both detectors run on the
+  same tick when both are active, so neither one's items read as "absent" on a
+  frame the other owned. **Runs** as of 2026-09-15 with FinBlade's in-house
+  lab checkpoint `models/ppe_yolo11s_best.pt` (YOLO11s, ten classes in five
+  worn/missing pairs: Gloves, Goggles, Haircap, Labcoat, Mask) — selected by
+  `medical_ppe.checkpoint`, which binds class map, default weights and a
+  **class-order assertion** together (`ppe_client.MEDICAL_CHECKPOINTS`). A
+  retrained checkpoint whose `model.names` differ from `PPE_CLASSES` is refused
+  at load, not adapted. It serves five of the profile's ten items; a zone
+  requiring the other five (gown, scrubs, face shield, coverall, shoe covers)
+  has those dropped with a warning — **item-level, not just profile-level**
+  (`run_cpu.ppe_served` reads the detector's `served_types`).
+- **The lab checkpoint is a first-pass placeholder** (226 training images;
+  test mAP50 0.22, precision 0.20, recall 0.34) and the integration assumes
+  so: user-visible threshold 0.5 (not 0.35), `absence_weight` 0.0 for the
+  medical profile so a violation needs **sustained explicit `No X`
+  detections** and silence never convicts, and a **raw-detection journal**
+  (`evidence/ppe_raw/<camera>.jsonl`: class, confidence, box, frame,
+  timestamp — no crops, no track ids) of every box ≥ 0.25, below the visible
+  threshold, so real-world precision can be measured and hard examples pulled
+  for the retrain. **Measured silent on `media/LAB-PPE.mp4`** — nothing above
+  0.25 on full frames or on person crops — see BLOCKERS.md B-9 and
+  `models/MANIFEST.yaml`.
 - **Zone-scoped requirements.** `required_ppe` on a zone, e.g. `[hardhat,
   safety_vest]`. A worker without a mask in a zone that does not require masks
   is not in violation. Empty (the default) means no PPE rule applies — and the
@@ -282,7 +301,8 @@ See [DECISIONS.md](../DECISIONS.md) D-31.
 - **One missed detection is not a violation.** Evidence accumulates per
   `(track, ppe_type)` through UNKNOWN → CANDIDATE → CONFIRMED, and an explicit
   `NO-Hardhat` counts **four times** as strongly as the model simply going
-  quiet (`absence_weight`).
+  quiet (`absence_weight`, overridable per profile via
+  `PPEThresholds.absence_weight_by_profile`; the medical profile runs at 0).
 - **Its own severity, `COMPLIANCE`, not amber.** A missing hardhat is a policy
   breach against a person, which is a different kind of thing from a density
   measurement (amber/red) or a place-based restriction (magenta). It gets
@@ -300,16 +320,23 @@ See [DECISIONS.md](../DECISIONS.md) D-31.
   Hardhat** — do not compensate by lowering confidence thresholds, which turns
   a recall problem into a false-accusation problem against a named worker.
 - Same **AGPL-3.0 via Ultralytics** dependency as R-10.
-- **Known gap:** distant or small people produce no PPE detections, accumulate
-  absence evidence, and would eventually be convicted on silence. A minimum
-  person-box height gate is the obvious mitigation and is not implemented.
+- **Distant or small people are not judged.** Below `min_person_height_px`
+  (120 by default) a track is reported `not_assessable` rather than fed
+  silence that would convict it (`PPETracker.assessable`).
 
-See [DECISIONS.md](../DECISIONS.md) D-32. Manual validation:
-`scripts/ppe_check.py --source <video> --required hardhat,safety_vest`.
+See [DECISIONS.md](../DECISIONS.md) D-32, D-34, D-35. Manual validation:
+`scripts/ppe_check.py --source <video> --required hardhat,safety_vest`, or for
+the lab checkpoint `scripts/ppe_check.py --source <video> --profile medical
+--required surgical_gloves,goggles,surgical_cap,lab_coat,surgical_mask
+--raw-log evidence/ppe_raw`.
 
 | Capability | Status | Implementation |
 |---|---|---|
 | Fire / smoke detection, 2 Hz second model | **Runs** | `services/inference/hazard_client.py` + `models/fire_smoke_yolov8n.pt` |
+| Industrial PPE detection, 2 Hz third model | **Runs** | `services/inference/ppe_client.py` + `models/ppe_safetyvision_v2.pt` |
+| Medical / lab PPE detection, same tick, swappable checkpoint with class-order assertion | **Runs** (silent on site footage — B-9) | `ppe_client.py` `MEDICAL_CHECKPOINTS` + `models/ppe_yolo11s_best.pt` |
+| Raw PPE detection journal (class, conf, box, frame, ts) below the visible threshold | Built | `ppe_client.PPEDetector._journal` → `evidence/ppe_raw/<camera>.jsonl` |
+| Item-level "not judged unless a loaded model has the class" guard | Built | `run_cpu.ppe_served` + `PPEDetector.served_types` |
 | Wrong-way movement against a declared route | Built | `finblade/flowrules.py` `WrongWayDetector` |
 | Group crossing — N distinct people through one boundary | Built | `flowrules.py` `GroupCrossingDetector` |
 | Alert acknowledge / resolve, with incident frames | Built | `services/api/service.py` |

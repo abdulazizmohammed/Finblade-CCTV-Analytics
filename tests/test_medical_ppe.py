@@ -57,7 +57,15 @@ class TestVocabulary(unittest.TestCase):
         for name, items in PPE_PROFILES.items():
             for item in items:
                 self.assertEqual(profile_of(item), name)
-        self.assertIsNone(profile_of("lab_coat"))       # not modelled
+        self.assertIsNone(profile_of("space_suit"))     # not modelled
+
+    def test_lab_coat_is_a_medical_item_and_not_a_gown(self):
+        """The lab checkpoint has a Labcoat class. It is its own item: mapping
+        it onto surgical_gown would let the editor claim a gown requirement is
+        judged by a model that has never seen one."""
+        self.assertEqual(profile_of("lab_coat"), "medical")
+        self.assertIn("surgical_gown", PPE_PROFILES["medical"])
+        self.assertNotEqual("lab_coat", "surgical_gown")
 
     def test_types_for_unknown_profile_is_empty_not_everything(self):
         """A typo'd profile must enforce NOTHING rather than fall back to a
@@ -94,7 +102,7 @@ class TestCapabilityStatus(unittest.TestCase):
                           (STATUS_EVALUATION, STATUS_EXPERIMENTAL))
 
     def test_an_unlisted_item_is_experimental_not_assumed_fine(self):
-        self.assertEqual(status_of("lab_coat"), STATUS_EXPERIMENTAL)
+        self.assertEqual(status_of("space_suit"), STATUS_EXPERIMENTAL)
 
 
 class TestZoneConfiguration(unittest.TestCase):
@@ -131,9 +139,9 @@ class TestZoneConfiguration(unittest.TestCase):
         self.assertEqual(ppe_requirements_rejected(z), ["hardhat"])
 
     def test_an_invented_item_is_dropped(self):
-        z = _zone(ppe_profile="medical", required_ppe=["lab_coat"])
+        z = _zone(ppe_profile="medical", required_ppe=["space_suit"])
         self.assertEqual(ppe_requirements(z), [])
-        self.assertEqual(ppe_requirements_rejected(z), ["lab_coat"])
+        self.assertEqual(ppe_requirements_rejected(z), ["space_suit"])
 
     def test_an_unknown_profile_enforces_nothing(self):
         """Fail closed. An operator who typo'd the profile gets no enforcement

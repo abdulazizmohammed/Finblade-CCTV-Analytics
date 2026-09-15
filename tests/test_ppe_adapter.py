@@ -109,7 +109,11 @@ class TestNormalisation(unittest.TestCase):
         out = d.detect(object(), now=123.0)
         self.assertEqual(len(out), 2)
         for det in out:
-            self.assertEqual(set(det), {"class_name", "confidence", "bbox", "ts"})
+            # The original four keys are the contract every consumer reads;
+            # class_id / raw_class / is_violation were added for the lab
+            # checkpoint's journal and compliance logic and ride alongside.
+            self.assertLessEqual({"class_name", "confidence", "bbox", "ts"},
+                                 set(det))
             self.assertIsInstance(det["class_name"], str)
             self.assertIsInstance(det["confidence"], float)
             self.assertIsInstance(det["bbox"], tuple)
@@ -117,13 +121,17 @@ class TestNormalisation(unittest.TestCase):
             self.assertEqual(det["ts"], 123.0)
         self.assertEqual(out[0]["class_name"], "hardhat")
         self.assertEqual(out[1]["class_name"], "no_safety_vest")
+        self.assertEqual((out[0]["class_id"], out[0]["raw_class"]), (3, "Hardhat"))
+        self.assertFalse(out[0]["is_violation"])
+        self.assertTrue(out[1]["is_violation"])
 
     def test_V2_no_ultralytics_object_leaks_into_the_output(self):
         rows = [([1.0, 2.0, 3.0, 4.0], 3, 0.9)]
         out = detector(_FakeModel(NAMES, rows)).detect(object(), 1.0)
         for det in out:
             for v in det.values():
-                self.assertIsInstance(v, (str, float, tuple))
+                self.assertIsInstance(v, (str, float, int, bool, tuple))
+                self.assertNotIn("ultralytics", type(v).__module__)
 
     def test_W_classes_outside_phase_3_are_ignored(self):
         rows = [([1.0, 1.0, 2.0, 2.0], 0, 0.9),    # Fall-Detected

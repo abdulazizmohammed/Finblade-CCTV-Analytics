@@ -125,6 +125,11 @@ ANATOMY = {
     # down the body than a hi-vis vest. Starting at 0.10 keeps a cap or shield
     # from satisfying it.
     "surgical_gown":  (0.10, 0.85),
+    # A lab coat is knee-length and open at the front — the same silhouette as
+    # a gown from a ceiling camera, so it takes the gown's band. A separate
+    # entry rather than an alias for the same reason mask/surgical_mask are:
+    # either can be measured and moved without dragging the other.
+    "lab_coat":       (0.10, 0.85),
     # Scrubs are a torso garment like a vest, and share its band for the same
     # reason: below the head, above the knees.
     "surgical_scrubs": (0.15, 0.70),

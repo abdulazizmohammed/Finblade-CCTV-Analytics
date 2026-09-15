@@ -692,6 +692,85 @@ medical entries from `PPE_PROFILES`, `PPE_STATUS`, `ANATOMY` and
 `MEDICAL_CLASS_MAP`, the `medical_ppe:` config block, and `ppe_med` in
 `run_cpu.py`.
 
+## D-35 — The in-house lab checkpoint fills the medical slot, behind explicit-negative-only evidence
+
+**Context (2026-09-15):** the human trained a YOLO11s on 226 lab-PPE images
+(ten classes in worn/missing pairs: Gloves, Goggles, Haircap, Labcoat, Mask)
+and asked for it in the pipeline. It loads on the pinned ultralytics 8.3.40
+despite being written by 8.4.152 — YOLO11 is a supported family — so no pin
+change and no new dependency.
+
+**Choice: it becomes the `medical` profile's detector, not a third profile.**
+The profile is labelled "Medical / Laboratory" in the editor, the template and
+`finblade/ppe.py`, and the template already said "ANY medical checkpoint can
+be wired in by changing the mapping alone". Gloves, Goggles, Haircap and Mask
+land on `surgical_gloves`, `goggles`, `surgical_cap`, `surgical_mask` — same
+meaning, same bands. **Labcoat gets its own item, `lab_coat`**, rather than
+being mapped onto `surgical_gown`: different garment, and the editor must not
+claim a gown is judged by a model trained on lab coats. The gown band is
+reused (same silhouette from above) as a separate entry, per D-34.
+
+**The medical slot is now a registry, `MEDICAL_CHECKPOINTS`**, keyed by
+`medical_ppe.checkpoint`. Each entry binds default weights, class map and an
+`expected_names` dict together. For this checkpoint `expected_names` is
+`PPE_CLASSES` and load() **refuses** a checkpoint whose `model.names` differ —
+index i and i+5 are the same item worn/missing, so a retrain that reorders
+classes would invert verdicts silently. The YOLO26 candidate stays in the
+registry (still unloadable, B-8) so switching back is one config word.
+
+**Absence is worth ZERO for the medical profile** (`absence_weight_by_profile`
+on `PPEThresholds`; default `medical_ppe.absence_weight: 0.0`). Measured on the
+checkpoint's own 47 test images at the visible threshold 0.5: no Gloves,
+Haircap or Mask positive at all, and recall 0.32 on the split. Silence is what
+this model does when it is working. Under the industrial 0.25 weight, every
+person in a lab zone would drift to NONCOMPLIANT in ~32 s on the detector's
+blindness — the keremberke failure mode from the manifest, reproduced. So a
+medical violation needs **sustained explicit `No X`** and nothing else. Cost:
+a person the model never fires on stays UNKNOWN for ever, and UNKNOWN counts
+as "compliant" in the zone card (pre-existing behaviour, not changed here —
+worth its own decision).
+
+**Serving is per ITEM now, not per profile.** This checkpoint covers five of
+the medical profile's ten items. `ppe_served` used to ask only "is a medical
+detector loaded?"; a zone requiring `shoe_covers` would then have been judged
+on silence. Detectors now publish `served_types` (items with a POSITIVE class
+in the loaded weights) and the zone's requirement list is filtered against it,
+with a warning naming what was dropped. Detectors without the attribute (test
+stubs, older adapters) serve their whole profile — the old behaviour.
+
+**Visible threshold 0.5, journal floor 0.25.** The model runs at the journal
+floor and every raw box is appended to `evidence/ppe_raw/<camera>.jsonl`
+(class, confidence, box, frame, timestamp, camera — no crop, no track id, no
+person ref) before mapping and before the visible threshold, so real-world
+precision can be measured and hard examples found. Only boxes ≥ 0.5 reach the
+rule engine. NMS keeps or drops a box on the strength of higher-scoring
+neighbours, so lowering the run threshold cannot change which boxes clear the
+higher bar. Journal write failure closes the journal and counts; the camera
+continues. The journal is unbounded append — rotate it or unset `raw_log_dir`.
+
+**`medical_ppe.enabled: true` in the shared template**, same caveat and same
+reasoning as the industrial block: inert on any camera with no medical-profile
+zone, and the human cannot try the model at all otherwise. One line to flip.
+
+**`detect()` output gained `class_id`, `raw_class`, `is_violation`** alongside
+the original four keys. Two adapter tests that pinned the exact key set and
+the exact value types were widened to "required keys present, plain scalars
+only" — the contract every consumer reads is unchanged.
+
+**What was measured, and what it means.** On `media/LAB-PPE.mp4` (overhead
+fisheye, five people at ~145 px, blue gowns) the checkpoint emits **nothing
+above 0.25 — on full frames or on padded person crops** (84 crops). The
+training frames are eye-level close-ups of white coats on a production line.
+This is a domain gap, not a scale problem, and no threshold makes it go away.
+Recorded as B-9 with evidence in `evidence/lab_ppe/`. The integration is
+complete and tested; the model is not usable on this camera until retrained
+on frames from cameras like it.
+
+**Reverse:** `medical_ppe.enabled: false` turns it off; `checkpoint:
+mppe_yolo26s_v2` restores the previous slot; `absence_weight: 0.25` restores
+the industrial weighting; delete `lab_coat` from `PPE_PROFILES`, `PPE_STATUS`,
+`ANATOMY` and the editor list to drop the item.
+
 ## D-33 — Compliance is a fifth alert kind, and carries a crop of the person
 
 **Choice:** a `COMPLIANCE` severity of its own with its own colour

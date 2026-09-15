@@ -73,7 +73,7 @@ from finblade.events import (                            # noqa: E402
 from finblade.geometry import associate_items                   # noqa: E402
 from finblade.ppe import (PPEThresholds, PPETracker,            # noqa: E402
                           normalize_profile, status_of as ppe_status_of,
-                          evidence_for as ppe_evidence_for)
+                          evidence_for as ppe_evidence_for, types_for)
 from finblade.crowding import (                           # noqa: E402
     CrowdEstimator, TrackingQualityMonitor, select_mode,
 )
@@ -95,8 +95,8 @@ from services.inference.camera_worker import CameraWorker, CameraState  # noqa: 
 from services.inference.reid_client import ReIDResolver                 # noqa: E402
 from services.inference.hazard_client import HazardDetector             # noqa: E402
 from services.inference.ppe_client import (PPEDetector,                 # noqa: E402
-                                           MEDICAL_CLASS_MAP,
-                                           MEDICAL_IGNORED_CLASSES)
+                                           DEFAULT_MEDICAL_CHECKPOINT,
+                                           MEDICAL_CHECKPOINTS)
 
 # Shared handle so the MJPEG server can drive the demo simulate/restore controls.
 _worker = {"ref": None}
@@ -491,14 +491,33 @@ def ppe_served(ppe_zones, ppe_profiles, detectors, camera_id):
     card and the feed cannot disagree about it.
     """
     live = {d.profile for d in detectors if d.enabled}
-    kept, kept_prof, dropped = {}, {}, {}
+    # ITEM granularity on top of profile granularity. A loaded detector does
+    # not necessarily carry every class in its profile's vocabulary — the lab
+    # checkpoint speaks five of the medical profile's ten items — and the
+    # missing five would be judged on silence just as surely as a missing
+    # model. A detector that publishes `served_types` is held to it; one that
+    # does not (older adapters, test stubs) is taken to serve its whole
+    # profile, which is the behaviour this function had before.
+    served = {}
+    for d in detectors:
+        if not d.enabled:
+            continue
+        types = getattr(d, "served_types", None)
+        served.setdefault(d.profile, set()).update(
+            types_for(d.profile) if types is None else types)
+    kept, kept_prof, dropped, partial = {}, {}, {}, {}
     for zid, items in ppe_zones.items():
         prof = ppe_profiles.get(zid)
-        if prof in live:
-            kept[zid] = items
-            kept_prof[zid] = prof
-        else:
+        if prof not in live:
             dropped[zid] = (prof, items)
+            continue
+        ok = [i for i in items if i in served.get(prof, set())]
+        missing = [i for i in items if i not in served.get(prof, set())]
+        if missing:
+            partial[zid] = (prof, missing)
+        if ok:
+            kept[zid] = ok
+            kept_prof[zid] = prof
     for zid, (prof, items) in dropped.items():
         log.warning(
             "camera %s zone %s: requires %s on the '%s' profile, but NO '%s' "
@@ -508,6 +527,13 @@ def ppe_served(ppe_zones, ppe_profiles, detectors, camera_id):
             "absence. Load that model (or restart this camera if you have just "
             "enabled it) to make the requirement real.",
             camera_id, zid, items, prof, prof)
+    for zid, (prof, missing) in partial.items():
+        log.warning(
+            "camera %s zone %s: requires %s, but the loaded '%s' checkpoint "
+            "has no class for them — those items are NOT being judged. The "
+            "checkpoint serves %s. Either drop the requirement or load a "
+            "model that can see it.",
+            camera_id, zid, missing, prof, sorted(served.get(prof, ())))
     return kept, kept_prof
 
 
@@ -865,25 +891,51 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     ppe.load()
     # SECOND, INDEPENDENT DETECTOR. Same class, different vocabulary — not a
     # second rule engine. Off unless medical_ppe.enabled AND some zone declares
-    # ppe_profile: medical. Its weights are expected to be absent for now, in
-    # which case load() disables it with a clear message and every other rule
-    # carries on; that is the same failure path the industrial detector uses.
+    # ppe_profile: medical. If its weights are absent, load() disables it with
+    # a clear message and every other rule carries on; that is the same
+    # failure path the industrial detector uses.
+    #
+    # WHICH checkpoint fills the slot is one config word, `checkpoint`, looked
+    # up in MEDICAL_CHECKPOINTS — the class map, default weights and the
+    # class-order assertion come as a set. An unknown name is a config error
+    # and is treated like missing weights: disabled loudly, nothing judged.
+    _med_name = str(_med_cfg.get("checkpoint", DEFAULT_MEDICAL_CHECKPOINT))
+    _med_ck = MEDICAL_CHECKPOINTS.get(_med_name)
+    if _med_ck is None:
+        log.error("camera %s: medical_ppe.checkpoint %r is not one of %s; "
+                  "medical PPE DISABLED", cfg.camera_id, _med_name,
+                  sorted(MEDICAL_CHECKPOINTS))
+        _med_ck = MEDICAL_CHECKPOINTS[DEFAULT_MEDICAL_CHECKPOINT]
+        _med_cfg = dict(_med_cfg, enabled=False)
     ppe_med = PPEDetector(
         cfg.camera_id,
         weights=_med_cfg.get("weights") or _med_cfg.get("model_path")
-        or "models/medical_ppe_yolo26s_v2.pt",
+        or _med_ck["weights"],
         device=str(_med_cfg.get("device", _ppe_cfg.get("device", "0"))),
         # Same cadence as the industrial detector by default, deliberately: the
         # two run on the same tick so neither contributes "absent" evidence
         # merely because the other one happened to run this frame.
         interval_s=float(_med_cfg.get("interval_seconds",
                                       _ppe_cfg.get("interval_seconds", 0.5))),
-        conf_threshold=float(_med_cfg.get("conf_threshold", 0.35)),
+        # 0.5, not the industrial 0.35: the lab checkpoint's test-split
+        # precision is 0.20, and everything user-visible has to sit well
+        # above where it guesses. Raise it before you lower it.
+        conf_threshold=float(_med_cfg.get("conf_threshold", 0.5)),
+        iou_threshold=(float(_med_cfg["iou_threshold"])
+                       if _med_cfg.get("iou_threshold") is not None else None),
         imgsz=int(_med_cfg.get("imgsz", 640)),
         enabled=bool(_med_cfg.get("enabled", False)) and _wants("medical"),
-        class_map=MEDICAL_CLASS_MAP,
-        ignored_classes=MEDICAL_IGNORED_CLASSES,
+        class_map=_med_ck["class_map"],
+        ignored_classes=_med_ck["ignored_classes"],
+        expected_names=_med_ck["expected_names"],
         profile="medical",
+        # Raw journal so precision can be measured on real footage. Off unless
+        # the config names a directory; `{camera}` is not needed — the file is
+        # <dir>/<camera_id>.jsonl.
+        raw_log_dir=(os.path.join(_REPO_ROOT, str(_med_cfg["raw_log_dir"]))
+                     if _med_cfg.get("raw_log_dir") else None),
+        raw_log_conf=(float(_med_cfg["raw_log_conf"])
+                      if _med_cfg.get("raw_log_conf") is not None else None),
     )
     ppe_med.load()
     # Only the ones that actually came up. detect() on a not-ready detector
@@ -898,17 +950,25 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
     if ppe_med.enabled:
         log.warning(
             "camera %s: MEDICAL PPE is an EVALUATION capability — the "
-            "checkpoint is unvalidated on this site's footage, surgical_gloves "
-            "is EXPERIMENTAL, and this is not a certified safety system. "
-            "AI-assisted monitoring only; site validation required.",
-            cfg.camera_id)
+            "checkpoint (%s) is a first-pass model on 226 training images "
+            "with test mAP50 0.22 / precision 0.20, unvalidated on this "
+            "site's footage; surgical_gloves is EXPERIMENTAL, and this is "
+            "not a certified safety system. AI-assisted monitoring only; "
+            "site validation required.", cfg.camera_id, _med_name)
     ppe_tracker = PPETracker(cfg.camera_id, PPEThresholds(
         entry_grace_s=float(_ppe_cfg.get("entry_grace_seconds", 5.0)),
         violation_confirm_s=float(_ppe_cfg.get("violation_confirm_seconds", 8.0)),
         recovery_confirm_s=float(_ppe_cfg.get("recovery_confirm_seconds", 5.0)),
         min_confidence=float(_ppe_cfg.get("min_confidence", 0.40)),
         absence_weight=float(_ppe_cfg.get("absence_weight", 0.25)),
-        min_person_height_px=float(_ppe_cfg.get("min_person_height_px", 120.0))))
+        min_person_height_px=float(_ppe_cfg.get("min_person_height_px", 120.0)),
+        # Medical items convict on EXPLICIT negatives only by default. The
+        # lab checkpoint's recall is 0.32, and at conf 0.5 it produced no
+        # Gloves / Haircap / Mask positive at all on its own test images —
+        # silence is its normal output, so any weight on silence convicts
+        # the whole room. Set medical_ppe.absence_weight to override.
+        absence_weight_by_profile={
+            "medical": float(_med_cfg.get("absence_weight", 0.0))}))
     ppe_last_seen = {}          # track_id -> last tick, for the state machine's dt
     # Per-zone people counts, refreshed on each PPE tick and read by the
     # zone-state payload. Held between ticks because the detector runs at 2 Hz
@@ -1590,7 +1650,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
             # would slowly convict each other's people.
             _dets = []
             for _d in _ppe_detectors:
-                _dets.extend(_d.detect(frame, vnow))
+                _dets.extend(_d.detect(frame, vnow, frame_id=seq))
             # Only people currently standing in a PPE zone are judged.
             _people = {}
             for t in registry.active():

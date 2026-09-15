@@ -167,6 +167,75 @@ models:
 
   medical_ppe:
     purpose: medical / laboratory PPE compliance (R-11, medical profile)
+    file: models/ppe_yolo11s_best.pt
+    sha256: 09e2804458c72d7e3ada7551a80f0bff547ef96998a739c59c4afdf3c31adcad
+    bytes: 19187674
+    source: >-
+      FinBlade in-house. Trained 2026-09-14 in WSL at /home/usv/ppe
+      (train.py, data/data.yaml), output runs/yolo11s_ppe/weights/best.pt;
+      copied from C:\Users\ICSADMIN\ppe-dataset\model\ppe_yolo11s_best.pt.
+      Training artifacts (results.csv, confusion_matrix.png, args.yaml) sit
+      beside the original; not copied into the repo.
+    framework: >-
+      trained on ultralytics 8.4.152 / torch 2.11.0+cu128; LOADS AND RUNS on
+      the pinned 8.3.40 (YOLO11 is a supported family there) — verified
+      2026-09-15, tests/test_lab_ppe_model.py. Pin unchanged.
+    base_model: yolo11s.pt (Ultralytics)
+    training: 226 images / 267 boxes (16-36 per class), imgsz 640, 100 epochs
+    classes_verified_from_weights:
+      [Gloves, Goggles, Haircap, Labcoat, Mask,
+       "No Gloves", "No Goggles", "No Haircap", "No Labcoat", "No Mask"]
+    class_order_asserted: true       # ppe_client.PPE_CLASSES; a retrain that reorders is REFUSED
+    consumed_classes: all ten        # -> surgical_gloves, goggles, surgical_cap, lab_coat, surgical_mask (+ no_ twins)
+    published_metrics:
+      valid: {images: 43, boxes: 42, mAP50: 0.360, mAP50_95: 0.210, precision: 0.73, recall: 0.32}
+      test:  {images: 47, boxes: 57, mAP50: 0.217, mAP50_95: 0.103, precision: 0.20, recall: 0.34}
+      per_class_test_mAP50: "0.04 (Gloves) .. 0.56 (No Labcoat)"
+    status: evaluation
+    production_validated: false
+    site_validated: false
+    license: >-
+      Fine-tune of an Ultralytics AGPL-3.0 base — same commercial-licensing
+      question as every other checkpoint here. Training images: origin and
+      terms not recorded; establish before any deployment.
+    license_verified: false
+    measured_2026-09-15:
+      own_test_split_47_images_cpu:
+        seconds_per_image: 0.18
+        boxes_at_0.25: {"No Labcoat": 13, Labcoat: 6, "No Mask": 4, Gloves: 3,
+                        Goggles: 2, "No Gloves": 2, Haircap: 1, "No Haircap": 1}
+        boxes_at_0.50: {"No Labcoat": 11, Labcoat: 2, "No Mask": 1, Goggles: 1}
+        images_with_any_box: {at_0.25: 30, at_0.50: 15}
+        note: >-
+          At the user-visible 0.5 there is NO Gloves, Haircap or Mask positive
+          across all 47 images — absence of a positive is this model's normal
+          output, which is why medical_ppe.absence_weight defaults to 0.0.
+      site_clip_media_LAB-PPE.mp4:
+        clip: 1284x716 @ 24 fps, 241 frames, fisheye ceiling camera, 5 people
+        person_height_px: {min: 28, median: 145, max: 337}
+        full_frame_boxes: {at_0.05: 13, at_0.10: 5, at_0.25: 0, at_0.50: 0}
+        person_crop_boxes_84_crops: {at_0.10: 50, at_0.25: 0, at_0.50: 0}
+        verdict: >-
+          SILENT ON THE SITE CAMERA. Nothing above 0.25 on full frames OR on
+          padded person crops, so it is not a scale problem alone. The
+          training frames are eye-level close-ups (people fill the 640px
+          frame, white coats, production-line setting); the site camera is an
+          overhead wide-angle with blue gowns at ~145px. A domain gap the
+          retrain has to close with frames from the actual cameras. Evidence:
+          evidence/lab_ppe/. See BLOCKERS.md B-9.
+    notes: >-
+      FIRST-PASS PLACEHOLDER. Wired so that a retrained checkpoint with the
+      same class order drops in with no code change: medical_ppe.weights (or
+      just overwrite the file). Everything user-visible sits behind
+      conf 0.5, the grace/confirm/recover state machine, and explicit-negative-
+      only evidence; every raw box >= 0.25 is journalled to
+      evidence/ppe_raw/<camera>.jsonl for precision measurement.
+
+  # --- SUPERSEDED CANDIDATE -------------------------------------------------
+  # Was the `medical_ppe` slot until 2026-09-15; still selectable as
+  # medical_ppe.checkpoint: mppe_yolo26s_v2, still unable to load on the pin.
+  candidate_mppe_yolo26s_v2:
+    purpose: medical PPE candidate (superseded by the in-house lab checkpoint)
     file: models/medical_ppe_yolo26s_v2.pt
     present: false                   # NOT IN models/ — nothing has been run
     sha256: null                     # generate locally once the file exists
@@ -184,7 +253,7 @@ models:
                          No_Medical_Attire, No_Surgical_Cap,
                          No_Surgical_Gloves]
     classes_verified_from_weights: false
-    status: evaluation
+    status: candidate                # superseded; never loaded
     production_validated: false
     site_validated: false
     license: "MIT is STATED by the repo — but see the note"

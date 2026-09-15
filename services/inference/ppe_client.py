@@ -25,9 +25,11 @@ problem. Threshold tuning belongs to a validation phase on real CCTV footage.
 See DECISIONS.md D-32.
 """
 
+import json
 import logging
+import os
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 log = logging.getLogger("finblade.ppe")
 
@@ -96,6 +98,81 @@ MEDICAL_CLASS_MAP = {
 }
 MEDICAL_IGNORED_CLASSES = set()
 
+# --- FinBlade laboratory checkpoint (models/ppe_yolo11s_best.pt) ------------
+#
+# THE FIRST MEDICAL-PROFILE MODEL THAT ACTUALLY LOADS. YOLO11s, trained
+# in-house on 226 images (267 boxes, 16-36 per class); loads on the pinned
+# ultralytics 8.3.40 because YOLO11 is a supported family there, even though
+# the checkpoint was written by 8.4.152. Its ten classes come in five pairs:
+# index i is the item WORN, index i + 5 is the same item MISSING — which is
+# exactly the positive/negative structure the evidence model needs, and what
+# the two earlier medical candidates lacked.
+#
+# THIS IS THE CANONICAL CLASS ORDER. It is asserted against `model.names` at
+# load time (expected_names below): a retrained checkpoint with a shuffled
+# class list would otherwise turn "Mask" into "No Mask" silently, and the
+# rule engine would accuse every masked person in the room. A retrain MUST
+# keep this order; a checkpoint that does not is refused, not adapted.
+PPE_CLASSES: Dict[int, str] = {
+    0: "Gloves",
+    1: "Goggles",
+    2: "Haircap",
+    3: "Labcoat",
+    4: "Mask",
+    5: "No Gloves",
+    6: "No Goggles",
+    7: "No Haircap",
+    8: "No Labcoat",
+    9: "No Mask",
+}
+# The index at which the "missing" half begins: class i >= this is a violation
+# of item i - PPE_VIOLATION_OFFSET.
+PPE_VIOLATION_OFFSET = 5
+
+# Checkpoint class -> finblade medical vocabulary. Every name maps; nothing is
+# ignored. "Haircap" is the checkpoint's word for a bouffant / surgical cap
+# and lands on surgical_cap; "Labcoat" is its own item (finblade.ppe.LAB_COAT)
+# rather than a stand-in for surgical_gown, because they are different
+# garments and the UI must not claim a gown is being judged. Gloves/Mask/
+# Goggles land on the medical items of the same meaning.
+LAB_CLASS_MAP = {
+    "Gloves": "surgical_gloves",
+    "Goggles": "goggles",
+    "Haircap": "surgical_cap",
+    "Labcoat": "lab_coat",
+    "Mask": "surgical_mask",
+    "No Gloves": "no_surgical_gloves",
+    "No Goggles": "no_goggles",
+    "No Haircap": "no_surgical_cap",
+    "No Labcoat": "no_lab_coat",
+    "No Mask": "no_surgical_mask",
+}
+LAB_IGNORED_CLASSES = set()
+
+# WHICH CHECKPOINT FILLS THE MEDICAL SLOT. Selected by `medical_ppe.checkpoint`
+# in the camera config; the class map, the default weights path and the
+# name-order assertion travel together so swapping models is one config word
+# rather than four edits that can drift. `expected_names: None` means "read
+# the names from the weights and warn about gaps" — the behaviour every
+# earlier checkpoint had; a dict means "refuse to load unless they match".
+MEDICAL_CHECKPOINTS = {
+    "finblade_lab_yolo11s": {
+        "weights": "models/ppe_yolo11s_best.pt",
+        "class_map": LAB_CLASS_MAP,
+        "ignored_classes": LAB_IGNORED_CLASSES,
+        "expected_names": PPE_CLASSES,
+    },
+    # The YOLO26 candidate. Kept so its mapping stays selectable once a pin
+    # change is decided; cannot load today (BLOCKERS.md B-8).
+    "mppe_yolo26s_v2": {
+        "weights": "models/medical_ppe_yolo26s_v2.pt",
+        "class_map": MEDICAL_CLASS_MAP,
+        "ignored_classes": MEDICAL_IGNORED_CLASSES,
+        "expected_names": None,
+    },
+}
+DEFAULT_MEDICAL_CHECKPOINT = "finblade_lab_yolo11s"
+
 
 def _canon(name: str) -> str:
     """Fold a checkpoint's class name to a comparable key.
@@ -121,7 +198,22 @@ class PPEDetector:
                  # different map, NOT a second implementation.
                  class_map: Optional[Dict[str, str]] = None,
                  ignored_classes=None,
-                 profile: str = "industrial"):
+                 profile: str = "industrial",
+                 # NMS IoU. None leaves ultralytics' default (0.7) in place,
+                 # which is what the industrial detector has always run at;
+                 # the lab checkpoint's config sets 0.5, the value it was
+                 # evaluated with.
+                 iou_threshold: Optional[float] = None,
+                 # Exact index -> name map the weights MUST carry, or load()
+                 # refuses. None means read-and-warn, the older behaviour.
+                 expected_names: Optional[Dict[int, str]] = None,
+                 # Raw-detection journal: directory for <camera_id>.jsonl, one
+                 # line per box the model emitted at or above raw_log_conf —
+                 # BEFORE mapping and BEFORE the user-visible threshold, so
+                 # real-world precision can be measured and hard examples
+                 # collected for retraining. None (the default) logs nothing.
+                 raw_log_dir: Optional[str] = None,
+                 raw_log_conf: Optional[float] = None):
         self.camera_id = camera_id
         self.profile = str(profile)
         self.class_map = dict(class_map if class_map is not None else CLASS_MAP)
@@ -134,16 +226,34 @@ class PPEDetector:
         self.device = str(device)
         self.interval_s = float(interval_s)
         self.conf_threshold = float(conf_threshold)
+        self.iou_threshold = None if iou_threshold is None else float(iou_threshold)
         self.imgsz = int(imgsz)
+        self.expected_names = (None if expected_names is None
+                               else {int(k): str(v) for k, v in expected_names.items()})
+        self.raw_log_dir = raw_log_dir
+        # The journal floor never sits ABOVE the visible threshold: a journal
+        # that omits what the rule engine saw cannot measure it.
+        self.raw_log_conf = (min(float(raw_log_conf), self.conf_threshold)
+                             if raw_log_conf is not None else self.conf_threshold)
+        self.raw_log_path: Optional[str] = (
+            os.path.join(raw_log_dir, "%s.jsonl" % camera_id) if raw_log_dir else None)
+        self._raw_fh = None
         self.enabled = bool(enabled)
         self.status = "disabled" if not enabled else "not_loaded"
         self._model = None
         self._names: Dict[int, str] = {}
+        # Vocabulary items (positives only, never "no_" or "person") that the
+        # LOADED weights have a class for. Empty until load(). ppe_served reads
+        # this so a zone cannot require an item this checkpoint cannot see —
+        # the lab model covers five of the medical profile's items, and the
+        # other five would otherwise be judged on silence.
+        self.served_types: Set[str] = set()
         self._last_run = 0.0
         self.last_detections: List[dict] = []
         self.last_ts = 0.0
         self.stats = {"runs": 0, "detections": 0, "ignored": 0, "errors": 0,
-                      "loads": 0}
+                      "loads": 0, "below_threshold": 0, "logged": 0,
+                      "log_errors": 0}
 
     # ---- lifecycle --------------------------------------------------------
     def load(self) -> bool:
@@ -168,7 +278,19 @@ class PPEDetector:
             # READ THE CLASSES FROM THE WEIGHTS, never from documentation. The
             # medical model card and the integration brief disagreed about
             # whether the names use spaces or underscores; only the file knows.
-            self._names = dict(self._model.names)
+            self._names = {int(k): str(v) for k, v in dict(self._model.names).items()}
+            if self.expected_names is not None and self._names != self.expected_names:
+                # REFUSED, not adapted. Index order is what separates "Mask"
+                # from "No Mask" in this checkpoint family; a retrain that
+                # shuffled it would invert every verdict. The mismatch is
+                # spelled out so the fix is obvious.
+                raise ValueError(
+                    "checkpoint class map does not match the expected %s "
+                    "order. got %r, expected %r. A retrained checkpoint must "
+                    "keep the class order of the original; if the order "
+                    "changed deliberately, update PPE_CLASSES and the class "
+                    "map together." % (self.profile, self._names,
+                                       self.expected_names))
             present = {_canon(n) for n in self._names.values()}
             known = present & set(self._canon_map)
             if not known:
@@ -194,6 +316,19 @@ class PPEDetector:
                 log.info("camera %s: %s checkpoint emits unmapped classes %s "
                          "(ignored by design)", self.camera_id, self.profile,
                          unmapped)
+            # What this checkpoint can actually vouch for: an item is served
+            # only if the weights carry its POSITIVE class. A negative alone
+            # ("No X" with no "X") could never observe anyone compliant.
+            self.served_types = {
+                self._canon_map[c] for c in known
+                if not self._canon_map[c].startswith("no_")
+                and self._canon_map[c] != "person"}
+            if self.raw_log_path:
+                os.makedirs(self.raw_log_dir, exist_ok=True)
+                self._raw_fh = open(self.raw_log_path, "a", encoding="utf-8")
+                log.info("camera %s: raw %s PPE detections >= %.2f journalled "
+                         "to %s", self.camera_id, self.profile,
+                         self.raw_log_conf, self.raw_log_path)
             self.status = "ready"
             self.stats["loads"] += 1
             log.info("camera %s: PPE detection ready (%s, %d classes mapped, "
@@ -218,21 +353,30 @@ class PPEDetector:
         return self.ready and (now - self._last_run) >= self.interval_s
 
     # ---- inference --------------------------------------------------------
-    def detect(self, frame, now: float) -> List[dict]:
+    def detect(self, frame, now: float, frame_id: Optional[int] = None) -> List[dict]:
         """Normalised detections. Never raises, never leaks a YOLO object.
 
-        Returns [{class_name, confidence, bbox, ts}, ...] with class_name in the
-        finblade vocabulary. An inference failure returns [] and is counted -
-        it must not take the frame loop down with it.
+        Returns [{class_name, confidence, bbox, ts, class_id, raw_class,
+        is_violation}, ...] with class_name in the finblade vocabulary and
+        is_violation True for any "no_" class. An inference failure returns []
+        and is counted - it must not take the frame loop down with it.
+
+        The model runs at the JOURNAL floor (raw_log_conf), never above the
+        visible threshold; every box at that floor is journalled, and only
+        boxes at or above conf_threshold are returned. NMS keeps a box or drops
+        it on the strength of higher-scoring neighbours, so lowering the floor
+        cannot change which boxes clear the higher bar.
         """
         if not self.ready:
             return []
         self._last_run = now
         out: List[dict] = []
         try:
-            res = self._model.predict(frame, conf=self.conf_threshold,
-                                      imgsz=self.imgsz, verbose=False,
-                                      device=self.device)[0]
+            kw = {"conf": self.raw_log_conf, "imgsz": self.imgsz,
+                  "verbose": False, "device": self.device}
+            if self.iou_threshold is not None:
+                kw["iou"] = self.iou_threshold
+            res = self._model.predict(frame, **kw)[0]
         except Exception:                                   # noqa: BLE001
             self.stats["errors"] += 1
             log.exception("camera %s: PPE inference failed", self.camera_id)
@@ -246,19 +390,54 @@ class PPEDetector:
                                     boxes.conf.tolist()):
             raw = self._names.get(int(cls_i))
             mapped = self._canon_map.get(_canon(raw))
+            bbox = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+            # Journalled BEFORE any filtering, unmapped classes included: the
+            # point is to see what the model does, not what we kept.
+            self._journal(now, frame_id, int(cls_i), raw, mapped, float(conf), bbox)
             if mapped is None:
                 self.stats["ignored"] += 1
+                continue
+            if float(conf) < self.conf_threshold:
+                self.stats["below_threshold"] += 1
                 continue
             out.append({
                 "class_name": mapped,
                 "confidence": float(conf),
-                "bbox": (float(box[0]), float(box[1]),
-                         float(box[2]), float(box[3])),
+                "bbox": bbox,
                 "ts": float(now),
+                "class_id": int(cls_i),
+                "raw_class": str(raw),
+                "is_violation": mapped.startswith("no_"),
             })
             self.stats["detections"] += 1
         self.last_detections, self.last_ts = out, now
         return out
+
+    def _journal(self, now, frame_id, class_id, raw, mapped, conf, bbox) -> None:
+        """One JSON line per raw box. Class, confidence, box, frame, time —
+        and nothing that identifies a person: no crop, no track, no ref."""
+        if self._raw_fh is None:
+            return
+        rec = {"ts": round(float(now), 3), "frame": frame_id,
+               "camera": self.camera_id, "profile": self.profile,
+               "class_id": class_id, "class": raw, "mapped": mapped,
+               "conf": round(conf, 4),
+               "bbox": [round(v, 1) for v in bbox]}
+        try:
+            self._raw_fh.write(json.dumps(rec) + "\n")
+            self._raw_fh.flush()
+            self.stats["logged"] += 1
+        except OSError as exc:
+            # A full disk must cost the journal, not the camera. Counted,
+            # logged once, and the journal is closed so it cannot spam.
+            self.stats["log_errors"] += 1
+            log.error("camera %s: raw PPE journal %s failed (%s); journalling "
+                      "stopped for this run", self.camera_id,
+                      self.raw_log_path, exc)
+            try:
+                self._raw_fh.close()
+            finally:
+                self._raw_fh = None
 
     def detections_for(self, now: float, max_age_s: float = 1.0) -> List[dict]:
         """Last detections, if still current — for the annotator. Same staleness
@@ -271,4 +450,9 @@ class PPEDetector:
     def snapshot(self) -> dict:
         return {"status": self.status, "enabled": self.enabled,
                 "weights": self.weights, "interval_s": self.interval_s,
-                "conf_threshold": self.conf_threshold, **self.stats}
+                "conf_threshold": self.conf_threshold,
+                "iou_threshold": self.iou_threshold, "imgsz": self.imgsz,
+                "served_types": sorted(self.served_types),
+                "raw_log": self.raw_log_path,
+                "raw_log_conf": self.raw_log_conf if self.raw_log_path else None,
+                **self.stats}

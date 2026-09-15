@@ -120,6 +120,51 @@ models:
       counterpart, so a harness could only ever be judged on absence — unusable
       with the evidence model, not merely unmapped. See DECISIONS.md D-32.
 
+  # --- EVALUATED AND REJECTED ------------------------------------------------
+  # Kept here, not deleted, so the measurement survives. Without it somebody
+  # rediscovers this checkpoint in three months, sees "paired positive and
+  # negative classes" on the model card, and spends a day on it again.
+  rejected_keremberke_ppe_v8s:
+    purpose: candidate medical/general PPE detector — REJECTED
+    file: models/eval_keremberke_ppe_v8s.pt
+    source: keremberke/yolov8s-protective-equipment-detection (best.pt)
+    evaluated: 2026-09-14
+    framework: YOLOv8s, trained on ultralytics 8.0.21; loads fine on 8.3.40
+    classes_verified_from_weights:
+      [glove, goggles, helmet, mask, no_glove, no_goggles, no_helmet, no_mask,
+       no_shoes, shoes]
+    published_map50: 0.278
+    license: not stated by the repo
+    license_verified: false
+    status: rejected
+    why_it_looked_promising: >-
+      Paired positive AND negative classes for mask, gloves, goggles, helmet and
+      shoes — the structure our evidence model needs, and exactly what the
+      industrial checkpoint lacks for most items.
+    measured:
+      lab_clip: media/LAB-PPE.mp4, 120 frames
+      lab_at_conf_0.25: nothing detected at all, any class
+      lab_at_conf_0.10: goggles 0.97/frame at median conf 0.14; no mask class
+      lab_at_conf_0.05: goggles 1.77/frame median 0.11, no_goggles 0.78/frame
+      control_clip: media/PPEVideo.mp4, 120 frames
+      control_at_conf_0.25: no_glove 0.45/frame median 0.31; goggles 1 box
+      control_at_conf_0.10: no_glove 2.08/frame median 0.17
+    verdict: >-
+      NOT a loading problem — the control proves the model runs and produces
+      boxes on both clips. It is simply weak, and the published mAP50 of 0.278
+      was honest. It never fires `mask` OR `no_mask` on either clip at ANY
+      threshold down to 0.05, so the mask class is effectively dead. On
+      construction footage full of hard hats it detects zero helmets.
+
+      Not dangerous the way the industrial checkpoint is — it does not
+      false-accuse, it is silent. But silence is worse than useless here:
+      absence is evidence in R-11, so a zone requiring a mask would convict
+      everyone on the detector's blindness. Everything it does emit sits far
+      below our min_confidence of 0.40.
+
+      Delete models/eval_keremberke_ppe_v8s.pt whenever you like; this record is
+      the part worth keeping.
+
   medical_ppe:
     purpose: medical / laboratory PPE compliance (R-11, medical profile)
     file: models/medical_ppe_yolo26s_v2.pt

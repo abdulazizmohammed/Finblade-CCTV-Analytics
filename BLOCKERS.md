@@ -200,6 +200,24 @@ YOLOv8/YOLO11 — which would run on 8.3.40 today. The vocabulary, anatomy, rule
 UI and tests are all model-agnostic, so swapping in a different checkpoint is a
 change to `MEDICAL_CLASS_MAP` alone.
 
+**CANDIDATES EVALUATED SO FAR, and why the shortlist is empty:**
+
+| Candidate | Outcome |
+|---|---|
+| `stormbreaker20/yolo26s-mppe-detector-v2` | Cannot load — YOLO26 needs ultralytics 8.4.x. No published metrics. Licence conflict (MIT claimed over an AGPL base). |
+| `keremberke/yolov8s-protective-equipment-detection` | **Measured and rejected** — see `models/MANIFEST.yaml`. Runs, but never emits `mask` or `no_mask` on either clip at any threshold down to 0.05, and detects zero helmets on construction footage. Published mAP50 0.278 was honest. |
+| CPPE-5 | Right domain (coverall, face shield, gloves, mask, goggles) but POSITIVE CLASSES ONLY, and no released YOLOv8/YOLO11 checkpoint found — it is a dataset. |
+| Hygiene compliance, Sensors 2025, doi 10.3390/s25196140 | **Best remaining candidate.** 31k images, hospital domain among its sources, paired classes plus `incorrect_mask` and `hairnet`/`no_hairnet`, mAP50 0.857, and a YOLOv8n variant that would run on the current pin. **Release URL and licence UNVERIFIED** — MDPI, PMC and ResearchGate all block automated access. Needs someone with journal access to open the Data Availability Statement. |
+
+**The uncomfortable conclusion.** No public checkpoint is trained on medical
+labs at ceiling-CCTV distance. The industrial model asserts `NO-Mask` on a
+visibly masked technician at 1.00/frame; the one alternative with the right
+class structure is silent. Both failure modes end in a false accusation under
+R-11, one loudly and one through the absence path. The real answer is footage
+from the actual site, and probably a model fitted to it — which reopens the
+day-one decision to cut all training and fine-tuning. That cut was right for a
+Sunday deadline and may not fit a medical-lab product.
+
 ---
 
 ## B-1 — Vision pipeline cannot execute (detection deps + weights absent)  [RESOLVED]

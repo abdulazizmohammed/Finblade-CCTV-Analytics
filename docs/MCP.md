@@ -13,6 +13,21 @@ numbers correct live in the tool descriptions, so every client gets them.
 
 ---
 
+## 0. The Wareed test instance
+
+| | |
+|---|---|
+| MCP endpoint | `http://ec2-98-80-30-36.compute-1.amazonaws.com:8010/mcp` |
+| REST API (what the tools call; also the `links` in webhook payloads) | `http://ec2-98-80-30-36.compute-1.amazonaws.com:8000` |
+| Auth | `Authorization: Bearer <FINBLADE_MCP_TOKEN>` — sent separately, never in the same message as this URL |
+| Transport | streamable HTTP, JSON responses, stateless |
+| Quick check | `curl -s -o /dev/null -w '%{http_code}\n' -X POST …:8010/mcp -H 'Content-Type: application/json' -d '{}'` → `401` means up and gated; with the token, `initialize` → `200` |
+
+Plain HTTP for now: use it from your backend, not from a browser, and not
+through Anthropic's remote MCP connector until it sits behind TLS (§2).
+Port 8010 must be opened in the instance's security group for your
+backend's egress address.
+
 ## 1. Run it
 
 ```bash
@@ -41,7 +56,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 async def main():
     hc = httpx.AsyncClient(headers={"Authorization": "Bearer <secret>"}, timeout=30)
-    async with streamable_http_client("http://<cctv-host>:8010/mcp", http_client=hc) as (read, write, *_):
+    async with streamable_http_client("http://ec2-98-80-30-36.compute-1.amazonaws.com:8010/mcp", http_client=hc) as (read, write, *_):
         async with ClientSession(read, write) as s:
             await s.initialize()
             tools = (await s.list_tools()).tools          # -> pass to the model as tools

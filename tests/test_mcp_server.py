@@ -36,7 +36,10 @@ ORG = {"tenant": {"name": "Wareed Medical Laboratories", "short": "Wareed", "cou
 
 
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # A fresh loop per call: get_event_loop() fails once another suite in the
+    # same process has closed the default loop, and the server keeps no
+    # loop-bound state between calls.
+    return asyncio.run(coro)
 
 
 def payload(result):
@@ -72,9 +75,13 @@ class Base(unittest.TestCase):
         cls.c = TestClient(app)
         cls.server = build_server(TestClientBackend(cls.c))
         _SEEDED.update(c=cls.c, server=cls.server)
-        # a small, known world
+        # a small, known world — other suites in the same process leave
+        # cameras, trackers and alerts behind, so clear those first
         for camr in list(app_svc.store.list_cameras()):
             app_svc.store.delete_camera(camr["camera_id"])
+        for t in list(app_svc.store.list_trackers()):
+            app_svc.store.delete_tracker(t["tracker_id"])
+        app_svc.store.delete_alerts("all")
         assert cls.c.post("/api/v1/org/import", json=ORG).status_code == 200
         for cid, site in (("CAM-R1", "RUH-01"), ("CAM-J1", "JED-01")):
             cls.c.post("/api/v1/cameras", json={"camera_id": cid, "site_id": site, "name": f"{cid} lobby"})
@@ -98,6 +105,12 @@ class Base(unittest.TestCase):
         for i in range(2):
             cls.c.post("/api/v1/trackers/ingest", json={"tracker_id": "VAN-1", "lat": RUH[0], "lon": RUH[1],
                                                          "speed_kmh": 0, "ts": T0 - 100 + i * 10})
+
+    def setUp(self):
+        # The camera's heartbeat ages out after 30 s of wall clock; in a full
+        # run this class starts minutes after the seed. Refresh it per test.
+        self.c.post("/api/v1/cameras/health", json={"camera_id": "CAM-R1", "site_id": "RUH-01", "ts": time.time(),
+                                                     "health": {"state": "ONLINE", "input_fps": 12.0, "people_in_view": 3}})
 
     def call(self, name, **args):
         return payload(run(self.server.call_tool(name, args)))
@@ -152,16 +165,21 @@ class TestTools(Base):
         self.assertEqual(("Central", "Riyadh"), (b["region"], b["city"]))
         self.assertEqual(["CAM-R1"], [c["camera_id"] for c in b["cameras"]])
         self.assertEqual(["VAN-1"], [v["tracker_id"] for v in b["vehicles_present"]])
-        self.assertEqual(2, len(self.call("org_index")["branches"]))
+        # Other suites import their own org trees into the same store, so
+        # membership, not an exact count.
+        self.assertLessEqual({"RUH-01", "JED-01"},
+                             {x["branch_id"] for x in self.call("org_index")["branches"]})
 
     def test_scope_narrows_cameras_zones_alerts_vehicles(self):
         self.assertEqual(2, self.call("cameras")["count"])
         self.assertEqual(["CAM-J1"], [c["camera_id"] for c in self.call("cameras", region_id="WESTERN")["cameras"]])
         self.assertEqual(1, self.call("cameras", state="ONLINE")["count"])
         self.assertEqual(0, self.call("zones_live", region_id="WESTERN")["count"])
-        z = self.call("zones_live", branch_id="RUH-01")
+        z = self.call("zones_live", camera_id="CAM-R1")
         self.assertEqual(2, z["count"]); self.assertEqual(1, z["not_normal"])
-        self.assertEqual(1, self.call("zones_live", status="WARNING")["count"])
+        self.assertTrue(all(x["site_id"] == "RUH-01" for x in self.call("zones_live", branch_id="RUH-01")["zones"]))
+        # camera-scoped: zone_live rows from other suites share the store
+        self.assertEqual(1, self.call("zones_live", camera_id="CAM-R1", status="WARNING")["count"])
         self.assertEqual(0, self.call("alerts_active", city_id="JED")["count"])
         a = self.call("alerts_active", branch_id="RUH-01")
         # The RED one may already be dismissed by the lifecycle test; the
@@ -215,7 +233,8 @@ class TestTools(Base):
         self.assertEqual(["TRACKER_ARRIVED"], [e["event_type"] for e in arr["events"]])
 
     def test_alert_lifecycle_through_tools(self):
-        red = next(a for a in self.call("alerts_active")["alerts"] if a["severity"] == "RED")
+        red = next(a for a in self.call("alerts_active")["alerts"]
+                   if a["severity"] == "RED" and a["zone_id"] == "STORE")
         one = self.call("alert", alert_id=red["alert_id"])
         self.assertEqual("R-06", one["rule_id"])
         self.assertTrue(self.call("acknowledge_alert", alert_id=red["alert_id"], by="ops")["acknowledged"])

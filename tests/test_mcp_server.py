@@ -48,6 +48,18 @@ def payload(result):
 _SEEDED = {}
 
 
+def tearDownModule():
+    """Leave the process-wide store as we found it: other suites (test_org,
+    test_gps) assume no alerts, cameras or trackers of ours are lying around."""
+    if not HAVE or not _SEEDED:
+        return
+    app_svc.store.delete_alerts("all")
+    for camr in list(app_svc.store.list_cameras()):
+        app_svc.store.delete_camera(camr["camera_id"])
+    for t in list(app_svc.store.list_trackers()):
+        app_svc.store.delete_tracker(t["tracker_id"])
+
+
 @unittest.skipUnless(HAVE, "app/mcp not importable")
 class Base(unittest.TestCase):
     @classmethod

@@ -65,3 +65,4 @@ gdown==5.2.2                 # scripts/get_weights.py pulls OSNet via boxmot
 # httpx is required by fastapi.testclient; without it the HTTP-level tests skip
 # themselves rather than fail, so the suite silently loses 11 tests.
 httpx==0.28.1
+mcp==2.2.0                   # services/mcp/server.py — the chatbot's MCP server (pulls httpx2, a separate package)

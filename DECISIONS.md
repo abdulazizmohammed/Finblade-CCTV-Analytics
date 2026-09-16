@@ -967,3 +967,48 @@ second annotator, and it inherits the theme's status colours.
 
 **Reverse:** delete `web/ops.html` and point the primary nav buttons back at
 `dashboard.html`.
+
+## D-39 — The chatbot's front door is an MCP server, not the database
+**Choice:** `services/mcp/server.py` — the whole system as 33 Model Context
+Protocol tools, three resources and an analyst prompt, over streamable HTTP
+behind a bearer token, calling the REST API with the integration key. The
+SQL views stay for ad-hoc analyst queries; the eight SDK-native tool
+definitions in `integrations/finblade_ai/tools.py` stay as the worked
+example, superseded.
+
+**WHY TOOLS AND NOT VIEWS.** Every number this system produces is only
+correct with its caveat attached: a missing row is "unchanged", a `null`
+bucket is "not watching", `zone_id` is unique only within a camera, an
+average over a half-observed window carries `coverage`. A view hands out the
+rows and leaves the caveats to whoever writes the query, and the README
+records that a text-to-SQL bot has already produced a plausible wrong number
+that way. A tool hands out the ANSWER, and the caveat is in the description
+the model reads before it calls. MCP is the standard packaging for that, so
+the caveats are written once, here, and every client — FinBlade's platform,
+Claude, a desktop MCP client — gets the same ones.
+
+**WHY IT CALLS THE API AND NOT POSTGRES.** The API already owns the
+semantics (distinct occupancy, held-forward history, coverage, the
+Region→City→Branch scope, credential redaction) and the authorisation
+model. Re-deriving any of that from tables here would be a second
+implementation that drifts. The cost is one HTTP hop on the same host.
+
+**WHAT IT MAY WRITE.** Exactly what the integration role may: acknowledge
+and resolve an alert. Nothing else is reachable through it, by construction
+— the server holds the integration key, and the API refuses the rest.
+
+**CONNECTION TOPOLOGY.** FinBlade's backend runs the MCP client (works
+on-prem, air-gapped, over Tailscale). Anthropic's remote MCP connector needs
+a public HTTPS endpoint and is the cloud-deployment option only.
+
+**ONE NEW PINNED DEPENDENCY:** `mcp==2.2.0`. It pulls `httpx2`, a separate
+package from the pinned `httpx` 0.28.1; nothing existing changed. The 2.x SDK
+renamed FastMCP to `MCPServer` and snake_cased the result fields
+(`is_error`, `structured_content`, `input_schema`) — the code and tests use
+the 2.x names; do not paste 1.x examples.
+
+**Cost:** one module (~500 lines, most of it tool descriptions), one test
+file, one doc, one script. No change to the API or the schema.
+
+**Reverse:** delete `services/mcp/`, `docs/MCP.md`, `scripts/start_mcp.sh`,
+`tests/test_mcp_server.py`, and the `mcp` pin.

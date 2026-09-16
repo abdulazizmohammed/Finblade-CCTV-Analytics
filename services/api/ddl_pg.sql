@@ -184,6 +184,43 @@ CREATE TABLE IF NOT EXISTS org_meta (
     value                  TEXT
 );
 
+-- Outbound webhooks (finblade/webhooks.py). A subscription plus a durable
+-- delivery queue: the table IS the queue, as with the forwarder's cursors,
+-- so a receiver outage costs nothing and a restart loses nothing.
+CREATE TABLE IF NOT EXISTS webhooks (
+    webhook_id             TEXT PRIMARY KEY,
+    name                   TEXT,
+    url                    TEXT NOT NULL,
+    secret                 TEXT NOT NULL,      -- HMAC key; shown once at creation
+    enabled                BIGINT DEFAULT 1,
+    events                 TEXT,               -- JSON list, see finblade/webhooks.py EVENTS
+    severities             TEXT,               -- JSON list; empty = all (alert.raised only)
+    rule_ids               TEXT,               -- JSON list; empty = all
+    region_id              TEXT,               -- optional scope, intersecting
+    city_id                TEXT,
+    branch_id              TEXT,
+    headers                TEXT,               -- JSON object of extra request headers
+    created_at             DOUBLE PRECISION,
+    updated_at             DOUBLE PRECISION,
+    last_status            TEXT,               -- SENT | FAILED of the latest delivery
+    last_delivery_at       DOUBLE PRECISION
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    delivery_id            TEXT PRIMARY KEY,
+    webhook_id             TEXT NOT NULL,
+    event                  TEXT NOT NULL,
+    alert_id               TEXT,
+    payload                TEXT NOT NULL,      -- the exact JSON body that is signed and sent
+    status                 TEXT DEFAULT 'PENDING',   -- PENDING | SENT | FAILED
+    attempts               BIGINT DEFAULT 0,
+    next_attempt_at        DOUBLE PRECISION,
+    created_at             DOUBLE PRECISION,
+    sent_at                DOUBLE PRECISION,
+    response_code          BIGINT,
+    last_error             TEXT
+);
+
 CREATE TABLE IF NOT EXISTS cameras (
     camera_id              TEXT PRIMARY KEY,
     site_id                TEXT,               -- == branches.branch_id, see above
@@ -497,6 +534,8 @@ CREATE INDEX IF NOT EXISTS ix_zones_area ON zones(physical_area_id);
 CREATE INDEX IF NOT EXISTS ix_cities_region ON cities(region_id);
 CREATE INDEX IF NOT EXISTS ix_branches_city ON branches(city_id);
 CREATE INDEX IF NOT EXISTS ix_cameras_site ON cameras(site_id);
+CREATE INDEX IF NOT EXISTS ix_wd_due ON webhook_deliveries(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS ix_wd_hook ON webhook_deliveries(webhook_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_tpos_tracker_ts ON tracker_positions(tracker_id, ts);
 CREATE INDEX IF NOT EXISTS ix_tpos_ts ON tracker_positions(ts);
 

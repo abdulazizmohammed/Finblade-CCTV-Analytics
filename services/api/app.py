@@ -165,6 +165,23 @@ async def _offline_monitor():
             log.exception("camera-offline monitor tick failed")
 
 
+WEBHOOK_INTERVAL = float(os.environ.get("FINBLADE_WEBHOOK_INTERVAL", "3"))
+
+
+async def _webhook_loop():
+    """Deliver queued webhooks. The alert path only writes queue rows; this
+    is the only place the network is touched, off the event loop."""
+    while True:
+        try:
+            await asyncio.sleep(WEBHOOK_INTERVAL)
+            await asyncio.to_thread(svc.webhooks.tick)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            _loop_errors["webhooks"] = _loop_errors.get("webhooks", 0) + 1
+            log.exception("webhook delivery tick failed")
+
+
 async def _tracker_monitor():
     """R-12: a GPS tracker that stops reporting. Same shape as R-07 above;
     the rule itself lives in the service so it is testable without a loop."""
@@ -391,6 +408,7 @@ async def _autostart_cameras():
 async def lifespan(app):
     tasks = [asyncio.create_task(_offline_monitor()),
              asyncio.create_task(_tracker_monitor()),
+             asyncio.create_task(_webhook_loop()),
              asyncio.create_task(_report_scheduler()),
              asyncio.create_task(_forward_loop()),
              asyncio.create_task(_retention_loop()),
@@ -1191,6 +1209,92 @@ async def org_save_branch(request: Request):
 async def org_delete_branch(branch_id: str):
     code, body = svc.delete_branch(branch_id)
     return JSONResponse(status_code=code, content=body)
+
+
+# ---- outbound webhooks -----------------------------------------------------
+# Subscriptions that push alerts (and vehicle arrivals) to FinBlade AI
+# workflows or any URL, signed, with retries. finblade/webhooks.py and
+# services/api/webhooks.py. Full key only: a subscription is a place this
+# system sends data to, which is not something an integration key may add.
+
+@app.get("/api/v1/webhooks")
+async def webhooks_list():
+    return {"webhooks": svc.list_webhooks(), "dispatcher": svc.webhooks.status()}
+
+
+@app.post("/api/v1/webhooks")
+async def webhooks_create(request: Request):
+    """Register a subscription. Body: url (required), name, events (default
+    alert.raised), severities (default RED/CRITICAL; empty list = all),
+    rule_ids, region_id/city_id/branch_id scope, headers, secret (generated
+    if omitted — RETURNED ONCE in this response, masked afterwards)."""
+    code, body = svc.save_webhook(await request.json())
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.put("/api/v1/webhooks/{webhook_id}")
+async def webhooks_update(webhook_id: str, request: Request):
+    code, body = svc.save_webhook(await request.json(), existing_id=webhook_id)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.delete("/api/v1/webhooks/{webhook_id}")
+async def webhooks_delete(webhook_id: str):
+    code, body = svc.delete_webhook(webhook_id)
+    return JSONResponse(status_code=code, content=body)
+
+
+@app.post("/api/v1/webhooks/{webhook_id}/test")
+async def webhooks_test(webhook_id: str):
+    """Queue a synthetic RED alert.raised to this subscription and try to send
+    it now, so the receiver can be checked end to end."""
+    q = svc.webhooks.test_fire(webhook_id)
+    if not q:
+        return JSONResponse(status_code=404, content={"error": "unknown webhook", "webhook_id": webhook_id})
+    await asyncio.to_thread(svc.webhooks.tick)
+    d = svc.store.get_delivery(q["delivery_id"]) or {}
+    return {"delivery_id": q["delivery_id"], "status": d.get("status"),
+            "response_code": d.get("response_code"), "last_error": d.get("last_error")}
+
+
+@app.get("/api/v1/webhooks/deliveries")
+async def webhooks_deliveries(webhook_id: str = Query(None), limit: int = Query(100)):
+    rows = svc.store.list_deliveries(webhook_id=webhook_id, limit=limit)
+    for r in rows:
+        # The payload is the full signed body; a listing wants the gist.
+        try:
+            p = json.loads(r.get("payload") or "{}")
+            a = p.get("alert") or {}
+            r["summary"] = {"event": p.get("event"), "rule_id": a.get("rule_id"),
+                            "severity": a.get("severity"), "message": a.get("message"),
+                            "camera_id": a.get("camera_id") or (p.get("tracker_event") or {}).get("tracker_id"),
+                            "site_id": a.get("site_id") or (p.get("tracker_event") or {}).get("site_id")}
+        except ValueError:
+            r["summary"] = {}
+        r.pop("payload", None)
+    return {"deliveries": rows}
+
+
+@app.get("/api/v1/webhooks/deliveries/{delivery_id}")
+async def webhooks_delivery(delivery_id: str):
+    d = svc.store.get_delivery(delivery_id)
+    if not d:
+        return JSONResponse(status_code=404, content={"error": "unknown delivery"})
+    try:
+        d["payload"] = json.loads(d["payload"])
+    except (ValueError, TypeError):
+        pass
+    return d
+
+
+@app.post("/api/v1/webhooks/deliveries/{delivery_id}/retry")
+async def webhooks_retry(delivery_id: str):
+    if not svc.webhooks.retry(delivery_id):
+        return JSONResponse(status_code=404, content={"error": "unknown delivery"})
+    await asyncio.to_thread(svc.webhooks.tick)
+    d = svc.store.get_delivery(delivery_id) or {}
+    return {"delivery_id": delivery_id, "status": d.get("status"),
+            "response_code": d.get("response_code"), "last_error": d.get("last_error")}
 
 
 # ---- GPS trackers ----------------------------------------------------------

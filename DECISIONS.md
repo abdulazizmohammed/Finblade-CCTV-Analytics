@@ -1012,3 +1012,47 @@ file, one doc, one script. No change to the API or the schema.
 
 **Reverse:** delete `services/mcp/`, `docs/MCP.md`, `scripts/start_mcp.sh`,
 `tests/test_mcp_server.py`, and the `mcp` pin.
+
+## D-40 — Outbound webhooks: the database is the queue, the alert path never waits
+**Choice:** subscriptions (`webhooks`) plus a durable delivery queue
+(`webhook_deliveries`). `IngestService.raise_alert` / `acknowledge` /
+`resolve` and the geofence transitions call `WebhookDispatcher.notify()`,
+which only WRITES A ROW; a 3 s loop in `app.py` posts due rows, signs them,
+and schedules retries. Signed Stripe-style (`t=<epoch>,v1=<hmac>` over
+`"<t>.<body>"`), 5-minute replay window, secret shown once.
+
+**WHY A QUEUE IN THE DATABASE AND NOT A POST IN THE ALERT PATH.** The
+forwarder learned this first (see its docstring): every in-memory design
+has to answer "what happens while the receiver is down", and answers it
+badly. A row costs microseconds and survives a restart; a receiver that is
+slow, down or wrong can only ever slow the delivery loop. R-06 firing while
+FinBlade AI is deploying must still land in the store, on the wall, and in
+the queue — and be delivered when they are back.
+
+**WHY THE BODY IS FROZEN AT ENQUEUE TIME.** A retry an hour later resends
+byte-identical JSON under the same `delivery_id`, so the receiver can
+deduplicate and the signature still describes what was sent. Re-rendering at
+send time would let a retry describe a resolved alert under the id of a raise.
+
+**WHY SEVERITY FILTERS THE RAISE ONLY.** A CLEAR is INFO by construction —
+filtering it on severity would drop every one, and the workflow that opened
+a ticket on RED needs the clear that closes it. Acks and resolves of an alert
+the subscriber was told about are always relevant.
+
+**WHY 4xx IS FINAL.** The receiver rejected these exact bytes; sending them
+seven more times over three hours cannot change the answer, and would hide a
+real integration bug behind a retry counter. 5xx and network errors retry
+(5 s → 1 h, eight attempts), then FAILED and visible on the page with Retry.
+
+**WHAT A SUBSCRIBER CANNOT DO.** Overwrite the `X-FinBlade-*` headers, get
+an RTSP source (the context is projected, never the camera row), get a
+person identity (only opaque hashes exist), or be created with an
+integration key — a webhook is a place this system sends data to.
+
+**Cost:** two tables, one pure module, one dispatcher, seven routes, one
+page, one doc. `get_alert` now searches to FAR_FUTURE instead of now+24h so
+a worker clock running ahead cannot make a just-resolved alert unfindable.
+
+**Reverse:** drop the two tables, `finblade/webhooks.py`,
+`services/api/webhooks.py`, the `_notify` calls in `service.py`, the routes,
+`_webhook_loop`, and `web/webhooks.html`.

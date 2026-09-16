@@ -180,6 +180,17 @@ class Store:
     def positions_range(self, tracker_id: str, t0: float, t1: float,
                         limit: int = 5000) -> List[dict]: return []
 
+    # Outbound webhooks (finblade/webhooks.py). Deliveries are the durable
+    # queue: enqueue on the alert path (a row, nothing else), send on a loop.
+    def save_webhook(self, row: dict) -> None: pass
+    def list_webhooks(self) -> List[dict]: return []
+    def delete_webhook(self, webhook_id: str) -> bool: return False
+    def enqueue_delivery(self, d: dict) -> None: pass
+    def due_deliveries(self, now: float, limit: int = 50) -> List[dict]: return []
+    def update_delivery(self, delivery_id: str, **fields) -> None: pass
+    def list_deliveries(self, webhook_id: str = None, limit: int = 100) -> List[dict]: return []
+    def get_delivery(self, delivery_id: str) -> Optional[dict]: return None
+
     # Facility roster. Default no-ops mean a backend without persistence keeps
     # working — but with the STRICT discharge policy the roster cannot be
     # rebuilt from live video, so a no-op backend resets occupancy to zero on
@@ -240,6 +251,8 @@ class InMemoryStore(Store):
         self._trackers: Dict[str, dict] = {}
         self._positions: List[dict] = []
         self._tracker_live: Dict[str, dict] = {}
+        self._webhooks: Dict[str, dict] = {}
+        self._deliveries: Dict[str, dict] = {}
 
     def save_event(self, evt: dict) -> None:
         """Replace on event_id, matching both durable stores.
@@ -670,6 +683,53 @@ class InMemoryStore(Store):
                 if r.get("tracker_id") == tracker_id and t0 <= float(r["ts"]) <= t1]
         rows.sort(key=lambda r: float(r["ts"]))
         return rows[-limit:]
+
+    # ---- outbound webhooks ------------------------------------------------
+    def save_webhook(self, row):
+        old = self._webhooks.get(str(row["webhook_id"]), {})
+        rec = dict(old, **row)
+        rec.setdefault("created_at", time.time())
+        rec["updated_at"] = time.time()
+        self._webhooks[str(row["webhook_id"])] = rec
+
+    def list_webhooks(self):
+        return [dict(w) for w in self._webhooks.values()]
+
+    def delete_webhook(self, webhook_id):
+        wid = str(webhook_id)
+        for did in [d for d, v in self._deliveries.items() if v.get("webhook_id") == wid]:
+            self._deliveries.pop(did, None)
+        return self._webhooks.pop(wid, None) is not None
+
+    def enqueue_delivery(self, d):
+        rec = dict(d)
+        rec.setdefault("status", "PENDING"); rec.setdefault("attempts", 0)
+        rec.setdefault("created_at", time.time()); rec.setdefault("next_attempt_at", rec["created_at"])
+        self._deliveries[str(d["delivery_id"])] = rec
+
+    def due_deliveries(self, now, limit=50):
+        rows = [dict(v) for v in self._deliveries.values()
+                if v.get("status") == "PENDING" and float(v.get("next_attempt_at") or 0) <= now]
+        rows.sort(key=lambda r: float(r.get("next_attempt_at") or 0))
+        return rows[:limit]
+
+    def update_delivery(self, delivery_id, **fields):
+        d = self._deliveries.get(str(delivery_id))
+        if d is not None:
+            d.update(fields)
+            w = self._webhooks.get(d.get("webhook_id"))
+            if w is not None and fields.get("status") in ("SENT", "FAILED"):
+                w["last_status"] = fields["status"]; w["last_delivery_at"] = time.time()
+
+    def list_deliveries(self, webhook_id=None, limit=100):
+        rows = [dict(v) for v in self._deliveries.values()
+                if webhook_id is None or v.get("webhook_id") == webhook_id]
+        rows.sort(key=lambda r: float(r.get("created_at") or 0), reverse=True)
+        return rows[:limit]
+
+    def get_delivery(self, delivery_id):
+        d = self._deliveries.get(str(delivery_id))
+        return dict(d) if d else None
 
     def rebind_global_ref(self, drop_ref, keep_ref):
         """Point stored events at the surviving ref after two identities merge."""

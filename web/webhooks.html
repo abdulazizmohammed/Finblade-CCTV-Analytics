@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinBlade — Webhooks</title>
+<link rel="stylesheet" href="finblade-theme.css">
+<style>
+/* Outbound webhooks: where alerts get pushed. Register a URL, choose what it
+   receives, send a test, watch deliveries and retry failures. The secret is
+   shown ONCE at creation. Colours are theme variables only. */
+body{background:radial-gradient(1000px 500px at 80% -10%,var(--fb-teal-ghost),transparent 60%),var(--fb-void);min-height:100vh;}
+.topbar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:10;flex-wrap:wrap;}
+.brand-logo{height:28px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
+.tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.spacer{flex:1;}
+.wrap{max-width:1240px;margin:0 auto;padding:18px 22px 60px;}
+.eyebrow{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-text-faint);margin:0 0 12px;}
+.summary{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 20px;}
+.stat{border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);background:var(--fb-surface);padding:8px 14px;min-width:96px;}
+.stat .n{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:22px;line-height:1;color:var(--fb-text);}
+.stat .l{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);margin-top:5px;}
+.stat[data-tone="critical"] .n{color:var(--fb-critical);}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;}
+.card{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:14px;}
+.card[data-last="FAILED"]{border-color:var(--fb-critical);}
+.chead{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.cid{font-weight:600;font-size:15px;}
+.url{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-teal-bright);word-break:break-all;margin:4px 0 8px;}
+.state{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:2px;border:1px solid currentColor;white-space:nowrap;color:var(--fb-ok);}
+.state.FAILED{color:var(--fb-critical);background:var(--fb-critical-ghost);} .state.OFF{color:var(--fb-text-faint);}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0;}
+.chip{font-family:var(--fb-font-data);font-size:9.5px;letter-spacing:.06em;padding:2px 7px;border:1px solid var(--fb-line);border-radius:2px;color:var(--fb-text-muted);}
+.chip.sev-RED,.chip.sev-CRITICAL{color:var(--fb-critical);border-color:var(--fb-critical);} .chip.sev-AMBER{color:var(--fb-warning);border-color:var(--fb-warning);} .chip.sev-COMPLIANCE{color:var(--fb-compliance);border-color:var(--fb-compliance);}
+.meta{font-family:var(--fb-font-data);font-size:10.5px;color:var(--fb-text-faint);}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--fb-line);}
+.actions .fb-btn{font-size:12px;padding:6px 10px;}
+.reg{margin-top:26px;}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end;}
+.field{display:flex;flex-direction:column;gap:5px;}
+.field label{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.field input,.field select{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:13px;padding:7px 9px;border-radius:var(--fb-r);}
+.field input:focus,.field select:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.checks{display:flex;flex-wrap:wrap;gap:8px 14px;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text);}
+.checks label{display:flex;gap:5px;align-items:center;cursor:pointer;}
+.note{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);margin:10px 0 0;min-height:1.3em;}
+.note.bad{color:var(--fb-critical);}
+.secretbox{margin-top:12px;padding:12px;border:1px dashed var(--fb-warning);border-radius:var(--fb-r-lg);background:var(--fb-warning-ghost);}
+.secretbox b{color:var(--fb-warning);}
+.secretbox code{display:block;font-family:var(--fb-font-data);font-size:13px;color:var(--fb-text);word-break:break-all;margin-top:6px;user-select:all;}
+.empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:22px;text-align:center;}
+table.dl{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;}
+table.dl th{text-align:left;font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-faint);padding:6px 8px;border-bottom:1px solid var(--fb-line);}
+table.dl td{padding:6px 8px;border-bottom:1px solid var(--fb-line);font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;vertical-align:top;}
+table.dl td.msg{font-family:var(--fb-font-ui);max-width:380px;}
+table.dl td .err{display:block;color:var(--fb-critical);font-size:10.5px;margin-top:2px;word-break:break-all;}
+table.dl .st{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;}
+table.dl .st.SENT{color:var(--fb-ok);} table.dl .st.FAILED{color:var(--fb-critical);} table.dl .st.PENDING{color:var(--fb-warning);}
+.twrap{overflow-x:auto;}
+.doc{font-size:12.5px;color:var(--fb-text-muted);line-height:1.6;margin-top:16px;}
+.doc code{font-family:var(--fb-font-data);color:var(--fb-teal-bright);background:var(--fb-void);border:1px solid var(--fb-line);border-radius:2px;padding:1px 5px;}
+:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <img class="brand-logo" src="logo.svg" alt="FinBlade">
+    <span class="tag">Webhooks</span>
+    <span class="spacer"></span>
+    <span class="fb-live" title="live"></span>
+    <a class="fb-btn" href="network.html">Network</a>
+    <a class="fb-btn" href="cameras.html">Cameras</a>
+    <a class="fb-btn" href="history.html">History</a>
+    <a class="fb-btn fb-btn--primary" href="ops.html">Operations</a>
+    <a class="fb-btn" href="dashboard.html">Wall</a>
+  </div>
+
+  <div class="wrap">
+    <p class="eyebrow">Outbound · alerts pushed to FinBlade AI workflows · refreshes every 5s</p>
+    <div class="summary" id="summary"></div>
+    <div class="grid" id="grid"><div class="empty">Loading…</div></div>
+
+    <div class="reg fb-panel">
+      <p class="eyebrow">Register a webhook</p>
+      <div class="form">
+        <div class="field"><label for="f_name">Name</label><input id="f_name" placeholder="FinBlade AI — critical alerts"></div>
+        <div class="field" style="grid-column:span 2"><label for="f_url">URL (https)</label><input id="f_url" placeholder="https://ai.finblade.example/workflows/cctv-alert"></div>
+        <div class="field"><label for="f_region">Region scope</label><select id="f_region"><option value="">whole network</option></select></div>
+        <div class="field"><label for="f_city">City scope</label><select id="f_city"><option value="">any</option></select></div>
+        <div class="field"><label for="f_branch">Branch scope</label><select id="f_branch"><option value="">any</option></select></div>
+        <div class="field"><label for="f_rules">Rules (comma, blank = all)</label><input id="f_rules" placeholder="R-02, R-06, R-10"></div>
+        <div class="field"><label for="f_hdr">Extra header (Name: value)</label><input id="f_hdr" placeholder="X-Api-Key: …"></div>
+        <div class="field"><label for="f_secret">Secret (blank = generate)</label><input id="f_secret" placeholder="≥16 chars" autocomplete="off"></div>
+      </div>
+      <div class="checks" style="margin-top:12px" id="events">
+        <span class="eyebrow" style="margin:0;align-self:center">Events</span>
+        <label><input type="checkbox" value="alert.raised" checked> alert.raised</label>
+        <label><input type="checkbox" value="alert.cleared"> alert.cleared</label>
+        <label><input type="checkbox" value="alert.acknowledged"> alert.acknowledged</label>
+        <label><input type="checkbox" value="alert.resolved"> alert.resolved</label>
+        <label><input type="checkbox" value="tracker.arrived"> tracker.arrived</label>
+        <label><input type="checkbox" value="tracker.departed"> tracker.departed</label>
+      </div>
+      <div class="checks" style="margin-top:8px" id="sevs">
+        <span class="eyebrow" style="margin:0;align-self:center">Severities (alert.raised)</span>
+        <label><input type="checkbox" value="RED" checked> RED</label>
+        <label><input type="checkbox" value="CRITICAL" checked> CRITICAL</label>
+        <label><input type="checkbox" value="AMBER"> AMBER</label>
+        <label><input type="checkbox" value="COMPLIANCE"> COMPLIANCE</label>
+        <label><input type="checkbox" value="INFO"> INFO</label>
+      </div>
+      <div style="margin-top:12px"><button class="fb-btn fb-btn--primary" id="save">Register webhook</button></div>
+      <p class="note" id="note"></p>
+      <div class="secretbox" id="secretbox" hidden><b>Signing secret — shown once. Copy it into the receiver now.</b><code id="secret"></code></div>
+      <div class="doc">
+        Each delivery is a JSON POST with <code>X-FinBlade-Event</code>, <code>X-FinBlade-Delivery</code> and
+        <code>X-FinBlade-Signature: t=&lt;epoch&gt;,v1=&lt;hex&gt;</code> where hex = HMAC-SHA256(secret, <code>"&lt;t&gt;.&lt;body&gt;"</code>).
+        Verify the signature and reject <code>t</code> older than 5 minutes. Answer 2xx; a 5xx or timeout is retried
+        for ~3 hours (5s, 30s, 2m, 5m, 15m, 30m, 1h, 1h), a 4xx is final. Retries resend the identical body under the
+        same delivery id — deduplicate on it. Full spec: <code>docs/WEBHOOKS.md</code>.
+      </div>
+    </div>
+
+    <div class="reg fb-panel">
+      <p class="eyebrow">Deliveries · newest first <span id="dlFilter"></span></p>
+      <div class="twrap"><table class="dl" id="dl"></table></div>
+    </div>
+  </div>
+
+<script src="apikey.js"></script>
+<script>
+const API=location.origin;
+const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
+let ORG=null, FILTER=null;
+const fmtT=ts=>ts?new Date(ts*1000).toLocaleString('en-GB'):'—';
+
+async function loadOrg(){
+  try{ORG=await fetch(`${API}/api/v1/org/index`).then(r=>r.json());}catch(e){ORG=null;return;}
+  const r=$('f_region'),c=$('f_city'),b=$('f_branch');
+  r.innerHTML='<option value="">whole network</option>'+ORG.regions.map(x=>`<option value="${esc(x.region_id)}">${esc(x.name)}</option>`).join('');
+  const fill=()=>{
+    const cities=ORG.cities.filter(x=>!r.value||x.region_id===r.value);
+    c.innerHTML='<option value="">any</option>'+cities.map(x=>`<option value="${esc(x.city_id)}">${esc(x.name)}</option>`).join('');
+    const branches=ORG.branches.filter(x=>c.value?x.city_id===c.value:(r.value?cities.some(y=>y.city_id===x.city_id):true));
+    b.innerHTML='<option value="">any</option>'+branches.map(x=>`<option value="${esc(x.branch_id)}">${esc(x.name)}</option>`).join('');
+  };
+  r.onchange=()=>{c.value='';fill();}; c.onchange=fill; fill();
+}
+function scopeLabel(w){
+  const parts=[];
+  if(ORG){const r=ORG.regions.find(x=>x.region_id===w.region_id),c=ORG.cities.find(x=>x.city_id===w.city_id),b=ORG.branches.find(x=>x.branch_id===w.branch_id);
+    if(r)parts.push(r.name); if(c)parts.push(c.name); if(b)parts.push(b.name);}
+  else{[w.region_id,w.city_id,w.branch_id].forEach(x=>{if(x)parts.push(x);});}
+  return parts.length?parts.join(' › '):'whole network';
+}
+function card(w){
+  const el=document.createElement('div'); el.className='card'; if(w.last_status)el.dataset.last=w.last_status;
+  const st=!w.enabled?'OFF':(w.last_status||'NEW');
+  el.innerHTML=`<div class="chead"><span class="cid">${esc(w.name||w.webhook_id)}</span><span class="state ${esc(st)}">${esc(st==='NEW'?'no deliveries yet':st)}</span></div>
+    <div class="url">${esc(w.url)}</div>
+    <div class="chips">${(w.events||[]).map(e=>`<span class="chip">${esc(e)}</span>`).join('')}</div>
+    <div class="chips">${(w.severities&&w.severities.length?w.severities:['all severities']).map(s=>`<span class="chip sev-${esc(s)}">${esc(s)}</span>`).join('')}${(w.rule_ids||[]).map(r=>`<span class="chip">${esc(r)}</span>`).join('')}</div>
+    <div class="meta">${esc(w.webhook_id)} · scope ${esc(scopeLabel(w))} · secret ${esc(w.secret||'—')}${w.last_delivery_at?' · last '+esc(fmtT(w.last_delivery_at)):''}</div>
+    <div class="actions">
+      <button class="fb-btn fb-btn--primary" data-act="test" data-id="${esc(w.webhook_id)}">Send test</button>
+      <button class="fb-btn" data-act="deliveries" data-id="${esc(w.webhook_id)}">Deliveries</button>
+      <button class="fb-btn" data-act="toggle" data-id="${esc(w.webhook_id)}" data-on="${w.enabled?1:0}">${w.enabled?'Disable':'Enable'}</button>
+      <button class="fb-btn fb-btn--danger" data-act="del" data-id="${esc(w.webhook_id)}">Delete</button>
+    </div>`;
+  return el;
+}
+let WEBHOOKS=[];
+async function load(){
+  try{const j=await fetch(`${API}/api/v1/webhooks`).then(r=>r.json()); WEBHOOKS=j.webhooks||[];
+    const d=j.dispatcher||{};
+    $('summary').innerHTML=[['Webhooks',WEBHOOKS.length,''],['Queued',d.enqueued||0,''],['Sent',d.sent||0,''],['Failed',d.failed||0,d.failed?'critical':'']]
+      .map(([l,n,t])=>`<div class="stat"${t?` data-tone="${t}"`:''}><div class="n">${n}</div><div class="l">${l}</div></div>`).join('')
+      +(d.last_error?`<div class="stat" data-tone="critical"><div class="n" style="font-size:12px;line-height:1.3;max-width:420px;word-break:break-all">${esc(d.last_error)}</div><div class="l">last error</div></div>`:'');
+  }catch(e){$('grid').innerHTML='<div class="empty">offline — cannot reach the API at this origin</div>';return;}
+  const g=$('grid'); g.innerHTML='';
+  if(!WEBHOOKS.length){g.innerHTML='<div class="empty">No webhooks yet. Register one below — the default is critical alerts only.</div>';}
+  WEBHOOKS.forEach(w=>g.appendChild(card(w)));
+  loadDeliveries();
+}
+async function loadDeliveries(){
+  try{
+    const q=FILTER?`?webhook_id=${encodeURIComponent(FILTER)}&limit=100`:'?limit=100';
+    const rows=(await fetch(`${API}/api/v1/webhooks/deliveries${q}`).then(r=>r.json())).deliveries||[];
+    $('dlFilter').innerHTML=FILTER?`· ${esc(FILTER)} <a href="#" id="clearF" style="color:var(--fb-teal)">show all</a>`:'';
+    const cf=$('clearF'); if(cf)cf.onclick=e=>{e.preventDefault();FILTER=null;loadDeliveries();};
+    $('dl').innerHTML=`<thead><tr><th>When</th><th>Status</th><th>Event</th><th>Alert</th><th>Where</th><th>Attempts</th><th></th></tr></thead><tbody>${
+      rows.length?rows.map(d=>{const s=d.summary||{};return `<tr>
+        <td>${esc(fmtT(d.created_at))}</td><td><span class="st ${esc(d.status)}">${esc(d.status)}</span>${d.response_code?` <span class="meta">${d.response_code}</span>`:''}</td>
+        <td>${esc(d.event)}</td>
+        <td class="msg">${s.rule_id?esc(s.rule_id)+' · ':''}${esc(s.severity||'')}<br><span class="meta">${esc(s.message||'')}</span>${d.last_error?`<span class="err">${esc(d.last_error)}</span>`:''}</td>
+        <td>${esc(s.camera_id||'')}${s.site_id?'<br><span class="meta">'+esc(s.site_id)+'</span>':''}</td>
+        <td>${d.attempts}${d.status==='PENDING'&&d.next_attempt_at?`<br><span class="meta">next ${esc(fmtT(d.next_attempt_at))}</span>`:''}</td>
+        <td>${d.status==='FAILED'?`<button class="fb-btn" style="font-size:11px;padding:4px 8px" data-act="retry" data-id="${esc(d.delivery_id)}">Retry</button>`:''}</td></tr>`;}).join('')
+      :'<tr><td colspan="7" class="meta">no deliveries yet</td></tr>'}</tbody>`;
+  }catch(e){}
+}
+function setNote(t,bad){const n=$('note');n.textContent=t;n.classList.toggle('bad',!!bad);}
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-act]'); if(!b)return;
+  const id=b.dataset.id, act=b.dataset.act;
+  try{
+    if(act==='test'){const r=await fetch(`${API}/api/v1/webhooks/${encodeURIComponent(id)}/test`,{method:'POST'}).then(r=>r.json());
+      setNote(`Test to ${id}: ${r.status}${r.response_code?' · HTTP '+r.response_code:''}${r.last_error?' · '+r.last_error:''}`,r.status!=='SENT');FILTER=id;}
+    else if(act==='deliveries'){FILTER=id;}
+    else if(act==='toggle'){const w=WEBHOOKS.find(x=>x.webhook_id===id); if(!w)return;
+      await fetch(`${API}/api/v1/webhooks/${encodeURIComponent(id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({url:w.url,name:w.name,events:w.events,severities:w.severities,rule_ids:w.rule_ids,region_id:w.region_id,city_id:w.city_id,branch_id:w.branch_id,headers:w.headers,enabled:b.dataset.on!=='1'})});}
+    else if(act==='del'){if(!confirm(`Delete webhook ${id} and its delivery log?`))return;
+      await fetch(`${API}/api/v1/webhooks/${encodeURIComponent(id)}`,{method:'DELETE'}); if(FILTER===id)FILTER=null;}
+    else if(act==='retry'){const r=await fetch(`${API}/api/v1/webhooks/deliveries/${encodeURIComponent(id)}/retry`,{method:'POST'}).then(r=>r.json());
+      setNote(`Retry ${id}: ${r.status}${r.last_error?' · '+r.last_error:''}`,r.status!=='SENT');}
+    load();
+  }catch(err){setNote('Request failed — API offline?',true);}
+});
+$('save').addEventListener('click',async()=>{
+  const url=$('f_url').value.trim(); if(!url){setNote('URL is required.',true);return;}
+  const events=[...document.querySelectorAll('#events input:checked')].map(i=>i.value);
+  const sevs=[...document.querySelectorAll('#sevs input:checked')].map(i=>i.value);
+  const rules=$('f_rules').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const hdr=$('f_hdr').value.trim(); const headers={}; if(hdr.includes(':')){const i=hdr.indexOf(':');headers[hdr.slice(0,i).trim()]=hdr.slice(i+1).trim();}
+  const body={name:$('f_name').value.trim()||null,url,events,severities:sevs,rule_ids:rules,
+    region_id:$('f_region').value||null,city_id:$('f_city').value||null,branch_id:$('f_branch').value||null,headers,
+    secret:$('f_secret').value.trim()||null};
+  try{
+    const r=await fetch(`${API}/api/v1/webhooks`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){setNote('Save failed: '+((j.errors||[j.error]).join('; ')),true);return;}
+    setNote(`Registered ${j.webhook.webhook_id}. Send a test to check the receiver.`);
+    $('secret').textContent=j.webhook.secret; $('secretbox').hidden=false;
+    ['f_name','f_url','f_rules','f_hdr','f_secret'].forEach(i=>$(i).value='');
+    load();
+  }catch(err){setNote('Save failed — API offline?',true);}
+});
+loadOrg().then(load); setInterval(load,5000);
+</script>
+<footer class="fb-footer">&copy; 2026 FinBladeAi. All Rights Reserved</footer>
+</body>
+</html>

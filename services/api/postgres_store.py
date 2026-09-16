@@ -919,6 +919,99 @@ class PostgresStore(Store):
         rows.reverse()
         return rows
 
+    # ---- outbound webhooks ------------------------------------------------
+    _WH_COLS = ("webhook_id,name,url,secret,enabled,events,severities,rule_ids,"
+                "region_id,city_id,branch_id,headers,created_at,updated_at,"
+                "last_status,last_delivery_at")
+
+    @staticmethod
+    def _wh_out(r: dict) -> dict:
+        r["enabled"] = bool(r.get("enabled", 1))
+        for k in ("events", "severities", "rule_ids"):
+            try:
+                r[k] = json.loads(r.get(k) or "[]")
+            except ValueError:
+                r[k] = []
+        try:
+            r["headers"] = json.loads(r.get("headers") or "{}")
+        except ValueError:
+            r["headers"] = {}
+        return r
+
+    def save_webhook(self, row: dict) -> None:
+        now = time.time()
+        self._x(
+            "INSERT INTO webhooks(webhook_id,name,url,secret,enabled,events,severities,"
+            "rule_ids,region_id,city_id,branch_id,headers,created_at,updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (webhook_id) DO UPDATE SET name=excluded.name, url=excluded.url, "
+            "secret=excluded.secret, enabled=excluded.enabled, events=excluded.events, "
+            "severities=excluded.severities, rule_ids=excluded.rule_ids, "
+            "region_id=excluded.region_id, city_id=excluded.city_id, "
+            "branch_id=excluded.branch_id, headers=excluded.headers, "
+            "updated_at=excluded.updated_at",
+            (str(row["webhook_id"]), row.get("name"), row["url"], row["secret"],
+             0 if row.get("enabled") is False else 1,
+             json.dumps(row.get("events") or []), json.dumps(row.get("severities") or []),
+             json.dumps(row.get("rule_ids") or []), row.get("region_id"), row.get("city_id"),
+             row.get("branch_id"), json.dumps(row.get("headers") or {}), now, now))
+
+    def list_webhooks(self) -> List[dict]:
+        return [self._wh_out(r) for r in
+                self._q(f"SELECT {self._WH_COLS} FROM webhooks ORDER BY created_at, webhook_id")]
+
+    def delete_webhook(self, webhook_id: str) -> bool:
+        wid = str(webhook_id)
+        with self._pool.connection() as conn:
+            conn.execute("DELETE FROM webhook_deliveries WHERE webhook_id=%s", (wid,))
+            gone = conn.execute("DELETE FROM webhooks WHERE webhook_id=%s", (wid,)).rowcount
+        return gone > 0
+
+    _WD_COLS = ("delivery_id,webhook_id,event,alert_id,payload,status,attempts,"
+                "next_attempt_at,created_at,sent_at,response_code,last_error")
+
+    def enqueue_delivery(self, d: dict) -> None:
+        now = time.time()
+        self._x(
+            "INSERT INTO webhook_deliveries(delivery_id,webhook_id,event,alert_id,payload,"
+            "status,attempts,next_attempt_at,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (delivery_id) DO NOTHING",
+            (str(d["delivery_id"]), str(d["webhook_id"]), d["event"],
+             (str(d["alert_id"]) if d.get("alert_id") is not None else None), d["payload"],
+             d.get("status", "PENDING"), int(d.get("attempts") or 0),
+             float(d.get("next_attempt_at") or now), float(d.get("created_at") or now)))
+
+    def due_deliveries(self, now: float, limit: int = 50) -> List[dict]:
+        return self._q(
+            f"SELECT {self._WD_COLS} FROM webhook_deliveries WHERE status='PENDING' "
+            "AND next_attempt_at<=%s ORDER BY next_attempt_at LIMIT %s", (float(now), int(limit)))
+
+    def update_delivery(self, delivery_id: str, **fields) -> None:
+        allowed = ("status", "attempts", "next_attempt_at", "sent_at", "response_code", "last_error")
+        cols = [k for k in allowed if k in fields]
+        if not cols:
+            return
+        with self._pool.connection() as conn:
+            conn.execute(f"UPDATE webhook_deliveries SET {','.join(f'{c}=%s' for c in cols)} "
+                         "WHERE delivery_id=%s", [fields[c] for c in cols] + [str(delivery_id)])
+            if fields.get("status") in ("SENT", "FAILED"):
+                conn.execute(
+                    "UPDATE webhooks SET last_status=%s, last_delivery_at=%s WHERE webhook_id="
+                    "(SELECT webhook_id FROM webhook_deliveries WHERE delivery_id=%s)",
+                    (fields["status"], time.time(), str(delivery_id)))
+
+    def list_deliveries(self, webhook_id: str = None, limit: int = 100) -> List[dict]:
+        if webhook_id:
+            return self._q(f"SELECT {self._WD_COLS} FROM webhook_deliveries WHERE webhook_id=%s "
+                           "ORDER BY created_at DESC LIMIT %s", (str(webhook_id), int(limit)))
+        return self._q(f"SELECT {self._WD_COLS} FROM webhook_deliveries "
+                       "ORDER BY created_at DESC LIMIT %s", (int(limit),))
+
+    def get_delivery(self, delivery_id: str) -> Optional[dict]:
+        rows = self._q(f"SELECT {self._WD_COLS} FROM webhook_deliveries WHERE delivery_id=%s",
+                       (str(delivery_id),))
+        return rows[0] if rows else None
+
     # ---- identity merge write-back ----------------------------------------
     def rebind_global_ref(self, drop_ref: str, keep_ref: str) -> int:
         """Point stored events at the surviving ref after two identities merge.

@@ -20,6 +20,7 @@ from finblade.presence import (
 from .bus import FACILITY_STREAM
 from .schema import validate_ingest, validate_zone_state, validate_zones
 from .store import Store
+from .webhooks import WebhookDispatcher
 
 # Shape marker on every fb:facility record. A consumer branches on this rather
 # than sniffing for fields, and it is bumped on a breaking change — the same
@@ -83,6 +84,14 @@ class IngestService:
         self._geo_loaded = 0.0
         self._geo_restored = False
         self._tracker_silent = {}      # tracker_id -> True while R-12 is open
+        # Outbound webhooks. notify() only writes a queue row, so it sits on
+        # the alert path safely; app.py runs the delivery loop.
+        self.webhooks = WebhookDispatcher(
+            self.store, scope_resolver=self.branches_in_scope,
+            context_provider=self._webhook_context,
+            tenant_provider=lambda: {k.replace("tenant_", ""): v
+                                     for k, v in self.store.get_org_meta().items()
+                                     if k.startswith("tenant_")})
 
     # -- POST /api/v1/events/ingest --
     def ingest_event(self, payload: dict) -> Tuple[int, dict]:
@@ -1176,6 +1185,8 @@ class IngestService:
             code, _ = self.ingest_event(evt)
             if code == 202:
                 emitted.append(evt["event_type"])
+                self._notify("tracker.arrived" if tr.kind == "ARRIVED" else "tracker.departed",
+                             tracker_event=dict(evt, site_id=tr.branch_id))
         # A report clears an open silence alert, same as a camera recovering.
         self._tracker_recovered(p.tracker_id, p.ts)
         return 202, {"accepted": True, "tracker_id": p.tracker_id,
@@ -1218,6 +1229,35 @@ class IngestService:
                           "message": f"tracker {tracker_id} reporting again",
                           "camera_id": tracker_id, "ts": now})
 
+    # -- outbound webhooks (finblade/webhooks.py) --
+    def save_webhook(self, payload: dict, existing_id: str = None) -> Tuple[int, dict]:
+        from finblade import webhooks as _wh
+        row, errors = _wh.validate_subscription(payload or {}, existing_id=existing_id)
+        if errors:
+            return 422, {"saved": False, "errors": errors}
+        if existing_id and not (payload or {}).get("secret"):
+            # Editing keeps the existing secret; a new one is only minted when
+            # asked for, or the receiver would silently stop verifying.
+            old = next((w for w in self.store.list_webhooks() if w["webhook_id"] == existing_id), None)
+            if old:
+                row["secret"] = old["secret"]
+        for k in ("region_id", "city_id", "branch_id"):
+            if row.get(k) and self.branches_in_scope(**{k: row[k]}) == set():
+                return 422, {"saved": False, "errors": [f"unknown {k} {row[k]!r}"]}
+        self.store.save_webhook(row)
+        out = _wh.public_view(row)
+        if not existing_id or (payload or {}).get("secret"):
+            out["secret"] = row["secret"]       # shown in full exactly once
+        return 200, {"saved": True, "webhook": out}
+
+    def list_webhooks(self) -> List[dict]:
+        from finblade import webhooks as _wh
+        return [_wh.public_view(w) for w in self.store.list_webhooks()]
+
+    def delete_webhook(self, webhook_id: str) -> Tuple[int, dict]:
+        ok = self.store.delete_webhook(webhook_id)
+        return (200 if ok else 404), {"deleted": ok, "webhook_id": webhook_id}
+
     # -- alerts --
     def site_for_camera(self, camera_id) -> str:
         """The site a camera belongs to, or None.
@@ -1239,7 +1279,57 @@ class IngestService:
             site = self.site_for_camera(alert.get("camera_id"))
             if site:
                 alert = dict(alert, site_id=site)
-        return self.store.save_alert(alert)
+        alert_id = self.store.save_alert(alert)
+        # Fan out AFTER the row exists so the envelope carries the real id.
+        # A CLEAR is the INFO companion of a recovered condition, not a new
+        # problem — a different event so a workflow can close what it opened.
+        event = "alert.cleared" if str(alert.get("kind", "FIRE")).upper() == "CLEAR" else "alert.raised"
+        self._notify(event, alert=dict(alert, alert_id=alert_id, status="OPEN"))
+        return alert_id
+
+    def _notify(self, event: str, **kw) -> None:
+        """Webhook fan-out must never break the caller: a bad subscription
+        row or a store hiccup is logged, and the alert stands."""
+        try:
+            self.webhooks.notify(event, **kw)
+        except Exception:                                   # noqa: BLE001
+            import logging
+            logging.getLogger("finblade.webhooks").exception("webhook notify failed for %s", event)
+
+    def _webhook_context(self, rec: dict) -> dict:
+        """What a workflow needs to act without a second call: the branch
+        (with its city and region), the camera, and the zone's live state."""
+        out = {}
+        site = rec.get("site_id") or rec.get("branch_id")
+        if site:
+            idx = self.org_index()
+            b = next((x for x in idx["branches"] if x["branch_id"] == site), None)
+            if b:
+                c = next((x for x in idx["cities"] if x["city_id"] == b.get("city_id")), {})
+                r = next((x for x in idx["regions"] if x["region_id"] == c.get("region_id")), {})
+                out["branch"] = {"branch_id": b["branch_id"], "name": b.get("name"),
+                                 "branch_type": b.get("branch_type"), "lat": b.get("lat"),
+                                 "lon": b.get("lon"), "city_id": c.get("city_id"),
+                                 "city": c.get("name"), "region_id": r.get("region_id"),
+                                 "region": r.get("name")}
+            else:
+                out["branch"] = {"branch_id": site, "name": None, "unassigned": True}
+        cam_id = rec.get("camera_id")
+        if cam_id:
+            cam = next((c for c in self.store.list_cameras() if c.get("camera_id") == cam_id), None)
+            if cam:
+                # Never the source: it can hold an RTSP password.
+                out["camera"] = {k: cam.get(k) for k in ("camera_id", "name", "site_id", "state",
+                                                          "people_in_view", "last_seen")}
+        zid = rec.get("zone_id")
+        if zid and cam_id:
+            z = next((z for z in self.store.latest_zone_states()
+                      if z.get("zone_id") == zid and z.get("camera_id") == cam_id), None)
+            if z:
+                out["zone"] = {k: z.get(k) for k in ("zone_id", "zone_name", "zone_type", "restricted",
+                                                     "occupancy", "density", "capacity_pct", "status",
+                                                     "physical_area_id")}
+        return out
 
     def get_alert(self, alert_id: str):
         """One alert by id, open or closed. None if unknown."""
@@ -1247,7 +1337,9 @@ class IngestService:
         for a in self.store.list_alerts(unacked_only=False):
             if str(a.get("alert_id")) == target:
                 return a
-        for a in self.store.list_alerts_history(0, time.time() + 86400, limit=100000):
+        # FAR_FUTURE, not now+86400: an alert stamped by a worker whose clock
+        # runs ahead is still an alert, and the id is exact.
+        for a in self.store.list_alerts_history(0, self.FAR_FUTURE, limit=100000):
             if str(a.get("alert_id")) == target:
                 return a
         return None
@@ -1280,6 +1372,9 @@ class IngestService:
         if not ok:
             return 409, {"acknowledged": False,
                          "error": "unknown or already-acknowledged alert"}
+        rec = self.get_alert(alert_id)
+        if rec:
+            self._notify("alert.acknowledged", alert=rec)
         return 200, {"acknowledged": True, "alert_id": alert_id,
                      "acknowledged_by": who, "acknowledged_at": ts}
 
@@ -1387,6 +1482,9 @@ class IngestService:
         ok = self.store.update_alert(alert_id, action, who, ts, note)
         if not ok:
             return 409, {"ok": False, "error": "unknown or already-closed alert"}
+        rec = self.get_alert(alert_id)
+        if rec:
+            self._notify("alert.resolved", alert=rec)
         return 200, {"ok": True, "alert_id": alert_id, "status": action,
                      "resolved_by": who, "resolved_at": ts, "note": note}
 

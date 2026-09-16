@@ -448,10 +448,11 @@ crossing publishes immediately.
 Postgres is the only durable backend. `FINBLADE_INMEMORY=1` selects an in-memory
 store for tests; it is explicitly opt-in and never a fallback.
 
-**21 tables** — `alerts` `area_state_ts` `branches` `camera_transits` `cameras`
+**23 tables** — `alerts` `area_state_ts` `branches` `camera_transits` `cameras`
 `cities` `events` `facility_doors` `facility_meta` `facility_presence`
 `forwarder_cursors` `org_meta` `physical_areas` `regions` `reports`
-`tracker_live` `tracker_positions` `trackers` `zone_live` `zone_state_ts` `zones`
+`tracker_live` `tracker_positions` `trackers` `webhook_deliveries` `webhooks`
+`zone_live` `zone_state_ts` `zones`
 (`services/api/ddl_pg.sql`, idempotent `CREATE`/`ALTER ... IF NOT EXISTS`).
 
 **18 SQL views** for direct chatbot querying (`services/api/analytics_views.py`):
@@ -470,7 +471,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**81 routes** — 78 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**89 routes** — 86 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 
@@ -488,6 +489,7 @@ WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 | Zones & areas | zone CRUD, area CRUD |
 | Organisation | `org` (tree + roll-ups), `org/index`, `org/import`, `org/meta`, `org/regions`, `org/cities`, `org/branches` (upsert + delete) |
 | Trackers | `trackers/ingest` (GET+POST, three dialects, `?key=`), `trackers` list/register/delete, `trackers/{id}/track` |
+| Webhooks | `webhooks` list/create/update/delete, `webhooks/{id}/test`, `webhooks/deliveries`, `webhooks/deliveries/{id}`, `webhooks/deliveries/{id}/retry` |
 | Ops | `health`, `healthz`, `readyz`, `finblade/status`, `finblade/flush`, `frames/orphaned` |
 
 | Capability | Status | Implementation |
@@ -513,6 +515,7 @@ than cosmetic.
 | `web/network.html` | the Region → City → Branch tree with per-level roll-ups, camera pills, unassigned cameras, and add/rename/delete for every level; tenant name in the bar | Built |
 | `web/map.html` | KSA map: branch pins by status, city clusters, live vehicles with trails, tap-to-panel with doors to dashboard / cameras / history / reports / settings, place-pin-by-tap | Built |
 | `web/trackers.html` | register trackers, fleet status, Traccar Client pairing card with the exact URL | Built |
+| `web/webhooks.html` | register outbound webhooks with scope and filters, send a test, delivery log with retry | Built |
 | `web/tracker.html` | the phone page: browser geolocation → ingest, for a desk demo | Built |
 | `web/cameras.html` | camera provisioning and pipeline control; cameras grouped by branch under city and region, branch picked from a dropdown, `?branch=` narrowing | Built |
 | `web/history.html` | event and alert history, movement; `?region_id=` `?city_id=` `?branch_id=` passed through to the API | Built |
@@ -568,6 +571,10 @@ where cumulative footfall has no liveness problem.
 | **MCP server** — 33 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track + arrivals + at-branch; health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
 | MCP resources `finblade://data-notes` `finblade://rules` `finblade://capabilities` and the `cctv_analyst` prompt | Built | `services/mcp/server.py` |
 | Bearer-token gate on the MCP transport (`FINBLADE_MCP_TOKEN`); the server itself uses the integration key, so it is read-only except alert ack/resolve | Built | `make_app` in `server.py`; tested over the real transport in `tests/test_mcp_server.py` |
+| **Outbound webhooks** — subscriptions (URL, secret, events, severities, rules, Region/City/Branch scope, extra headers) that receive a signed JSON POST on `alert.raised` / `cleared` / `acknowledged` / `resolved` and `tracker.arrived` / `departed`, with branch/camera/zone context and action links | Built | `finblade/webhooks.py`, `services/api/webhooks.py`, `docs/WEBHOOKS.md` |
+| Durable delivery queue in the database; backoff 5 s → 1 h over 8 attempts (~3 h), 4xx final, identical body on retry, manual retry | Built | `webhook_deliveries` table, `WebhookDispatcher.tick` on a 3 s loop in `app.py` |
+| HMAC-SHA256 signature `t=<epoch>,v1=<hex>` over `"<t>.<body>"` with a 5-minute replay window; `verify()` for Python receivers | Built | `finblade/webhooks.py` `sign` / `verify` |
+| Webhooks page: register, scope, send a synthetic test alert, delivery log, retry, enable/disable; secret shown once | Built | `web/webhooks.html`, `GET/POST/PUT/DELETE /api/v1/webhooks`, `/test`, `/deliveries`, `/deliveries/{id}/retry` |
 
 ## 14. Operations
 

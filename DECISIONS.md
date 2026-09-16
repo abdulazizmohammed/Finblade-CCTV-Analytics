@@ -928,3 +928,42 @@ every commit — a new module name must be checked against the tree.**
 **Reverse:** drop the three tables, `finblade/gps.py`, the tracker routes and
 `_tracker_monitor`; remove `TRACKER_*` from `EVENT_TYPES`; delete the three
 pages and the replay script. `branches.lat/lon` can stay — they are nullable.
+
+## D-38 — Operator console: exception-first, one camera in focus
+**Choice:** a new page, `web/ops.html`, as the operator's screen, with
+`web/dashboard.html` kept unchanged as the wall display. Navigator (Branch ›
+Camera, worst first) · Focus (one live camera, its zones) · Attention
+(alerts, zones not normal, cameras down). An "All zones" table behind a tab.
+
+**WHY A NEW PAGE AND NOT A REWRITE.** The dashboard is verified, demoed, and
+is the right shape for a wall: everything at once, no selection, glanceable
+from across a room. That shape stops working at about twelve cameras or
+thirty zones — a hundred zone cards is not a view, it is a scroll. The desk
+operator needs the opposite shape: nothing at once, one thing in focus, and a
+list of what needs them. Two jobs, two screens; rule 7 (do not refactor
+working code) says leave the first one alone.
+
+**THE THREE RULES THE PAGE IS BUILT ON.**
+1. *Calm is a number, not a card.* Zones at NORMAL are counted ("87 of 100
+   calm") and never rendered individually unless they belong to the focused
+   camera or the operator opens the table.
+2. *One live stream.* Only the focused camera holds an MJPEG connection.
+   The wall page already learned that six live feeds exhaust the browser's
+   per-origin connection budget and starve the WebSocket; the console never
+   gets near it, and switching cameras releases the old stream first.
+3. *Attention drives navigation.* An alert, a zone not normal or a camera
+   down is a button: it selects the camera and highlights the zone on the
+   frame. The navigator is for looking something up; Attention is how the
+   page is actually used.
+
+**THE HIGHLIGHT OVERLAY IS DRAWN IN THE BROWSER, ON TOP OF THE ANNOTATED
+STREAM.** The worker already draws every zone; the console draws the ONE the
+operator was sent to, from the zone's normalised polygon fitted to the
+letterboxed image box, so it is findable among ten. It is a pointer, not a
+second annotator, and it inherits the theme's status colours.
+
+**Cost:** one page, no API change — every read it needs already existed
+(`cameras`, `zones/state`, `alerts`, `zones?camera_id`, `/ws`, `org/index`).
+
+**Reverse:** delete `web/ops.html` and point the primary nav buttons back at
+`dashboard.html`.

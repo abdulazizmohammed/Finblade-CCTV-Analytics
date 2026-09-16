@@ -508,7 +508,8 @@ than cosmetic.
 
 | Page | Contents | Status |
 |---|---|---|
-| `web/dashboard.html` | live feeds, zone cards, alert feed with acknowledge, unique-people counts, facility occupancy; Region › City › Branch scope selector (client-side, `?region=` `?city=` `?branch=`) | Built |
+| `web/ops.html` | **the operator console** — exception-first, one camera in focus: a Branch › Camera navigator (worst first, searchable, ↑/↓ keys), ONE live MJPEG frame for the selected camera with the zone-in-question highlighted, that camera's zones as cards, an "All zones in scope" sortable table with filter chips, and an Attention column (alerts with ack/resolve, zones not normal, cameras down) whose items jump the focus; auto-follow new alerts; same scope selector and `/ws` transport as the wall | Built |
+| `web/dashboard.html` | the **wall display** — live feeds, zone cards, alert feed with acknowledge, unique-people counts, facility occupancy; Region › City › Branch scope selector (client-side, `?region=` `?city=` `?branch=`) | Built |
 | `web/network.html` | the Region → City → Branch tree with per-level roll-ups, camera pills, unassigned cameras, and add/rename/delete for every level; tenant name in the bar | Built |
 | `web/map.html` | KSA map: branch pins by status, city clusters, live vehicles with trails, tap-to-panel with doors to dashboard / cameras / history / reports / settings, place-pin-by-tap | Built |
 | `web/trackers.html` | register trackers, fleet status, Traccar Client pairing card with the exact URL | Built |
@@ -517,6 +518,13 @@ than cosmetic.
 | `web/history.html` | event and alert history, movement; `?region_id=` `?city_id=` `?branch_id=` passed through to the API | Built |
 | `web/report.html` | occupancy report generation | Built |
 | `tools/zone-editor.html` | draw and save zone polygons, map zones to physical areas, set required PPE | Built |
+
+**Two screens, two jobs.** `ops.html` is for a person at a desk: it scales to
+a hundred zones because calm zones collapse into a count, only the focused
+camera holds a live stream (one MJPEG connection, so the browser's
+per-origin budget is never spent), and the full zone list is a table.
+`dashboard.html` is the wall: everything in scope at once, glanceable, no
+selection. Both read the same `/ws` frame and the same scope.
 
 The dashboard's "In facility" KPI tile shows door-counted occupancy, aggregate
 door flow, the observed/declared split when a baseline is set, and the drift

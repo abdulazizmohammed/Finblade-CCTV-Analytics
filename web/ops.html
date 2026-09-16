@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinBlade — Operations</title>
+<!-- Brand tokens first; every colour below comes from these variables. -->
+<link rel="stylesheet" href="finblade-theme.css">
+<style>
+/* The operator console. Exception-first, one camera in focus.
+
+   Three roles, three columns:
+     NAVIGATOR  where things are — Branch > Camera, worst first, searchable
+     FOCUS      ONE camera, large and live, with its own zones under it
+     ATTENTION  what needs a human now — alerts, zones not normal, cameras down
+   A hundred zones never render as a hundred cards: calm ones collapse into a
+   count, and the "All zones" tab is a table. Only the focused camera holds a
+   live MJPEG connection, so the browser's connection budget is never spent.
+
+   Colour rules (CLAUDE.md): teal is chrome, NORMAL is grey, amber/red carry
+   urgency, magenta dashed = restricted, violet = compliance. */
+body{background:var(--fb-void);min-height:100vh;}
+.eyebrow{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fb-text-faint);font-weight:500;margin:0;}
+.topbar{display:flex;align-items:center;gap:14px;padding:10px 18px;background:var(--fb-surface);border-bottom:1px solid var(--fb-line);position:sticky;top:0;z-index:10;flex-wrap:wrap;}
+.brand{display:flex;align-items:center;gap:12px;}
+.brand-logo{height:28px;width:auto;display:block;filter:drop-shadow(0 0 8px var(--fb-teal-ghost));}
+.tag{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fb-teal-bright);border:1px solid var(--fb-teal-dim);border-radius:2px;padding:2px 6px;}
+.spacer{flex:1;}
+.scope{display:flex;align-items:center;gap:6px;}
+.scope .lbl{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--fb-text-faint);}
+.scope select,.search{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:11px;padding:5px 7px;border-radius:var(--fb-r);}
+.scope select:focus,.search:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.scope select:disabled{color:var(--fb-text-faint);}
+.scope .sep{color:var(--fb-text-faint);font-family:var(--fb-font-data);}
+.scope[hidden]{display:none;}
+.search{min-width:200px;}
+.crumb{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);letter-spacing:.04em;}
+.crumb b{color:var(--fb-text);font-weight:500;}
+.clock{font-family:var(--fb-font-data);color:var(--fb-teal);letter-spacing:.06em;font-variant-numeric:tabular-nums;}
+.conn{display:flex;align-items:center;gap:7px;font-family:var(--fb-font-data);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.conn .dot{width:7px;height:7px;border-radius:50%;background:var(--fb-teal);box-shadow:0 0 8px var(--fb-teal);animation:fbpulse 2.4s ease-in-out infinite;}
+.conn.off .dot{background:var(--fb-critical);box-shadow:0 0 8px var(--fb-critical);}
+@keyframes fbpulse{0%,100%{opacity:1}50%{opacity:.25}}
+.nav a.fb-btn{padding:6px 10px;font-size:12px;}
+
+/* KPI strip */
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;padding:12px 18px 0;}
+.kpi{background:linear-gradient(180deg,var(--fb-surface-2),var(--fb-surface));border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:10px 14px;position:relative;overflow:hidden;}
+.kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--fb-teal);opacity:.35;}
+.kpi.alert::after{background:var(--fb-critical);opacity:.9;}
+.kpi .val{font-size:24px;line-height:1;font-weight:500;letter-spacing:-.02em;margin-top:6px;}
+.kpi .val .u{font-size:12px;color:var(--fb-text-muted);margin-left:5px;letter-spacing:0;}
+.kpi .sub{margin-top:6px;font-size:10.5px;color:var(--fb-text-muted);font-family:var(--fb-font-data);}
+.kpi.alert .val{color:var(--fb-critical);}
+.kpi.warn .val{color:var(--fb-warning);}
+
+/* three columns */
+.cols{display:grid;grid-template-columns:290px 1fr 340px;gap:12px;padding:12px 18px 30px;min-height:calc(100vh - 150px);}
+@media(max-width:1200px){.cols{grid-template-columns:250px 1fr;} .attn{grid-column:1/-1;} .kpis{grid-template-columns:repeat(3,1fr);}}
+@media(max-width:800px){.cols{grid-template-columns:1fr;} .kpis{grid-template-columns:repeat(2,1fr);}}
+.col{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);display:flex;flex-direction:column;min-height:0;}
+.col>.hd{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--fb-line);}
+.col>.hd .rule{flex:1;height:1px;background:var(--fb-line);}
+.col>.bd{padding:10px 12px;overflow:auto;flex:1;}
+.count{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:10px;color:var(--fb-text-muted);}
+
+/* navigator */
+.branch{margin-bottom:8px;}
+.branch>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:6px 4px;font-family:var(--fb-font-data);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);user-select:none;}
+.branch>summary::-webkit-details-marker{display:none;}
+.branch>summary .caret{color:var(--fb-teal);width:10px;display:inline-block;transition:transform .15s;}
+.branch[open]>summary .caret{transform:rotate(90deg);}
+.branch>summary .nm{color:var(--fb-text);letter-spacing:.04em;text-transform:none;font-size:12px;font-weight:500;flex:1;}
+.branch>summary .badge{font-variant-numeric:tabular-nums;}
+.branch>summary .badge.w{color:var(--fb-warning);} .branch>summary .badge.c{color:var(--fb-critical);}
+.camrow{display:grid;grid-template-columns:10px 1fr auto auto;align-items:center;gap:8px;padding:7px 8px;border:1px solid transparent;border-radius:var(--fb-r);cursor:pointer;margin:2px 0;}
+.camrow:hover{background:var(--fb-surface-2);}
+.camrow.sel{border-color:var(--fb-teal);background:var(--fb-teal-ghost);}
+.camrow .d{width:8px;height:8px;border-radius:50%;background:var(--fb-ok);}
+.camrow .d.off{background:var(--fb-critical);} .camrow .d.deg{background:var(--fb-warning);}
+.camrow .id{font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.camrow .id small{display:block;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);font-weight:400;}
+.camrow .n{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:12px;color:var(--fb-text);}
+.camrow .n small{color:var(--fb-text-faint);font-size:9px;letter-spacing:.06em;}
+.camrow .zb{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:2px;border:1px solid var(--fb-line);color:var(--fb-text-faint);min-width:22px;text-align:center;}
+.camrow .zb.w{color:var(--fb-warning);border-color:var(--fb-warning);background:var(--fb-warning-ghost);}
+.camrow .zb.c{color:var(--fb-critical);border-color:var(--fb-critical);background:var(--fb-critical-ghost);}
+.calm{font-family:var(--fb-font-data);font-size:10.5px;color:var(--fb-text-faint);padding:10px 4px 0;border-top:1px solid var(--fb-line);margin-top:8px;}
+
+/* focus */
+.frame{position:relative;background:var(--fb-void);border:1px solid var(--fb-line);border-radius:var(--fb-r);aspect-ratio:16/9;overflow:hidden;}
+.frame img{width:100%;height:100%;object-fit:contain;display:block;}
+.frame .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:var(--fb-font-data);font-size:12px;color:var(--fb-text-faint);letter-spacing:.06em;text-align:center;padding:20px;}
+.frame .scan{position:absolute;left:0;right:0;top:0;height:1px;background:var(--fb-teal);opacity:.5;animation:scan 4s linear infinite;pointer-events:none;}
+@keyframes scan{0%{top:0}100%{top:100%}}
+.frame .live{position:absolute;top:10px;left:10px;font-family:var(--fb-font-data);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--fb-text);background:rgba(8,19,26,.7);padding:3px 8px;border-radius:2px;display:flex;align-items:center;gap:6px;}
+.frame .live .rd{width:6px;height:6px;border-radius:50%;background:var(--fb-critical);animation:fbpulse 1.6s ease-in-out infinite;}
+.frame .cap{position:absolute;bottom:10px;left:10px;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text);background:rgba(8,19,26,.7);padding:3px 8px;border-radius:2px;}
+.frame svg.ovl{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
+.frame svg.ovl polygon{fill:var(--fb-critical-ghost);stroke:var(--fb-critical);stroke-width:2;vector-effect:non-scaling-stroke;animation:fbpulse 1.2s ease-in-out infinite;}
+.frame svg.ovl polygon.warning{fill:var(--fb-warning-ghost);stroke:var(--fb-warning);}
+.frame svg.ovl polygon.restricted{fill:var(--fb-restricted-ghost);stroke:var(--fb-restricted);stroke-dasharray:6 4;}
+.frame svg.ovl polygon.normal{fill:var(--fb-teal-ghost);stroke:var(--fb-teal);animation:none;}
+.fhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 6px;}
+.fhead h2{margin:0;font-size:16px;font-weight:600;}
+.fhead .meta{font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);}
+.fhead .state{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:2px;border:1px solid currentColor;color:var(--fb-ok);}
+.fhead .state.OFFLINE,.fhead .state.DISABLED{color:var(--fb-critical);}
+.fhead .state.DEGRADED,.fhead .state.RECONNECTING{color:var(--fb-warning);}
+.fhead .acts{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;}
+.fhead .acts .fb-btn{font-size:11px;padding:5px 9px;}
+.ovlbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-muted);margin:4px 0 10px;}
+.ovlbar label{display:flex;gap:5px;align-items:center;cursor:pointer;}
+.ovlbar .k{letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-faint);}
+.tabs{display:flex;gap:4px;margin:8px 0 10px;border-bottom:1px solid var(--fb-line);}
+.tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--fb-text-muted);font-family:var(--fb-font-data);font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:7px 10px;cursor:pointer;}
+.tab.on{color:var(--fb-teal-bright);border-bottom-color:var(--fb-teal);}
+.tab:hover{color:var(--fb-text);}
+.zones{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;}
+.zcard{background:var(--fb-void);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:12px;cursor:pointer;}
+.zcard:hover{border-color:var(--fb-line-bright);}
+.zcard.hl{border-color:var(--fb-teal);}
+.zcard[data-status="warning"]{border-color:var(--fb-warning);}
+.zcard[data-status="critical"]{border-color:var(--fb-critical);}
+.zcard[data-status="restricted"]{border-color:var(--fb-restricted);border-style:dashed;animation:alarm 1.1s ease-in-out infinite;}
+@keyframes alarm{0%,100%{background:linear-gradient(90deg,var(--fb-restricted-ghost),var(--fb-void));}50%{background:var(--fb-void);}}
+.zcard .zh{display:flex;justify-content:space-between;align-items:center;gap:6px;}
+.zcard h3{margin:0;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pill{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.1em;text-transform:uppercase;padding:2px 7px;border-radius:2px;border:1px solid currentColor;white-space:nowrap;}
+.pill.normal{color:var(--fb-ok);} .pill.warning{color:var(--fb-warning);background:var(--fb-warning-ghost);}
+.pill.critical{color:var(--fb-critical);background:var(--fb-critical-ghost);} .pill.restricted{color:var(--fb-restricted);background:var(--fb-restricted-ghost);}
+.zbig{display:flex;align-items:baseline;gap:6px;margin-top:6px;}
+.zbig .n{font-size:24px;font-weight:500;line-height:1;}
+.zbig .of{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;}
+.zrow{display:flex;justify-content:space-between;margin-top:6px;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-text-muted);}
+.meter{height:4px;border-radius:3px;background:var(--fb-line);margin-top:8px;overflow:hidden;}
+.meter>span{display:block;height:100%;background:var(--fb-ok);border-radius:3px;transition:width .4s;}
+.meter[data-s="WARNING"]>span{background:var(--fb-warning);} .meter[data-s="CRITICAL"]>span{background:var(--fb-critical);}
+.ppe{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:8px;font-family:var(--fb-font-data);font-size:10px;}
+.ppe .k{letter-spacing:.1em;text-transform:uppercase;color:var(--fb-text-faint);} .ppe .ok{color:var(--fb-ok);} .ppe .bad{color:var(--fb-compliance);} .ppe .na{color:var(--fb-text-faint);}
+.empty{color:var(--fb-text-faint);font-family:var(--fb-font-data);font-size:12px;padding:16px 4px;}
+/* the all-zones table */
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+.chip{background:none;border:1px solid var(--fb-line);color:var(--fb-text-muted);font-family:var(--fb-font-data);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:4px 9px;border-radius:2px;cursor:pointer;}
+.chip.on{border-color:var(--fb-teal);color:var(--fb-teal-bright);}
+.chip b{color:inherit;font-weight:500;}
+table.zt{width:100%;border-collapse:collapse;font-size:12px;}
+table.zt th{text-align:left;font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-faint);padding:6px 8px;border-bottom:1px solid var(--fb-line);cursor:pointer;white-space:nowrap;}
+table.zt th.on{color:var(--fb-teal-bright);}
+table.zt td{padding:6px 8px;border-bottom:1px solid var(--fb-line);font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;white-space:nowrap;}
+table.zt td.nm{font-family:var(--fb-font-ui);font-weight:500;}
+table.zt tr{cursor:pointer;} table.zt tr:hover td{background:var(--fb-surface-2);}
+table.zt td.muted{color:var(--fb-text-faint);}
+.twrap{overflow-x:auto;}
+
+/* attention */
+.attn .sec{margin-bottom:14px;}
+.attn .sec .sh{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.attn .sec .sh .rule{flex:1;height:1px;background:var(--fb-line);}
+.alert{display:flex;gap:9px;padding:8px 10px;border-radius:var(--fb-r);background:var(--fb-surface-2);border-left:3px solid var(--fb-ok);margin-bottom:6px;cursor:pointer;}
+.alert[data-sev="AMBER"]{border-left-color:var(--fb-warning);} .alert[data-sev="RED"],.alert[data-sev="CRITICAL"]{border-left-color:var(--fb-critical);}
+.alert[data-sev="COMPLIANCE"]{border-left-color:var(--fb-compliance);}
+.alert .body{flex:1;min-width:0;}
+.alert .top{display:flex;justify-content:space-between;gap:8px;}
+.alert .rid{font-family:var(--fb-font-data);font-size:9.5px;letter-spacing:.08em;color:var(--fb-text-muted);}
+.alert .msg{margin:3px 0 0;font-size:12px;}
+.alert .where{font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);margin-top:2px;}
+.alert .t{font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);}
+.actcol{display:flex;flex-direction:column;gap:4px;align-self:center;}
+.ack{background:transparent;border:1px solid var(--fb-line-bright);color:var(--fb-text-muted);font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;padding:4px 7px;border-radius:var(--fb-r);cursor:pointer;white-space:nowrap;}
+.ack:hover{border-color:var(--fb-teal);color:var(--fb-teal);}
+.stbadge{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--fb-ok);border:1px solid var(--fb-line-bright);border-radius:var(--fb-r);padding:4px 7px;text-align:center;}
+.zrowx{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:7px 9px;border:1px solid var(--fb-line);border-radius:var(--fb-r);margin-bottom:5px;cursor:pointer;background:var(--fb-void);}
+.zrowx:hover{border-color:var(--fb-teal);}
+.zrowx .nm{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.zrowx .nm small{display:block;font-family:var(--fb-font-data);font-size:9.5px;color:var(--fb-text-faint);font-weight:400;}
+.zrowx .v{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;font-size:12px;}
+.camdown{display:flex;align-items:center;gap:8px;padding:6px 9px;border:1px solid var(--fb-critical);border-radius:var(--fb-r);margin-bottom:5px;cursor:pointer;font-family:var(--fb-font-data);font-size:11px;color:var(--fb-critical);background:var(--fb-critical-ghost);}
+.follow{display:flex;align-items:center;gap:6px;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-muted);cursor:pointer;}
+:focus-visible{outline:2px solid var(--fb-teal-bright);outline-offset:2px;}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><img class="brand-logo" src="logo.svg" alt="FinBlade" width="126" height="30"><span class="tag">Operations</span></div>
+    <div class="scope" id="scope" hidden>
+      <span class="lbl">Scope</span>
+      <select id="scRegion" aria-label="Region"><option value="">All regions</option></select><span class="sep">›</span>
+      <select id="scCity" aria-label="City" disabled><option value="">All cities</option></select><span class="sep">›</span>
+      <select id="scBranch" aria-label="Branch" disabled><option value="">All branches</option></select>
+    </div>
+    <input class="search" id="q" type="search" placeholder="find a camera or zone…" aria-label="search">
+    <span class="spacer"></span>
+    <span class="crumb" id="crumb">—</span>
+    <span class="clock fb-num" id="clock">--:--:--</span>
+    <span class="conn" id="conn"><span class="dot"></span> connecting…</span>
+    <span class="nav">
+      <a class="fb-btn" href="map.html">Map</a>
+      <a class="fb-btn" href="network.html">Network</a>
+      <a class="fb-btn" href="cameras.html">Cameras</a>
+      <a class="fb-btn" href="history.html">History</a>
+      <a class="fb-btn" href="dashboard.html">Wall</a>
+    </span>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><p class="eyebrow">Occupancy</p><div class="val fb-num" id="kOcc">0<span class="u">people</span></div><div class="sub" id="kOccSub">—</div></div>
+    <div class="kpi"><p class="eyebrow">In view</p><div class="val fb-num" id="kView">0<span class="u">people</span></div><div class="sub" id="kViewSub">—</div></div>
+    <div class="kpi" id="kAlertTile"><p class="eyebrow">Active alerts</p><div class="val fb-num" id="kAlerts">0</div><div class="sub" id="kAlertsSub">—</div></div>
+    <div class="kpi" id="kZoneTile"><p class="eyebrow">Zones not normal</p><div class="val fb-num" id="kZones">0<span class="u" id="kZonesOf">/ 0</span></div><div class="sub" id="kZonesSub">—</div></div>
+    <div class="kpi" id="kCamTile"><p class="eyebrow">Cameras online</p><div class="val fb-num" id="kCams">0<span class="u">/ 0</span></div><div class="sub" id="kCamsSub">heartbeat &lt; 30s</div></div>
+    <div class="kpi"><p class="eyebrow">Peak density</p><div class="val fb-num" id="kDens">0.00<span class="u">/m²</span></div><div class="sub" id="kDensSub">—</div></div>
+  </div>
+
+  <div class="cols">
+    <section class="col navg">
+      <div class="hd"><p class="eyebrow">Navigator</p><span class="rule"></span><span class="count" id="navCount"></span></div>
+      <div class="bd" id="nav"><div class="empty">loading…</div></div>
+    </section>
+
+    <section class="col focus">
+      <div class="hd"><p class="eyebrow">Focus</p><span class="rule"></span>
+        <label class="follow" title="Jump to the camera of each new alert"><input type="checkbox" id="follow"> auto-follow alerts</label></div>
+      <div class="bd">
+        <div class="frame fb-bracket" id="frame">
+          <div class="scan"></div>
+          <img id="feed" alt="" hidden>
+          <svg class="ovl" id="ovl" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg>
+          <div class="live" id="liveTag" hidden><span class="rd"></span> Live</div>
+          <div class="cap" id="cap" hidden></div>
+          <div class="ph" id="ph">select a camera in the navigator, or an item under Attention</div>
+        </div>
+        <div class="fhead" id="fhead" hidden>
+          <h2 id="fName">—</h2><span class="state" id="fState">—</span><span class="meta" id="fMeta"></span>
+          <span class="acts">
+            <a class="fb-btn" id="aZones" href="/tools/zone-editor.html">Zone editor</a>
+            <a class="fb-btn" id="aCams" href="cameras.html">Camera page</a>
+            <a class="fb-btn" id="aHist" href="history.html">History</a>
+          </span>
+        </div>
+        <div class="ovlbar" id="ovlbar">
+          <span class="k">Overlays</span>
+          <label><input type="checkbox" data-ovl="zones" checked> Zones</label>
+          <label><input type="checkbox" data-ovl="boxes" checked> Boxes</label>
+          <label><input type="checkbox" data-ovl="ids" checked> IDs</label>
+          <label><input type="checkbox" data-ovl="feet" checked> Foot points</label>
+          <label><input type="checkbox" data-ovl="dwell" checked> Dwell</label>
+        </div>
+        <div class="tabs">
+          <button class="tab on" data-tab="cam" id="tabCam">This camera's zones</button>
+          <button class="tab" data-tab="all" id="tabAll">All zones in scope</button>
+        </div>
+        <div id="paneCam"><div class="zones" id="zones"><div class="empty">no camera selected</div></div></div>
+        <div id="paneAll" hidden>
+          <div class="chips" id="chips"></div>
+          <div class="twrap"><table class="zt" id="ztable"></table></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="col attn">
+      <div class="hd"><p class="eyebrow">Attention</p><span class="rule"></span><span class="count" id="attnCount"></span></div>
+      <div class="bd">
+        <div class="sec"><div class="sh"><p class="eyebrow">Alerts</p><span class="rule"></span><span class="count" id="alertCount"></span></div><div id="alerts"><div class="empty">no active alerts</div></div></div>
+        <div class="sec"><div class="sh"><p class="eyebrow">Zones not normal</p><span class="rule"></span><span class="count" id="badZoneCount"></span></div><div id="badZones"><div class="empty">all zones calm</div></div></div>
+        <div class="sec"><div class="sh"><p class="eyebrow">Cameras down</p><span class="rule"></span><span class="count" id="downCount"></span></div><div id="downCams"><div class="empty">all cameras reporting</div></div></div>
+      </div>
+    </section>
+  </div>
+
+<script src="apikey.js"></script>
+<script>
+const API=location.origin;
+const WS=`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
+const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
+const withKey=u=>window.fbStreamUrl?window.fbStreamUrl(u):u;
+
+// ---- state --------------------------------------------------------------------
+let ORG=null;                       // /api/v1/org/index
+let CAMS=[], ZONES=[], ALERTS=[];   // last frame, UNscoped
+let SEL=null;                       // selected camera_id
+let HL=null;                        // highlighted zone_id on the frame
+let POLY={};                        // camera_id -> [{zone_id, pts:[[x,y]..] normalized, restricted}]
+let TAB='cam', FILTER='all', SORT={k:'status',d:-1};
+let Q='';
+const OVL={zones:true,boxes:true,ids:true,feet:true,dwell:true};
+const SCOPE={region:'',city:'',branch:'',sites:null};
+const SEEN_ALERTS=new Set(); let seededAlerts=false;
+
+// ---- scope (same rules as dashboard.html) ------------------------------------------
+function inScope(row){return SCOPE.sites===null||SCOPE.sites.has(row&&row.site_id);}
+const scoped=rows=>SCOPE.sites===null?(rows||[]):(rows||[]).filter(inScope);
+function resolveScope(){
+  if(!ORG||!(SCOPE.region||SCOPE.city||SCOPE.branch)){SCOPE.sites=null;return;}
+  const cr={}; ORG.cities.forEach(c=>cr[c.city_id]=c.region_id);
+  const keep=new Set();
+  ORG.branches.forEach(b=>{
+    if(SCOPE.branch&&b.branch_id!==SCOPE.branch)return;
+    if(SCOPE.city&&b.city_id!==SCOPE.city)return;
+    if(SCOPE.region&&cr[b.city_id]!==SCOPE.region)return;
+    keep.add(b.branch_id);});
+  SCOPE.sites=keep;
+}
+function fillSelect(sel,rows,idKey,ph){const cur=sel.value;sel.innerHTML=`<option value="">${ph}</option>`+rows.map(r=>`<option value="${esc(r[idKey])}">${esc(r.name||r[idKey])}</option>`).join('');sel.value=rows.some(r=>r[idKey]===cur)?cur:'';}
+function renderScope(){
+  const host=$('scope');
+  if(!ORG||!ORG.regions.length){host.hidden=true;$('crumb').innerHTML='<b>whole network</b>';return;}
+  host.hidden=false;
+  fillSelect($('scRegion'),ORG.regions,'region_id','All regions'); $('scRegion').value=SCOPE.region;
+  const cities=ORG.cities.filter(c=>!SCOPE.region||c.region_id===SCOPE.region);
+  fillSelect($('scCity'),cities,'city_id','All cities'); $('scCity').value=SCOPE.city; $('scCity').disabled=!SCOPE.region;
+  const branches=ORG.branches.filter(b=>SCOPE.city?b.city_id===SCOPE.city:(SCOPE.region?cities.some(c=>c.city_id===b.city_id):true));
+  fillSelect($('scBranch'),branches,'branch_id','All branches'); $('scBranch').value=SCOPE.branch; $('scBranch').disabled=!SCOPE.region;
+  const m=ORG.meta||{}; const parts=[];
+  const r=ORG.regions.find(x=>x.region_id===SCOPE.region), c=ORG.cities.find(x=>x.city_id===SCOPE.city), b=ORG.branches.find(x=>x.branch_id===SCOPE.branch);
+  if(r)parts.push(esc(r.name)); if(c)parts.push(esc(c.name)); if(b)parts.push(`<b>${esc(b.name)}</b>`);
+  if(!parts.length)parts.push('<b>whole network</b>');
+  $('crumb').innerHTML=(m.tenant_short||m.tenant_name?esc(m.tenant_short||m.tenant_name)+' · ':'')+parts.join(' › ');
+}
+function setScope(region,city,branch){
+  SCOPE.region=region||'';SCOPE.city=city||'';SCOPE.branch=branch||'';
+  if(ORG){
+    if(SCOPE.city&&!ORG.cities.some(c=>c.city_id===SCOPE.city&&(!SCOPE.region||c.region_id===SCOPE.region)))SCOPE.city='';
+    if(SCOPE.branch){const b=ORG.branches.find(x=>x.branch_id===SCOPE.branch);const ok=b&&(!SCOPE.city||b.city_id===SCOPE.city)&&(!SCOPE.region||ORG.cities.some(c=>c.city_id===b.city_id&&c.region_id===SCOPE.region));if(!ok)SCOPE.branch='';}
+  }
+  resolveScope(); renderScope(); syncUrl(); renderAll();
+}
+$('scRegion').addEventListener('change',e=>setScope(e.target.value,'',''));
+$('scCity').addEventListener('change',e=>setScope(SCOPE.region,e.target.value,''));
+$('scBranch').addEventListener('change',e=>setScope(SCOPE.region,SCOPE.city,e.target.value));
+function syncUrl(){
+  const u=new URL(location.href);
+  [['region',SCOPE.region],['city',SCOPE.city],['branch',SCOPE.branch],['camera',SEL]].forEach(([k,v])=>{if(v)u.searchParams.set(k,v);else u.searchParams.delete(k);});
+  history.replaceState(null,'',u);
+}
+
+// ---- helpers ------------------------------------------------------------------------
+const STATUS_RANK={CRITICAL:3,WARNING:2,NORMAL:0};
+const isOn=c=>c.effective_state!=='OFFLINE'&&c.effective_state!=='DISABLED';
+function zstatus(z){const st=String(z.status||'NORMAL').toUpperCase();return (z.restricted&&(+z.occupancy||0)>0)?'RESTRICTED':st;}
+function zrank(z){const s=zstatus(z);return s==='RESTRICTED'?4:(STATUS_RANK[s]??1);}
+function camZones(cid){return ZONES.filter(z=>z.camera_id===cid);}
+function worstZone(cid){return camZones(cid).reduce((w,z)=>Math.max(w,zrank(z)),0);}
+function branchOf(site){if(!ORG)return null;return ORG.branches.find(b=>b.branch_id===site)||null;}
+function branchName(site){const b=branchOf(site);return b?b.name:(site||'Unassigned');}
+function camName(cid){const c=CAMS.find(x=>x.camera_id===cid);return c&&c.name?`${cid} · ${c.name}`:cid;}
+function matchQ(...s){if(!Q)return true;return s.some(x=>String(x||'').toLowerCase().includes(Q));}
+function camMatches(c){return matchQ(c.camera_id,c.name)||camZones(c.camera_id).some(z=>matchQ(z.zone_name,z.zone_id));}
+
+// ---- KPIs (scoped) ---------------------------------------------------------------------
+function renderKpis(cams,zones,alerts){
+  const refs=new Set();let noId=0,summed=0;
+  zones.forEach(z=>{const o=+z.occupancy||0;summed+=o;if(Array.isArray(z.occupants))z.occupants.forEach(r=>refs.add(r));else noId+=o;});
+  const inZones=refs.size+noId, dedup=Math.max(0,summed-inZones);
+  $('kOcc').innerHTML=`${inZones}<span class="u">people</span>`;
+  $('kOccSub').textContent=zones.length?`in ${zones.length} zone${zones.length===1?'':'s'}${dedup?` · ${dedup} counted once`:''}`:'no zones drawn';
+  const on=cams.filter(isOn);
+  const view=on.reduce((n,c)=>n+(c.effective_state==='ONLINE'?(+c.people_in_view||0):0),0);
+  $('kView').innerHTML=`${view}<span class="u">people</span>`;
+  $('kViewSub').textContent=on.length>1?`${on.length} cameras · not de-duplicated`:(on.length?'1 camera':'no camera online');
+  const crit=alerts.filter(a=>['CRITICAL','RED'].includes(String(a.severity).toUpperCase())).length;
+  const comp=alerts.filter(a=>String(a.severity).toUpperCase()==='COMPLIANCE').length;
+  $('kAlerts').textContent=alerts.length; $('kAlertsSub').textContent=`${crit} critical · ${alerts.length-crit-comp} warning · ${comp} compliance`;
+  $('kAlertTile').classList.toggle('alert',crit>0); $('kAlertTile').classList.toggle('warn',!crit&&alerts.length>0);
+  const bad=zones.filter(z=>zrank(z)>0);
+  $('kZones').innerHTML=`${bad.length}<span class="u">/ ${zones.length}</span>`;
+  const bc=bad.filter(z=>zrank(z)>=3).length;
+  $('kZonesSub').textContent=bad.length?`${bc} critical or intrusion · ${bad.length-bc} warning`:'all calm';
+  $('kZoneTile').classList.toggle('alert',bc>0); $('kZoneTile').classList.toggle('warn',!bc&&bad.length>0);
+  $('kCams').innerHTML=`${on.length}<span class="u">/ ${cams.length}</span>`;
+  $('kCamTile').classList.toggle('warn',on.length<cams.length);
+  let peak={d:-1,name:'—',status:''};
+  zones.forEach(z=>{if((+z.density||0)>peak.d)peak={d:+z.density,name:z.zone_name||z.zone_id,status:z.status};});
+  $('kDens').innerHTML=`${(peak.d<0?0:peak.d).toFixed(2)}<span class="u">/m²</span>`;
+  $('kDensSub').textContent=peak.d<0?'—':`${peak.name} · ${String(peak.status||'normal').toLowerCase()}`;
+}
+
+// ---- navigator ------------------------------------------------------------------------
+const OPEN=new Set(); let openInit=false;
+function renderNav(cams,zones){
+  const host=$('nav');
+  if(!cams.length){host.innerHTML='<div class="empty">no cameras in scope</div>';$('navCount').textContent='';return;}
+  const groups={};
+  cams.filter(camMatches).forEach(c=>{(groups[c.site_id||'']=groups[c.site_id||'']||[]).push(c);});
+  const order=Object.keys(groups).sort((a,b)=>branchName(a).localeCompare(branchName(b)));
+  if(!openInit){order.forEach(s=>OPEN.add(s));openInit=true;}
+  const rank=c=>(isOn(c)?0:10)-worstZone(c.camera_id)*2-(c.effective_state==='ONLINE'?0:1);
+  host.innerHTML=order.map(site=>{
+    const list=groups[site].slice().sort((a,b)=>rank(a)-rank(b)||String(a.camera_id).localeCompare(String(b.camera_id)));
+    const worst=Math.max(0,...list.map(c=>worstZone(c.camera_id)));
+    const down=list.filter(c=>!isOn(c)).length;
+    const badge=worst>=3?`<span class="badge c">${list.filter(c=>worstZone(c.camera_id)>=3).length} critical</span>`:(worst>0?`<span class="badge w">${list.filter(c=>worstZone(c.camera_id)>0).length} warning</span>`:'');
+    return `<details class="branch" data-site="${esc(site)}" ${OPEN.has(site)?'open':''}><summary><span class="caret">▶</span><span class="nm">${esc(branchName(site))}</span>${badge}${down?`<span class="badge c">${down} down</span>`:''}<span class="badge">${list.length}</span></summary>
+      ${list.map(c=>{
+        const st=String(c.effective_state||'OFFLINE'); const dc=isOn(c)?(st==='ONLINE'?'':'deg'):'off';
+        const zs=camZones(c.camera_id); const w=worstZone(c.camera_id);
+        const zb=w>=3?'c':(w>0?'w':'');
+        return `<div class="camrow${SEL===c.camera_id?' sel':''}" data-cam="${esc(c.camera_id)}" tabindex="0">
+          <span class="d ${dc}"></span>
+          <span class="id">${esc(c.camera_id)}<small>${esc(c.name||st.toLowerCase())}</small></span>
+          <span class="n">${isOn(c)?(+c.people_in_view||0):'—'}<small> in view</small></span>
+          <span class="zb ${zb}" title="${zs.length} zones">${zs.length?zs.length:'·'}</span></div>`;}).join('')}</details>`;}).join('');
+  const calm=zones.filter(z=>zrank(z)===0).length;
+  host.insertAdjacentHTML('beforeend',`<div class="calm">${calm} of ${zones.length} zones calm · ${cams.filter(isOn).length}/${cams.length} cameras online</div>`);
+  $('navCount').textContent=`${cams.length} cams · ${zones.length} zones`;
+}
+document.addEventListener('toggle',e=>{const d=e.target;if(!(d instanceof HTMLDetailsElement)||d.dataset.site===undefined)return;if(d.open)OPEN.add(d.dataset.site);else OPEN.delete(d.dataset.site);},true);
+document.addEventListener('click',e=>{
+  const r=e.target.closest('[data-cam]'); if(r&&r.dataset.cam){select(r.dataset.cam,r.dataset.zone||null);return;}
+});
+document.addEventListener('keydown',e=>{
+  if(e.target.matches('input,select,textarea'))return;
+  const rows=[...document.querySelectorAll('.camrow')]; if(!rows.length)return;
+  const i=rows.findIndex(r=>r.dataset.cam===SEL);
+  if(e.key==='ArrowDown'){e.preventDefault();select(rows[Math.min(rows.length-1,i+1)].dataset.cam);}
+  else if(e.key==='ArrowUp'){e.preventDefault();select(rows[Math.max(0,i-1)].dataset.cam);}
+  else if(e.key==='Escape'){HL=null;renderOverlay();renderZones();}
+});
+$('q').addEventListener('input',e=>{Q=e.target.value.trim().toLowerCase();renderNav(scoped(CAMS),scoped(ZONES));if(TAB==='all')renderTable();});
+
+// ---- focus: the ONE live stream ---------------------------------------------------------
+function overlayParams(){return Object.keys(OVL).filter(k=>!OVL[k]).map(k=>`${k}=0`);}
+function feedUrl(cid){const b=`${API}/api/v1/cameras/${encodeURIComponent(cid)}/stream`;const off=overlayParams();return withKey(off.length?b+'?'+off.join('&')+'&_='+Date.now():b);}
+async function select(cid,zone){
+  const changed=cid!==SEL;
+  SEL=cid; HL=zone||(changed?null:HL);
+  syncUrl();
+  const c=CAMS.find(x=>x.camera_id===cid);
+  const img=$('feed');
+  if(!c){img.hidden=true;img.src='';$('ph').hidden=false;$('ph').textContent='camera not in the current frame';$('fhead').hidden=true;$('liveTag').hidden=true;$('cap').hidden=true;renderNav(scoped(CAMS),scoped(ZONES));renderZones();return;}
+  if(changed){
+    // Release the previous MJPEG connection FIRST: assigning a new src is
+    // what aborts the open multipart response.
+    img.src=''; img.hidden=true; $('ph').hidden=false;
+    if(isOn(c)){ $('ph').textContent='connecting…'; img.onload=()=>{img.hidden=false;$('ph').hidden=true;$('liveTag').hidden=false;}; img.onerror=()=>{$('ph').textContent='stream unavailable';}; img.src=feedUrl(cid); }
+    else { $('ph').textContent=`no signal · ${String(c.effective_state||'offline').toLowerCase()}`; $('liveTag').hidden=true; }
+    await loadPolygons(cid);
+  }
+  renderFocusHead(c); renderNav(scoped(CAMS),scoped(ZONES)); renderZones(); renderOverlay();
+}
+function renderFocusHead(c){
+  if(!c){$('fhead').hidden=true;return;}
+  $('fhead').hidden=false;
+  $('fName').textContent=c.name?`${c.camera_id} · ${c.name}`:c.camera_id;
+  const st=String(c.effective_state||'OFFLINE'); $('fState').textContent=st; $('fState').className='state '+st;
+  const zs=camZones(c.camera_id);
+  $('fMeta').textContent=`${branchName(c.site_id)} · ${isOn(c)?(+c.people_in_view||0)+' in view · ':''}${zs.length} zone${zs.length===1?'':'s'}${c.resolution?' · '+c.resolution:''}`;
+  $('cap').hidden=false; $('cap').textContent=`${c.camera_id}${c.name?' · '+c.name:''}`;
+  $('aZones').href=`/tools/zone-editor.html?camera_id=${encodeURIComponent(c.camera_id)}`;
+  $('aCams').href=`cameras.html${c.site_id?'?branch='+encodeURIComponent(c.site_id):''}`;
+  $('aHist').href=`history.html?camera_id=${encodeURIComponent(c.camera_id)}`;
+}
+document.querySelectorAll('#ovlbar input[data-ovl]').forEach(cb=>cb.addEventListener('change',()=>{OVL[cb.dataset.ovl]=cb.checked;if(SEL){const c=CAMS.find(x=>x.camera_id===SEL);if(c&&isOn(c))$('feed').src=feedUrl(SEL);}}));
+
+// Zone polygons for the highlight overlay. The stream already draws every
+// zone; this only draws the ONE the operator was sent to, on top, so it is
+// findable among ten. Normalised to the source frame; the overlay <svg> is
+// fitted to the letterboxed image box on each draw.
+async function loadPolygons(cid){
+  if(POLY[cid])return;
+  try{
+    const j=await fetch(`${API}/api/v1/zones?camera_id=${encodeURIComponent(cid)}`).then(r=>r.json());
+    const c=CAMS.find(x=>x.camera_id===cid)||{}; const res=String(c.resolution||'').split('x').map(Number);
+    POLY[cid]=(j.zones||[]).map(z=>{
+      let pts=(z.normalized_polygon&&z.normalized_polygon.length)?z.normalized_polygon:null;
+      if(!pts&&z.polygon&&z.polygon.length&&res.length===2&&res[0]>0){ pts=z.polygon.map(([x,y])=>[x/res[0],y/res[1]]); }
+      return {zone_id:z.zone_id,pts:pts||[],restricted:!!z.restricted};});
+  }catch(e){POLY[cid]=[];}
+}
+function renderOverlay(){
+  const svg=$('ovl'); svg.innerHTML=''; if(!SEL||!HL)return;
+  const p=(POLY[SEL]||[]).find(z=>z.zone_id===HL); if(!p||p.pts.length<3)return;
+  const img=$('feed'); if(img.hidden||!img.naturalWidth)return;
+  // letterbox: where the image actually sits inside the 16:9 frame
+  const fw=img.clientWidth,fh=img.clientHeight,ar=img.naturalWidth/img.naturalHeight;
+  let w=fw,h=fw/ar,x0=0,y0=(fh-h)/2; if(h>fh){h=fh;w=fh*ar;x0=(fw-w)/2;y0=0;}
+  const pts=p.pts.map(([nx,ny])=>`${((x0+nx*w)/fw*1000).toFixed(1)},${((y0+ny*h)/fh*1000).toFixed(1)}`).join(' ');
+  const z=ZONES.find(zz=>zz.camera_id===SEL&&zz.zone_id===HL);
+  const cls=z?zstatus(z).toLowerCase():'normal';
+  svg.innerHTML=`<polygon points="${pts}" class="${cls}"/>`;
+}
+$('feed').addEventListener('load',renderOverlay); window.addEventListener('resize',renderOverlay);
+
+// ---- zones: this camera (cards) / all in scope (table) ----------------------------------
+function ppeLine(z){
+  const req=z.ppe_required; if(!Array.isArray(req)||!req.length)return '';
+  const ok=+z.ppe_compliant||0,na=+z.ppe_not_assessable||0,v=z.ppe_violations||{};
+  const parts=[`<span class="k">PPE</span>`,`<span class="ok">${ok} ok</span>`];
+  req.forEach(r=>{if(+v[r]>0)parts.push(`<span class="bad">${+v[r]} no ${esc(r.replace('_',' '))}</span>`);});
+  if(!Object.keys(v).length&&!na)parts.push('<span class="na">all compliant</span>');
+  if(na)parts.push(`<span class="na">${na} n/a</span>`);
+  return `<div class="ppe">${parts.join('')}</div>`;
+}
+function zcard(z){
+  const st=zstatus(z); const pill=st.toLowerCase();
+  const cap=Math.min(100,+z.capacity_pct||0);
+  const capMax=(z.capacity_max!=null)?z.capacity_max:((z.capacity_pct>0)?Math.round(100*(+z.occupancy||0)/(+z.capacity_pct)):'—');
+  return `<div class="zcard${HL===z.zone_id?' hl':''}" data-cam="${esc(z.camera_id)}" data-zone="${esc(z.zone_id)}"${st!=='NORMAL'?` data-status="${pill}"`:''}>
+    <div class="zh"><h3 title="${esc(z.zone_id)}">${esc(z.zone_name||z.zone_id)}</h3><span class="pill ${pill}">${st==='RESTRICTED'?'Intrusion':st}</span></div>
+    <div class="zbig"><span class="n fb-num">${+z.occupancy||0}</span><span class="of">/ ${capMax}</span></div>
+    <div class="zrow"><span class="fb-num">${(+z.density||0).toFixed(2)} /m²</span><span>${z.restricted?'no-go zone':cap.toFixed(0)+'% capacity'}</span></div>
+    <div class="meter" data-s="${z.restricted?'':String(z.status||'').toUpperCase()}"><span style="width:${cap}%"></span></div>
+    ${ppeLine(z)}</div>`;
+}
+function renderZones(){
+  if(TAB!=='cam')return;
+  const host=$('zones');
+  if(!SEL){host.innerHTML='<div class="empty">no camera selected</div>';return;}
+  const zs=camZones(SEL).slice().sort((a,b)=>zrank(b)-zrank(a)||String(a.zone_name||a.zone_id).localeCompare(String(b.zone_name||b.zone_id)));
+  host.innerHTML=zs.length?zs.map(zcard).join(''):'<div class="empty">this camera has no zones reporting — draw them in the zone editor</div>';
+}
+const COLS=[['status','Status'],['zone_name','Zone'],['camera_id','Camera'],['site','Branch'],['occupancy','Occ'],['capacity_pct','Cap %'],['density','/m²'],['trend','Trend']];
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{TAB=t.dataset.tab;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));$('paneCam').hidden=TAB!=='cam';$('paneAll').hidden=TAB!=='all';if(TAB==='cam')renderZones();else renderTable();}));
+function renderTable(){
+  const all=scoped(ZONES).filter(z=>matchQ(z.zone_name,z.zone_id,z.camera_id));
+  const counts={all:all.length,warning:all.filter(z=>zstatus(z)==='WARNING').length,critical:all.filter(z=>zstatus(z)==='CRITICAL').length,restricted:all.filter(z=>z.restricted).length,ppe:all.filter(z=>Array.isArray(z.ppe_required)&&z.ppe_required.length).length};
+  $('chips').innerHTML=[['all','All'],['critical','Critical'],['warning','Warning'],['restricted','Restricted'],['ppe','PPE zones']].map(([k,l])=>`<button class="chip${FILTER===k?' on':''}" data-f="${k}">${l} <b>${counts[k]}</b></button>`).join('');
+  $('chips').querySelectorAll('.chip').forEach(b=>b.addEventListener('click',()=>{FILTER=b.dataset.f;renderTable();}));
+  let rows=all.filter(z=>FILTER==='all'||(FILTER==='warning'&&zstatus(z)==='WARNING')||(FILTER==='critical'&&zstatus(z)==='CRITICAL')||(FILTER==='restricted'&&z.restricted)||(FILTER==='ppe'&&Array.isArray(z.ppe_required)&&z.ppe_required.length));
+  const val=z=>({status:zrank(z),zone_name:String(z.zone_name||z.zone_id),camera_id:String(z.camera_id),site:branchName(z.site_id),occupancy:+z.occupancy||0,capacity_pct:+z.capacity_pct||0,density:+z.density||0,trend:String(z.trend||'')}[SORT.k]);
+  rows.sort((a,b)=>{const x=val(a),y=val(b);return (typeof x==='number'?x-y:String(x).localeCompare(String(y)))*SORT.d||String(a.zone_id).localeCompare(String(b.zone_id));});
+  const TREND={rising:'▲',falling:'▼',flat:'▬'};
+  $('ztable').innerHTML=`<thead><tr>${COLS.map(([k,l])=>`<th data-k="${k}" class="${SORT.k===k?'on':''}">${l}${SORT.k===k?(SORT.d>0?' ↑':' ↓'):''}</th>`).join('')}</tr></thead><tbody>${
+    rows.length?rows.map(z=>{const st=zstatus(z);return `<tr data-cam="${esc(z.camera_id)}" data-zone="${esc(z.zone_id)}">
+      <td><span class="pill ${st.toLowerCase()}">${st==='RESTRICTED'?'Intrusion':st}</span></td>
+      <td class="nm">${esc(z.zone_name||z.zone_id)}</td><td>${esc(z.camera_id)}</td><td class="muted">${esc(branchName(z.site_id))}</td>
+      <td>${+z.occupancy||0}${z.capacity_max!=null?` <span class="muted">/ ${z.capacity_max}</span>`:''}</td><td>${(+z.capacity_pct||0).toFixed(0)}%</td><td>${(+z.density||0).toFixed(2)}</td><td>${TREND[z.trend]||'▬'}</td></tr>`;}).join('')
+    :`<tr><td colspan="8" class="muted">no zones match</td></tr>`}</tbody>`;
+  $('ztable').querySelectorAll('th').forEach(th=>th.addEventListener('click',()=>{const k=th.dataset.k;SORT=SORT.k===k?{k,d:-SORT.d}:{k,d:(k==='status'||k==='occupancy'||k==='density'||k==='capacity_pct')?-1:1};renderTable();}));
+}
+
+// ---- attention --------------------------------------------------------------------------
+function fmtT(ts){return ts?new Date(ts*1000).toLocaleTimeString('en-GB'):'';}
+function renderAttention(cams,zones,alerts){
+  const ah=$('alerts');
+  $('alertCount').textContent=alerts.length||'';
+  ah.innerHTML=alerts.length?alerts.map(a=>{
+    const sev=String(a.severity||'INFO').toUpperCase(), st=String(a.status||'OPEN').toUpperCase(), id=esc(a.alert_id), acked=st==='ACK';
+    return `<div class="alert" data-sev="${sev}" data-cam="${esc(a.camera_id||'')}" data-zone="${esc(a.zone_id||'')}">
+      <div class="body"><div class="top"><span class="rid">${esc(a.rule_id)} · ${esc(sev)}${acked?' · ACK':''}</span><span class="t fb-num">${fmtT(a.ts)}</span></div>
+      <p class="msg">${esc(a.message)}</p><div class="where">${esc(a.camera_id||'')}${a.zone_id?' · '+esc(a.zone_id):''}${a.site_id?' · '+esc(branchName(a.site_id)):''}</div></div>
+      <div class="actcol">${acked?'<span class="stbadge">Ack’d</span>':`<button class="ack" data-act="ack" data-id="${id}">Ack</button>`}
+        <button class="ack" data-act="resolve" data-id="${id}">Resolve</button><button class="ack" data-act="dismiss" data-id="${id}">Dismiss</button></div></div>`;}).join('')
+    :'<div class="empty">no active alerts</div>';
+  const bad=zones.filter(z=>zrank(z)>0).sort((a,b)=>zrank(b)-zrank(a)||(+b.density||0)-(+a.density||0));
+  $('badZoneCount').textContent=bad.length?`${bad.length} / ${zones.length}`:'';
+  $('badZones').innerHTML=bad.length?bad.map(z=>{const st=zstatus(z);return `<div class="zrowx" data-cam="${esc(z.camera_id)}" data-zone="${esc(z.zone_id)}"><span class="nm">${esc(z.zone_name||z.zone_id)}<small>${esc(z.camera_id)} · ${esc(branchName(z.site_id))}</small></span><span class="v">${+z.occupancy||0} · ${(+z.density||0).toFixed(2)}/m²</span><span class="pill ${st.toLowerCase()}">${st==='RESTRICTED'?'Intrusion':st}</span></div>`;}).join('')
+    :'<div class="empty">all zones calm</div>';
+  const down=cams.filter(c=>!isOn(c));
+  $('downCount').textContent=down.length||'';
+  $('downCams').innerHTML=down.length?down.map(c=>`<div class="camdown" data-cam="${esc(c.camera_id)}"><span>●</span><span>${esc(c.camera_id)}${c.name?' · '+esc(c.name):''}</span><span style="margin-left:auto;color:var(--fb-text-muted)">${esc(String(c.effective_state||'OFFLINE').toLowerCase())}${c.seconds_since_seen!=null?' · '+Math.round(c.seconds_since_seen)+'s':''}</span></div>`).join('')
+    :'<div class="empty">all cameras reporting</div>';
+  const n=alerts.length+bad.length+down.length; $('attnCount').textContent=n?`${n} items`:'';
+}
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-act]'); if(!b)return; e.stopPropagation();
+  const act=b.dataset.act,id=b.dataset.id;
+  try{
+    if(act==='ack'){await fetch(`${API}/api/v1/alerts/${id}/ack`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acknowledged_by:'operator'})});}
+    else{const action=act==='dismiss'?'DISMISSED':'RESOLVED';const note=prompt(`${action==='DISMISSED'?'Dismiss':'Resolve'} — optional note:`,'')||null;
+      await fetch(`${API}/api/v1/alerts/${id}/resolve`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,resolved_by:'operator',note})});}
+    poll();
+  }catch(err){}
+},true);
+
+// ---- apply a frame ---------------------------------------------------------------------------
+const SIG={nav:null,zones:null,attn:null};
+function renderAll(){
+  const cams=scoped(CAMS), zones=scoped(ZONES).slice().sort((a,b)=>String(a.camera_id).localeCompare(String(b.camera_id))||String(a.zone_id).localeCompare(String(b.zone_id))), alerts=scoped(ALERTS);
+  renderKpis(cams,zones,alerts);
+  const sn=JSON.stringify([SEL,Q,cams.map(c=>[c.camera_id,c.effective_state,c.people_in_view,c.site_id]),zones.map(z=>[z.camera_id,z.zone_id,zstatus(z)])]);
+  if(sn!==SIG.nav){SIG.nav=sn;renderNav(cams,zones);}
+  const sz=JSON.stringify([SEL,HL,TAB,FILTER,SORT,Q,zones.map(z=>[z.camera_id,z.zone_id,z.occupancy,z.density,z.status,z.capacity_pct,z.trend,z.ppe_compliant,z.ppe_non_compliant,z.ppe_not_assessable,JSON.stringify(z.ppe_violations||{})])]);
+  if(sz!==SIG.zones){SIG.zones=sz;if(TAB==='cam')renderZones();else renderTable();}
+  const sa=JSON.stringify([alerts.map(a=>[a.alert_id,a.status,a.severity,a.message]),zones.filter(z=>zrank(z)>0).map(z=>[z.camera_id,z.zone_id,z.occupancy,z.density,zstatus(z)]),cams.filter(c=>!isOn(c)).map(c=>[c.camera_id,c.effective_state,Math.round(c.seconds_since_seen||0)])]);
+  if(sa!==SIG.attn){SIG.attn=sa;renderAttention(cams,zones,alerts);}
+  const c=CAMS.find(x=>x.camera_id===SEL); if(c)renderFocusHead(c);
+  // auto-follow: a NEW alert (never seen this session) pulls the focus to it
+  if($('follow').checked&&seededAlerts){
+    const fresh=alerts.find(a=>!SEEN_ALERTS.has(String(a.alert_id))&&a.camera_id);
+    if(fresh)select(fresh.camera_id,fresh.zone_id||null);
+  }
+  alerts.forEach(a=>SEEN_ALERTS.add(String(a.alert_id))); seededAlerts=true;
+}
+function apply(d){
+  if(d.cameras)CAMS=d.cameras;
+  if(d.zones)ZONES=d.zones;
+  if(d.alerts)ALERTS=d.alerts;
+  renderAll();
+}
+
+// ---- transport: /ws with 5s REST fallback (same as dashboard.html) ----------------------------
+let ws=null,pollTimer=null,wsRetry=null,wsLastMsg=0;
+const setConn=(t,off)=>{const c=$('conn');c.innerHTML=`<span class="dot"></span> ${t}`;c.classList.toggle('off',!!off);};
+async function poll(){
+  try{
+    const [c,z,a]=await Promise.all([fetch(`${API}/api/v1/cameras`).then(r=>r.json()),fetch(`${API}/api/v1/zones/state?charts=0`).then(r=>r.json()),fetch(`${API}/api/v1/alerts`).then(r=>r.json())]);
+    apply({cameras:c.cameras,zones:z.zones,alerts:a.alerts}); if(!wsLive())setConn('rest · 5s');
+  }catch(e){setConn('offline',true);}
+}
+function startPoll(){if(pollTimer)return;poll();pollTimer=setInterval(poll,5000);}
+function stopPoll(){clearInterval(pollTimer);pollTimer=null;}
+const wsLive=()=>ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING);
+function scheduleReconnect(ms){if(wsRetry)return;wsRetry=setTimeout(()=>{wsRetry=null;connect();},ms);}
+function connect(){
+  if(wsLive())return;
+  try{
+    ws=new WebSocket(withKey(WS));
+    ws.onopen=()=>{setConn('websocket');stopPoll();wsLastMsg=Date.now();};
+    ws.onmessage=m=>{wsLastMsg=Date.now();try{apply(JSON.parse(m.data));}catch(e){}};
+    ws.onclose=()=>{setConn('rest · 5s');startPoll();scheduleReconnect(4000);};
+    ws.onerror=()=>{try{ws.close();}catch(e){}};
+  }catch(e){startPoll();scheduleReconnect(4000);}
+}
+setInterval(()=>{if(document.visibilityState!=='visible')return;if(!ws||ws.readyState!==WebSocket.OPEN)return;if(Date.now()-wsLastMsg<15000)return;try{ws.close();}catch(e){}},5000);
+function wakeUp(){if(document.visibilityState!=='visible')return;if(wsRetry){clearTimeout(wsRetry);wsRetry=null;}if(!wsLive())connect();poll();}
+document.addEventListener('visibilitychange',wakeUp);window.addEventListener('online',wakeUp);window.addEventListener('pageshow',wakeUp);
+setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);
+
+async function loadOrg(){
+  try{ORG=await fetch(`${API}/api/v1/org/index`).then(r=>r.json());}catch(e){ORG=null;}
+  const q=new URL(location.href).searchParams;
+  setScope(q.get('region')||SCOPE.region,q.get('city')||SCOPE.city,q.get('branch')||SCOPE.branch);
+}
+(async function init(){
+  await loadOrg();
+  await poll();
+  const q=new URL(location.href).searchParams;
+  const want=q.get('camera');
+  if(want&&CAMS.some(c=>c.camera_id===want)) select(want);
+  else { // first camera in scope, worst first — so the screen is never empty
+    const rows=document.querySelector('.camrow'); if(rows) select(rows.dataset.cam);
+  }
+  connect(); startPoll();
+  setInterval(loadOrg,30000);
+})();
+</script>
+<footer class="fb-footer">
+  <div class="fb-footer-build">FinBlade Crowd Analytics &middot; GPU inference &middot; air-gapped build</div>
+  <div>&copy; 2026 FinBladeAi. All Rights Reserved</div>
+</footer>
+</body>
+</html>

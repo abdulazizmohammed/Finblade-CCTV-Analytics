@@ -906,7 +906,7 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         samples=int(_at_cfg.get("samples", 3)),
         sample_interval_s=float(_at_cfg.get("sample_interval_seconds", 3.0)),
         stable_age_s=float(_at_cfg.get("stable_age_seconds", 2.0)),
-        min_confidence=float(_at_cfg.get("min_confidence", 0.45)),
+        min_confidence=_at_cfg.get("min_confidence", 0.45),    # float or per-attribute map
         budget_per_frame=int(_at_cfg.get("budget_per_frame", 4)),
         crop_fn=_attr_crop)
     attr_counter = [0]              # crops saved; a list so the closure can bump it

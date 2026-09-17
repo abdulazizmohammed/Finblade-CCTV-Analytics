@@ -208,11 +208,29 @@ class Tags:
     crop: object = None                 # the best crop's pixels, if a crop_fn was given
 
 
+def confidence_floors(min_confidence, attrs: Sequence[str]) -> Dict[str, float]:
+    """Per-attribute floors from a config value that is either one number or
+    a mapping {default: x, <attr>: y}.
+
+    One floor cannot serve every attribute: 0.45 is a clear winner among 12
+    colours (chance 0.08) but can never bite on a two-label attribute such as
+    mask, whose winner is always >= 0.5 — so mask got a confident-looking
+    answer every time and was wrong in both directions on real footage.
+    A per-attribute floor (mask: 0.85) lets it say "unknown" instead."""
+    if isinstance(min_confidence, dict):
+        default = float(min_confidence.get("default", DEFAULT_MIN_CONFIDENCE))
+        return {a: float(min_confidence.get(a, default)) for a in attrs}
+    return {a: float(min_confidence) for a in attrs}
+
+
 def vote(samples: Sequence[Dict[str, Dict[str, float]]], attrs: Sequence[str],
-         min_confidence: float) -> Tuple[Dict[str, str], Dict[str, float]]:
+         min_confidence) -> Tuple[Dict[str, str], Dict[str, float]]:
     """Majority per attribute across samples; ties broken by summed
     probability; the winner's mean probability is its confidence, and a
-    winner below min_confidence is reported as unknown."""
+    winner below that attribute's floor is reported as unknown.
+    `min_confidence` is a float or a per-attribute mapping (see
+    confidence_floors)."""
+    floors = confidence_floors(min_confidence, attrs)
     labels: Dict[str, str] = {}
     conf: Dict[str, float] = {}
     for attr in attrs:
@@ -233,7 +251,7 @@ def vote(samples: Sequence[Dict[str, Dict[str, float]]], attrs: Sequence[str],
             continue
         winner = max(votes, key=lambda lab: (votes[lab], prob_sum.get(lab, 0.0)))
         c = prob_sum.get(winner, 0.0) / n
-        if c < min_confidence:
+        if c < floors[attr]:
             labels[attr], conf[attr] = "unknown", round(c, 3)
         else:
             labels[attr], conf[attr] = winner, round(c, 3)
@@ -253,7 +271,7 @@ class AttributeSampler:
                  samples: int = DEFAULT_SAMPLES,
                  sample_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
                  stable_age_s: float = DEFAULT_STABLE_AGE_S,
-                 min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+                 min_confidence=DEFAULT_MIN_CONFIDENCE,
                  budget_per_frame: int = 4, crop_fn=None):
         self.vocab = vocab
         self.scorer = scorer
@@ -262,7 +280,9 @@ class AttributeSampler:
         self.samples = max(1, int(samples))
         self.interval = float(sample_interval_s)
         self.stable_age = float(stable_age_s)
-        self.min_confidence = float(min_confidence)
+        # A float, or {default: x, <attr>: y} — resolved per attribute at vote time.
+        self.min_confidence = (dict(min_confidence) if isinstance(min_confidence, dict)
+                               else float(min_confidence))
         self.budget = max(1, int(budget_per_frame))
         self._tracks: Dict[int, TrackSamples] = {}
         self.stats = {"scored": 0, "emitted": 0, "gated_out": 0, "unknown_attrs": 0}

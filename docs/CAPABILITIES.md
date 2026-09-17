@@ -208,6 +208,7 @@ names; search is a query over an indexed table, never a scan of frames.
 |---|---|---|
 | Per-track appearance tags: upper/lower colour, headwear, mask, bag, outerwear — CLIP zero-shot on a few crops per track, voted, "unknown" below a confidence floor | **Runs** — see below | `finblade/attributes.py`, `services/inference/attr_client.py`, `attributes:` block in the camera config (off by default; on in the template) |
 | Each attribute judged on its own region of the person (head band, torso, legs) with prompt ensembles per label | Built | `attributes.DEFAULT_REGIONS`, `attr_client.score` |
+| Per-attribute confidence floors: `min_confidence` is a number or `{default: 0.45, mask: 0.85}`; a two-label attribute's winner is always ≥ 0.5, so the shared floor never filtered mask | Built | `attributes.confidence_floors`, `vote`; template ships `mask: 0.85` |
 | `PERSON_ATTRIBUTES` event per track with a saved crop for human confirmation | Built | `events.py`; crops under `evidence/bookmarks/attr_*.jpg`, same retention as other bookmarks |
 | `person_sightings` table, indexed on time and the six attributes; retention-pruned | Built | `ddl_pg.sql`, both stores |
 | `GET /api/v1/search/people` — grouped by person (cross-camera ref) with a timeline and crop per sighting; Region/City/Branch scope; full key only; every search audited (`search_audit`); no attribute = everyone tagged in the window | Built | `service.find_people`, `app.py`; `GET /search/people/{global_ref}`, `/search/audit`, `/search/vocabulary` |

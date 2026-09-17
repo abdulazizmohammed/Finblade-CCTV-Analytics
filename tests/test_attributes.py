@@ -123,6 +123,25 @@ class TestVote(unittest.TestCase):
         self.assertEqual(("yes", "unknown"), (labels["mask"], labels["bag"]))
         self.assertEqual(0.0, conf["bag"])
 
+    def test_per_attribute_floor(self):
+        # A single 0.45 floor can never bite on a two-label attribute: mask's
+        # winner is always >= 0.5. With {mask: 0.85} a 0.7 mask is unknown
+        # while a 0.7 colour (a clear winner among 12) still stands.
+        s = [{"mask": {"yes": 0.7, "no": 0.3}, "upper_colour": dist(upper_colour=("blue", 0.7))["upper_colour"]}]
+        labels, conf = A.vote(s, ["mask", "upper_colour"], {"default": 0.45, "mask": 0.85})
+        self.assertEqual(("unknown", "blue"), (labels["mask"], labels["upper_colour"]))
+        self.assertEqual(0.7, conf["mask"])
+        labels, _ = A.vote([{"mask": {"yes": 0.9, "no": 0.1}}], ["mask"], {"default": 0.45, "mask": 0.85})
+        self.assertEqual("yes", labels["mask"])
+        # a bare float still applies to everything; a map without default uses 0.45
+        self.assertEqual({"mask": 0.85, "bag": 0.45}, A.confidence_floors({"mask": 0.85}, ["mask", "bag"]))
+        self.assertEqual({"mask": 0.6, "bag": 0.6}, A.confidence_floors(0.6, ["mask", "bag"]))
+        # and the sampler carries the map through to its votes
+        sam = A.AttributeSampler(A.Vocabulary(A.DEFAULT_VOCABULARY), lambda f, b: [{"mask": {"yes": 0.7, "no": 0.3}}],
+                                 gate=None, samples=1, stable_age_s=0, min_confidence={"default": 0.45, "mask": 0.85})
+        tags = sam.observe(None, [(1, 0, 0, 50, 200)], {1: 0.9}, now=10.0, frame_w=640, frame_h=480)
+        self.assertEqual("unknown", tags[0].attributes["mask"])
+
 
 # --------------------------------------------------------------- sampling --
 class TestSampler(unittest.TestCase):

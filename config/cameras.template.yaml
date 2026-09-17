@@ -313,7 +313,16 @@ attributes:
   samples: 3                   # crops voted per track
   sample_interval_seconds: 3.0 # spacing between those crops
   stable_age_seconds: 2.0      # a track must exist this long before its first sample
-  min_confidence: 0.45         # below this an attribute is "unknown", not a guess
+  # Below its floor an attribute is "unknown", not a guess. One number is not
+  # enough: 0.45 is a clear winner among 12 colours (chance 0.08) but can never
+  # bite on a two-label attribute — mask's winner is always >= 0.5 — so mask
+  # got a confident-looking answer every time, and on real footage it was
+  # wrong both ways (phantom masks on the factory clip, a real surgical mask
+  # missed on the lab clip). Per-attribute floors: mask must be near-certain
+  # or say "unknown"; the R-11 PPE detector is the right source for masks.
+  min_confidence:
+    default: 0.45
+    mask: 0.85
   min_crop_height: 96          # same floor as ReID, same reason
   min_crop_confidence: 0.5
   budget_per_frame: 4          # at most this many crops scored on one frame

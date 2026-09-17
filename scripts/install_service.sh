@@ -116,7 +116,8 @@ fi
 # you rotate it later without hand-editing .env.
 for var in FINBLADE_API_KEY FINBLADE_INTEGRATION_KEY FINBLADE_SITE_ID \
            FINBLADE_PORT FINBLADE_URL FINBLADE_OUTBOUND_KEY \
-           FINBLADE_AUTOSTART_CAMERAS FINBLADE_STREAM_HOST; do
+           FINBLADE_AUTOSTART_CAMERAS FINBLADE_STREAM_HOST \
+           FINBLADE_MCP_TOKEN FINBLADE_MCP_PORT FINBLADE_MCP_SEARCH_KEY; do
   value="${!var-}"
   if [ -n "$value" ]; then
     set_env "$var" "$value"
@@ -150,6 +151,29 @@ sleep 3
 echo
 systemctl --no-pager --lines=0 status finblade-api || true
 
+# ---------------------------------------------------------------- MCP unit ---
+# The chatbot's MCP server (docs/MCP.md) is installed only once .env carries
+# FINBLADE_MCP_TOKEN: without a token the endpoint is open, and a unit that
+# starts an open endpoint on boot is not something to install by accident.
+MCP_UNIT=/etc/systemd/system/finblade-mcp.service
+if grep -q '^FINBLADE_MCP_TOKEN=.\+' "$REPO/.env"; then
+  grep -q '^FINBLADE_MCP_PORT=' "$REPO/.env" || echo "FINBLADE_MCP_PORT=8010" >> "$REPO/.env"
+  echo "== installing $MCP_UNIT =="
+  sed -e "s|__REPO__|$REPO|g" -e "s|__USER__|$OWNER|g" \
+      "$REPO/deploy/finblade-mcp.service" > "$MCP_UNIT"
+  chmod 644 "$MCP_UNIT"
+  # The nohup copy from scripts/start_mcp.sh, if one is running, holds the port.
+  pkill -u "$OWNER" -f 'services.mcp.server' 2>/dev/null || true
+  systemctl daemon-reload
+  systemctl enable finblade-mcp >/dev/null
+  systemctl restart finblade-mcp
+  sleep 2
+  systemctl --no-pager --lines=0 status finblade-mcp || true
+  MCP_LINE="  mcp       sudo systemctl status finblade-mcp   (journalctl -u finblade-mcp -f)"
+else
+  MCP_LINE="  mcp       not installed: no FINBLADE_MCP_TOKEN in .env (see docs/MCP.md)"
+fi
+
 cat <<EOF
 
 Installed and running as $OWNER, from $REPO.
@@ -159,6 +183,7 @@ Installed and running as $OWNER, from $REPO.
   restart   sudo systemctl restart finblade-api
   stop      sudo systemctl stop finblade-api
   disable   sudo systemctl disable --now finblade-api
+$MCP_LINE
 
 It now starts on boot and restarts on crash, and survives you closing SSH.
 

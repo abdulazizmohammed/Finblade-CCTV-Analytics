@@ -605,6 +605,7 @@ where cumulative footfall has no liveness problem.
 | **MCP server** — 35 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track + arrivals + at-branch; find_people + person_timeline (appearance search); health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
 | MCP resources `finblade://data-notes` `finblade://rules` `finblade://capabilities` and the `cctv_analyst` prompt | Built | `services/mcp/server.py` |
 | Bearer-token gate on the MCP transport (`FINBLADE_MCP_TOKEN`); the server itself uses the integration key, so it is read-only except alert ack/resolve | Built | `make_app` in `server.py`; tested over the real transport in `tests/test_mcp_server.py` |
+| Appearance search from the chatbot needs the full key: optional `FINBLADE_MCP_SEARCH_KEY` is sent on `/api/v1/search/*` only, everything else keeps the integration scope; unset, the tools return the API's 403 | Built | `Backend.get` in `services/mcp/server.py`; `docs/MCP.md` §1 |
 | **Outbound webhooks** — subscriptions (URL, secret, events, severities, rules, Region/City/Branch scope, extra headers) that receive a signed JSON POST on `alert.raised` / `cleared` / `acknowledged` / `resolved` and `tracker.arrived` / `departed`, with branch/camera/zone context and action links | Built | `finblade/webhooks.py`, `services/api/webhooks.py`, `docs/WEBHOOKS.md` |
 | Durable delivery queue in the database; backoff 5 s → 1 h over 8 attempts (~3 h), 4xx final, identical body on retry, manual retry | Built | `webhook_deliveries` table, `WebhookDispatcher.tick` on a 3 s loop in `app.py` |
 | HMAC-SHA256 signature `t=<epoch>,v1=<hex>` over `"<t>.<body>"` with a 5-minute replay window; `verify()` for Python receivers | Built | `finblade/webhooks.py` `sign` / `verify` |
@@ -615,6 +616,7 @@ where cumulative footfall has no liveness problem.
 | Capability | Status | Implementation |
 |---|---|---|
 | API as a systemd service, restart on crash, start on boot | Built | `deploy/finblade-api.service`, `scripts/install_service.sh` |
+| MCP server as a systemd service, installed by the same script once `.env` has `FINBLADE_MCP_TOKEN` (never an open endpoint on boot) | Built | `deploy/finblade-mcp.service`, `scripts/install_service.sh` |
 | Dev Postgres as a systemd service, ordered before the API | Built | `deploy/finblade-postgres.service`, `scripts/install_pg_service.sh` |
 | Camera pipeline autostart after an API restart | Built | `FINBLADE_AUTOSTART_CAMERAS` |
 | Server-side camera-offline monitor | Built | `app.py` `_offline_monitor` |

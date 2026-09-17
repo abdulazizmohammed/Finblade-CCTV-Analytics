@@ -62,13 +62,21 @@ class Backend:
         import requests
         self.base = base_url.rstrip("/")
         self.key = api_key or os.environ.get("CCTV_API_KEY") or os.environ.get("FINBLADE_INTEGRATION_KEY")
+        # Appearance search is full-key only on the API. The integration key
+        # this server normally holds gets a 403 there, surfaced as the tool
+        # error. FINBLADE_MCP_SEARCH_KEY (the full key) is sent on the
+        # /api/v1/search/* routes ONLY, so enabling the chatbot's search does
+        # not widen what every other tool can do.
+        self.search_key = os.environ.get("FINBLADE_MCP_SEARCH_KEY") or None
         self.timeout = timeout
         self._s = requests.Session()
         if self.key:
             self._s.headers["Authorization"] = f"Bearer {self.key}"
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        r = self._s.get(self.base + path, params=_clean(params), timeout=self.timeout)
+        h = {"Authorization": f"Bearer {self.search_key}"} \
+            if self.search_key and path.startswith("/api/v1/search/") else None
+        r = self._s.get(self.base + path, params=_clean(params), timeout=self.timeout, headers=h)
         return _decode(r.status_code, r.headers.get("content-type", ""), r.content)
 
     def post(self, path: str, body: Optional[Dict[str, Any]] = None) -> Any:

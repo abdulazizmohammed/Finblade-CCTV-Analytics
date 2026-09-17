@@ -41,9 +41,22 @@ CCTV_API_KEY=<integration key>         # only if the API has FINBLADE_API_KEY se
 `scripts/start_mcp.sh` does the same with the values from `.env`.
 `--stdio` serves over stdio for a local desktop client instead.
 
+**As a service** (survives reboot, like the API): put `FINBLADE_MCP_TOKEN`
+in `.env` and run `sudo bash scripts/install_service.sh` — it installs
+`finblade-mcp.service` beside `finblade-api.service` when the token is
+present. `sudo systemctl restart finblade-mcp`, `journalctl -u finblade-mcp -f`.
+
 Without `FINBLADE_MCP_TOKEN` the endpoint is **open** (a warning is printed) —
 same posture as the API with no key. Set it on anything reachable beyond the
 host.
+
+**Appearance search from the chatbot.** `find_people` / `person_timeline` are
+full-key routes on the API; with the integration key the server normally
+holds they return the API's 403 as the tool error. To enable them set
+`FINBLADE_MCP_SEARCH_KEY=<the full FINBLADE_API_KEY>` in `.env` — it is sent
+on `/api/v1/search/*` **only**; every other tool keeps the integration key's
+read-only scope. This is an operator decision: it lets anyone who can reach
+the chatbot run description searches, each of which is audited.
 
 ## 2. Connect
 

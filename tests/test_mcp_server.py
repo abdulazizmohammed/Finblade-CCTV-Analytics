@@ -321,5 +321,50 @@ class TestTransport(unittest.TestCase):
             self.assertEqual(200, r.status_code, r.text)
 
 
+class TestSearchKey(unittest.TestCase):
+    """FINBLADE_MCP_SEARCH_KEY goes on /api/v1/search/* only. The HTTP Backend
+    is exercised against a stand-in session so no server is needed."""
+
+    def _backend(self, env):
+        from services.mcp.server import Backend
+        saved = {k: os.environ.get(k) for k in ("FINBLADE_MCP_SEARCH_KEY", "CCTV_API_KEY")}
+        for k in saved:
+            os.environ.pop(k, None)
+        os.environ.update(env)
+        try:
+            b = Backend("http://api.test", api_key="integ")
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+        seen = []
+
+        class R:
+            status_code, headers, content = 200, {"content-type": "application/json"}, b"{}"
+
+        def fake_get(url, params=None, timeout=None, headers=None):
+            seen.append((url, headers))
+            return R()
+        b._s.get = fake_get
+        return b, seen
+
+    def test_search_key_only_on_search_routes(self):
+        b, seen = self._backend({"FINBLADE_MCP_SEARCH_KEY": "fullkey"})
+        b.get("/api/v1/search/people", {"upper_colour": "blue"})
+        b.get("/api/v1/search/people/gp_1", {"hours": 1})
+        b.get("/api/v1/cameras")
+        self.assertEqual("Bearer integ", b._s.headers["Authorization"])
+        self.assertEqual({"Authorization": "Bearer fullkey"}, seen[0][1])
+        self.assertEqual({"Authorization": "Bearer fullkey"}, seen[1][1])
+        self.assertIsNone(seen[2][1])          # the session's integration key applies
+
+    def test_no_search_key_means_integration_key_everywhere(self):
+        b, seen = self._backend({})
+        b.get("/api/v1/search/people", {"upper_colour": "blue"})
+        self.assertIsNone(b.search_key)
+        self.assertIsNone(seen[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()

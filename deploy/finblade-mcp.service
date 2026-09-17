@@ -1,0 +1,31 @@
+[Unit]
+Description=FinBlade CCTV MCP server (chatbot tools)
+Documentation=file://__REPO__/docs/MCP.md
+After=network-online.target finblade-api.service
+Wants=network-online.target
+# Wants, not Requires: the MCP server only needs the API at call time and
+# returns a clear tool error while the API is restarting.
+Wants=finblade-api.service
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO__
+
+# FINBLADE_MCP_TOKEN, FINBLADE_INTEGRATION_KEY and the optional
+# FINBLADE_MCP_SEARCH_KEY come from here, never from this world-readable unit.
+EnvironmentFile=__REPO__/.env
+
+ExecStart=__REPO__/.venv/bin/python -m services.mcp.server --port ${FINBLADE_MCP_PORT}
+
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=finblade-mcp
+
+[Install]
+WantedBy=multi-user.target

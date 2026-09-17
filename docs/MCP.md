@@ -119,6 +119,7 @@ Time windows: `hours` back from now, or `from_ts` / `to_ts` epoch seconds UTC.
 | Summing camera counts = people | `areas_live` and `summary.people_in_zones` are distinct-person; `people_in_view` says "may double count" |
 | A tracker is a driver | it is a vehicle or asset; no driver field exists anywhere |
 | An appearance match identifies someone | `find_people` returns candidates matching a clothing description, never an identity; the tool description forbids gender/age/ethnicity and tells the model to say "matches the description" |
+| A colour tag is the colour | it is what CLIP read off a CCTV crop (a white shirt was stored as grey); `find_people` also returns look-alike colours as `match: near`, and the description tells the model to report those as "possibly, tagged as grey" |
 | R-10 / R-11 are verdicts | they are evaluation models; the rule reference says so |
 
 ## 5. Security

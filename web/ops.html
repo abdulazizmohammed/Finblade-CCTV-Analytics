@@ -172,6 +172,9 @@ table.zt td.muted{color:var(--fb-text-faint);}
 .hit .tl span:hover{border-color:var(--fb-teal);color:var(--fb-teal);}
 .hit .tl span.more{color:var(--fb-text-faint);cursor:default;}
 .hit .unres{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--fb-warning);margin-left:6px;}
+/* A near hit: the tagger stored a look-alike colour (white ↔ grey). Muted, not
+   a warning — it is a maybe, and the crop decides. */
+.hit .near{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--fb-text-muted);border:1px solid var(--fb-line);border-radius:3px;padding:1px 5px;margin-left:6px;}
 
 /* attention */
 .attn .sec{margin-bottom:14px;}
@@ -288,7 +291,7 @@ table.zt td.muted{color:var(--fb-text-faint);}
                vocabulary. Results are candidates with a crop each, for a
                person to confirm. Never gender, age or ethnicity. -->
           <div class="findbar" id="findbar"></div>
-          <div class="findmeta" id="findmeta">Pick one or more attributes and search. Results are people matching the description in the window, grouped by person — candidates for you to confirm from the crops, not identifications.</div>
+          <div class="findmeta" id="findmeta">Pick attributes and search (none = everyone tagged in the window). Results are grouped by person — candidates for you to confirm from the crops, not identifications. A colour also matches its look-alikes (white ↔ grey), marked "near".</div>
           <div class="hits" id="hits"></div>
         </div>
       </div>
@@ -571,20 +574,25 @@ async function initFind(){
 async function runFind(){
   const q=new URLSearchParams();
   document.querySelectorAll('#findbar select[data-attr]').forEach(s=>{if(s.value)q.set(s.dataset.attr,s.value);});
-  if(![...q.keys()].length){$('findmeta').textContent='Pick at least one attribute.';return;}
+  // No attribute at all is a valid question — "everyone tagged in the window" —
+  // and the quickest way to see what the tagger is producing on a new camera.
+  const anyAttr=[...q.keys()].length>0;
   q.set('hours',$('fa_hours').value);
   ['region','city','branch'].forEach(k=>{if(SCOPE[k])q.set(k+'_id',SCOPE[k]);});
   $('findmeta').textContent='searching…';
   let r;
   try{const resp=await fetch(`${API}/api/v1/search/people?${q}`); if(resp.status===403){$('findmeta').textContent='Appearance search needs the full API key.';return;} r=await resp.json();}
   catch(e){$('findmeta').textContent='search failed — API offline?';return;}
-  $('findmeta').textContent=`${r.count} ${r.count===1?'person':'people'} matching · ${r.sightings} sighting${r.sightings===1?'':'s'} · last ${$('fa_hours').value} h · ${SCOPE.sites?'in scope':'whole network'}. Candidates only — confirm from the crop.`;
+  const nearN=r.count-(r.exact||0);
+  const nearNote=anyAttr&&nearN>0?` (${r.exact||0} exact, ${nearN} near — a look-alike colour, e.g. white tagged as grey)`:'';
+  $('findmeta').textContent=`${r.count} ${r.count===1?'person':'people'} ${anyAttr?'matching':'tagged'}${nearNote} · ${r.sightings} sighting${r.sightings===1?'':'s'} · last ${$('fa_hours').value} h · ${SCOPE.sites?'in scope':'whole network'}. Candidates only — confirm from the crop.`;
   const fmt=ts=>new Date(ts*1000).toLocaleTimeString('en-GB');
   $('hits').innerHTML=r.people.length?r.people.map(p=>{
     const s0=p.sightings[p.sightings.length-1]||{};
     const crop=s0.frame?`<img src="${esc(withKey(API+s0.frame))}" alt="" loading="lazy">`:`<div class="nocrop">no crop saved</div>`;
     const tl=p.sightings.slice(-8).map(s=>`<span data-cam="${esc(s.camera_id)}" data-zone="${esc(s.zone_id||'')}" title="${esc(s.description||'')}">${esc(fmt(s.ts))} · ${esc(s.camera_id)}${s.zone_id?' · '+esc(s.zone_id):''}</span>`).join('')+(p.sightings.length>8?`<span class="more">+${p.sightings.length-8} more</span>`:'');
-    return `<div class="hit">${crop}<div><div class="desc">${esc(p.description||'no attributes determined')}${p.resolved?'':'<span class="unres">single camera · unresolved</span>'}</div>
+    const near=anyAttr&&p.match==='near'?'<span class="near" title="the tagger stored a look-alike colour; check the crop">near match</span>':'';
+    return `<div class="hit">${crop}<div><div class="desc">${esc(p.description||'no attributes determined')}${near}${p.resolved?'':'<span class="unres">single camera · unresolved</span>'}</div>
       <div class="when">${esc(fmt(p.first_seen))} → ${esc(fmt(p.last_seen))} · ${p.cameras.map(esc).join(', ')}${p.sites.length?' · '+p.sites.map(esc).join(', '):''}</div>
       <div class="tl">${tl}</div></div></div>`;}).join('')
     :'<div class="empty">nobody matching that description in the window</div>';

@@ -767,7 +767,10 @@ class InMemoryStore(Store):
             ok = True
             for k, v in filters.items():
                 have = s.get(k) if k in self.SIGHTING_ATTRS else (s.get("extra") or {}).get(k)
-                if have != v:
+                # A value may be one label or a tuple of acceptable labels
+                # (exact plus near colours); membership either way.
+                accept = v if isinstance(v, (list, tuple, set)) else (v,)
+                if have not in accept:
                     ok = False
                     break
             if ok:

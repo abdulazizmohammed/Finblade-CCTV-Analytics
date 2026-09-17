@@ -589,6 +589,9 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
         "person with a timeline of sightings (camera, zone, time) and a crop per "
         "sighting; they are CANDIDATES for a human to confirm — colour under lab "
         "lighting is unreliable, so say 'matches the description' not 'found'. "
+        "A colour also matches its look-alikes (white~grey/beige, black~grey/navy, "
+        "red~pink/orange …): each hit is `match: exact` or `near` — report near "
+        "hits as 'possibly, tagged as grey'. Pass near=false for exact only. "
         "Never infer or report gender, age or ethnicity. Window by hours or "
         "from_ts/to_ts. Every search is audited. " + _SCOPE_DOC))
     def find_people(upper_colour: Optional[str] = None, lower_colour: Optional[str] = None,
@@ -597,10 +600,12 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
                     hours: Optional[float] = None, from_ts: Optional[float] = None,
                     to_ts: Optional[float] = None, camera_id: Optional[str] = None,
                     region_id: Optional[str] = None, city_id: Optional[str] = None,
-                    branch_id: Optional[str] = None, limit: int = 200) -> dict:
+                    branch_id: Optional[str] = None, limit: int = 200,
+                    near: bool = True) -> dict:
         p = dict(_window(hours, from_ts, to_ts, 2.0), **_scope(region_id, city_id, branch_id),
                  upper_colour=upper_colour, lower_colour=lower_colour, headwear=headwear,
-                 mask=mask, bag=bag, outerwear=outerwear, camera_id=camera_id, limit=limit)
+                 mask=mask, bag=bag, outerwear=outerwear, camera_id=camera_id, limit=limit,
+                 near=1 if near else 0)
         return _ok(backend.get("/api/v1/search/people", p))
 
     @s.tool(description=(

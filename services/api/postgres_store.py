@@ -1046,11 +1046,13 @@ class PostgresStore(Store):
         for k, v in (filters or {}).items():
             if not v:
                 continue
+            # One label, or a tuple of acceptable labels (exact + near colours).
+            accept = [str(x) for x in (v if isinstance(v, (list, tuple, set)) else (v,))]
             if k in self.SIGHTING_ATTRS:
-                where.append(f"{k}=%s"); params.append(str(v))
+                where.append(f"{k} = ANY(%s)"); params.append(accept)
             else:
                 # Attributes outside the six columns live in the JSON blob.
-                where.append("(extra::jsonb ->> %s)=%s"); params += [str(k), str(v)]
+                where.append("(extra::jsonb ->> %s) = ANY(%s)"); params += [str(k), accept]
         if site_ids is not None:
             if not site_ids:
                 return []

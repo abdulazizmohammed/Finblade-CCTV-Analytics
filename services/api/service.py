@@ -1248,7 +1248,8 @@ class IngestService:
         self.store.save_sighting(row)
 
     def find_people(self, filters: dict, t0: float, t1: float, site_ids=None,
-                    camera_id: str = None, actor: str = "api", limit: int = 500) -> dict:
+                    camera_id: str = None, actor: str = "api", limit: int = 500,
+                    near: bool = True) -> dict:
         """Sightings matching a description, GROUPED BY PERSON.
 
         A person seen on three cameras is one result with a timeline, because
@@ -1256,35 +1257,56 @@ class IngestService:
         for one person reads as three people. Unresolved sightings (no
         global_ref) stay separate: merging them would be a guess. Every call
         is written to the audit table; this is an incident tool.
+
+        With `near` (the default) a colour also matches its confusable
+        neighbours (finblade.attributes.NEAR_COLOURS): "white" finds the
+        person the tagger stored as "grey". Exact hits rank first and every
+        hit says which it is, so the operator can tell a match from a maybe.
         """
+        from finblade.attributes import near_labels
         filters = {k: str(v) for k, v in (filters or {}).items() if v}
-        rows = self.store.search_sightings(t0, t1, filters=filters, site_ids=site_ids,
+        accept = {k: (near_labels(k, v) if near else (v,)) for k, v in filters.items()}
+        rows = self.store.search_sightings(t0, t1, filters=accept, site_ids=site_ids,
                                            camera_id=camera_id, limit=limit)
+        attr_cols = set(self.SIGHTING_ATTRS)
+
+        def _match(r: dict) -> str:
+            for k, v in filters.items():
+                have = r.get(k) if k in attr_cols else (r.get("extra") or {}).get(k)
+                if have != v:
+                    return "near"
+            return "exact"
+
         groups: Dict[str, dict] = {}
         for r in rows:
             key = r.get("global_ref") or f"{r.get('camera_id')}:{r.get('person_ref')}"
             g = groups.setdefault(key, {"person": key, "resolved": bool(r.get("global_ref")),
-                                        "description": r.get("description"),
+                                        "description": r.get("description"), "match": "near",
                                         "first_seen": r["ts"], "last_seen": r["ts"],
                                         "cameras": set(), "sites": set(), "sightings": []})
             g["first_seen"] = min(g["first_seen"], r["ts"]); g["last_seen"] = max(g["last_seen"], r["ts"])
             g["cameras"].add(r.get("camera_id")); g["sites"].add(r.get("site_id"))
-            g["sightings"].append({k: r.get(k) for k in ("ts", "site_id", "camera_id", "zone_id",
-                                                          "description", "frame", "confidences",
-                                                          "samples")})
+            m = _match(r)
+            if m == "exact":
+                g["match"] = "exact"
+            g["sightings"].append(dict({k: r.get(k) for k in ("ts", "site_id", "camera_id", "zone_id",
+                                                               "description", "frame", "confidences",
+                                                               "samples")}, match=m))
         out = []
         for g in groups.values():
             g["cameras"] = sorted(c for c in g["cameras"] if c)
             g["sites"] = sorted(s for s in g["sites"] if s)
             g["sightings"].sort(key=lambda s: s["ts"])
             out.append(g)
-        out.sort(key=lambda g: g["last_seen"], reverse=True)
+        out.sort(key=lambda g: (g["match"] != "exact", -g["last_seen"]))
         self.store.record_search(actor, dict(filters, **{"from": t0, "to": t1,
                                                           "site_ids": sorted(site_ids) if site_ids else None,
-                                                          "camera_id": camera_id}),
+                                                          "camera_id": camera_id, "near": bool(near)}),
                                  len(out), time.time())
+        expanded = {k: list(v[1:]) for k, v in accept.items() if len(v) > 1}
         return {"people": out, "count": len(out), "sightings": len(rows),
-                "filters": filters, "from": t0, "to": t1}
+                "exact": sum(1 for g in out if g["match"] == "exact"),
+                "filters": filters, "near_colours": expanded, "from": t0, "to": t1}
 
     # -- outbound webhooks (finblade/webhooks.py) --
     def save_webhook(self, payload: dict, existing_id: str = None) -> Tuple[int, dict]:

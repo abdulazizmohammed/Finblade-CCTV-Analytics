@@ -217,6 +217,16 @@ class SightingContract:
         self.assertEqual({"upper_colour": 0.8}, hits[0]["confidences"])
         self.assertEqual(["ev-1"], [h["event_id"] for h in self.store.sightings_of("gp_1", T0 - 1, T0 + 999)])
 
+    def test_a_filter_may_list_acceptable_labels(self):
+        self.store.save_sighting(sighting())                                              # blue
+        self.store.save_sighting(sighting(event_id="ev-2", ts=T0 + 60, upper_colour="grey", global_ref="gp_2"))
+        self.store.save_sighting(sighting(event_id="ev-3", ts=T0 + 120, upper_colour="white", global_ref="gp_3"))
+        hits = self.store.search_sightings(T0 - 1, T0 + 999, filters={"upper_colour": ("white", "grey")})
+        self.assertEqual(["ev-3", "ev-2"], [h["event_id"] for h in hits])
+        self.store.save_sighting(sighting(event_id="ev-4", ts=T0 + 180, extra={"item": "clipboard"}))
+        self.assertEqual(["ev-4"], [h["event_id"] for h in self.store.search_sightings(
+            T0 - 1, T0 + 999, filters={"item": ["clipboard", "folder"]})])
+
     def test_extra_attributes_and_audit(self):
         self.store.save_sighting(sighting(extra={"item": "clipboard"}))
         self.assertEqual(1, len(self.store.search_sightings(T0 - 1, T0 + 1, filters={"item": "clipboard"})))
@@ -280,6 +290,30 @@ class TestService(unittest.TestCase):
         self.assertEqual(0, self.svc.find_people({"upper_colour": "blue"}, T0 - 1, T0 + 9999,
                                                   site_ids={"JED-01"})["count"])
 
+    def test_near_colours_rank_behind_exact_and_are_labelled(self):
+        # The Wareed instance stored a white shirt as "grey" (0.55); an exact
+        # search for white returned nothing. Near colours make it a maybe.
+        self.tag("CAM-1", T0, gref="gp_grey", upper_colour="grey")
+        self.tag("CAM-1", T0 + 100, gref="gp_white", upper_colour="white")
+        self.tag("CAM-1", T0 + 200, gref="gp_red", upper_colour="red")
+        r = self.svc.find_people({"upper_colour": "white"}, T0 - 1, T0 + 9999)
+        self.assertEqual(["gp_white", "gp_grey"], [p["person"] for p in r["people"]], "exact first")
+        self.assertEqual(["exact", "near"], [p["match"] for p in r["people"]])
+        self.assertEqual("near", r["people"][1]["sightings"][0]["match"])
+        self.assertEqual(1, r["exact"])
+        self.assertEqual({"upper_colour": ["grey", "beige"]}, r["near_colours"])
+        exact = self.svc.find_people({"upper_colour": "white"}, T0 - 1, T0 + 9999, near=False)
+        self.assertEqual(["gp_white"], [p["person"] for p in exact["people"]])
+        self.assertEqual({}, exact["near_colours"])
+        # Non-colour attributes never widen: a cap is not a helmet.
+        self.tag("CAM-1", T0 + 300, gref="gp_helmet", headwear="helmet")
+        self.assertEqual(0, self.svc.find_people({"headwear": "hat"}, T0 - 1, T0 + 9999)["count"])
+        # A near hit on one attribute is near for the person even when the
+        # others are exact.
+        r = self.svc.find_people({"upper_colour": "white", "headwear": "cap"}, T0 - 1, T0 + 9999)
+        self.assertEqual({"gp_white": "exact", "gp_grey": "near"}, {p["person"]: p["match"] for p in r["people"]})
+        self.assertTrue(self.svc.store.list_search_audit()[-1]["query"]["near"])
+
     def test_no_identity_ever_enters_a_sighting(self):
         self.tag("CAM-1", T0, gref="gp_9")
         row = self.svc.store.search_sightings(T0 - 1, T0 + 1)[0]
@@ -315,6 +349,11 @@ class TestRoutes(unittest.TestCase):
         self.assertEqual(1, r["count"])
         self.assertEqual("red top, face mask", r["people"][0]["description"])
         self.assertEqual(0, self.c.get("/api/v1/search/people?upper_colour=blue&hours=1").json()["count"])
+        # pink is a near colour of red: found by default, not with near=0
+        self.assertEqual("near", self.c.get("/api/v1/search/people?upper_colour=pink&hours=1").json()["people"][0]["match"])
+        self.assertEqual(0, self.c.get("/api/v1/search/people?upper_colour=pink&hours=1&near=0").json()["count"])
+        # no attribute at all = everyone tagged in the window
+        self.assertEqual(1, self.c.get("/api/v1/search/people?hours=1").json()["count"])
         t = self.c.get("/api/v1/search/people/gp_route?hours=1").json()
         self.assertEqual(1, t["count"])
         a = self.c.get("/api/v1/search/audit").json()["searches"]

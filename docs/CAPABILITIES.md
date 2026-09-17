@@ -210,7 +210,8 @@ names; search is a query over an indexed table, never a scan of frames.
 | Each attribute judged on its own region of the person (head band, torso, legs) with prompt ensembles per label | Built | `attributes.DEFAULT_REGIONS`, `attr_client.score` |
 | `PERSON_ATTRIBUTES` event per track with a saved crop for human confirmation | Built | `events.py`; crops under `evidence/bookmarks/attr_*.jpg`, same retention as other bookmarks |
 | `person_sightings` table, indexed on time and the six attributes; retention-pruned | Built | `ddl_pg.sql`, both stores |
-| `GET /api/v1/search/people` — grouped by person (cross-camera ref) with a timeline and crop per sighting; Region/City/Branch scope; full key only; every search audited (`search_audit`) | Built | `service.find_people`, `app.py`; `GET /search/people/{global_ref}`, `/search/audit`, `/search/vocabulary` |
+| `GET /api/v1/search/people` — grouped by person (cross-camera ref) with a timeline and crop per sighting; Region/City/Branch scope; full key only; every search audited (`search_audit`); no attribute = everyone tagged in the window | Built | `service.find_people`, `app.py`; `GET /search/people/{global_ref}`, `/search/audit`, `/search/vocabulary` |
+| Near-colour search: a colour also matches its CCTV look-alikes (`NEAR_COLOURS`: white ~ grey/beige, black ~ grey/navy, red ~ pink/orange …); exact hits rank first, each hit carries `match: exact|near`, `near=0` for exact only. Non-colour attributes never widen. Came from the first live tag: a white shirt stored as grey | Built | `finblade/attributes.py` `near_labels`, `service.find_people`; Ops tab "near match" badge |
 | Ops page "Find by appearance" tab; MCP tools `find_people`, `person_timeline` | Built | `web/ops.html`, `services/mcp/server.py` |
 | Evidence contact sheet: crop beside its tags and confidences | Built | `scripts/attributes_sheet.py` → `evidence/attributes_sheet*.jpg` |
 

@@ -1241,10 +1241,13 @@ async def search_people(request: Request,
                         hours: float = Query(None), frm: float = Query(None, alias="from"),
                         to: float = Query(None, alias="to"), camera_id: str = Query(None),
                         region_id: str = Query(None), city_id: str = Query(None),
-                        branch_id: str = Query(None), limit: int = Query(500)):
-    """People matching a description in a window, grouped by person, newest
-    first, each with a timeline of sightings and a crop per sighting.
-    Results are CANDIDATES for a human to confirm."""
+                        branch_id: str = Query(None), limit: int = Query(500),
+                        near: int = Query(1)):
+    """People matching a description in a window, grouped by person, exact
+    matches first then newest, each with a timeline of sightings and a crop
+    per sighting. A colour also matches its confusable neighbours (white ~
+    grey/beige, black ~ grey/navy …) unless `near=0`; every hit says `exact`
+    or `near`. Results are CANDIDATES for a human to confirm."""
     if _auth.enabled() and _search_actor(request) != _auth.ROLE_FULL:
         return JSONResponse(status_code=403, content={"error": "forbidden",
                                                       "detail": "appearance search needs the full key"})
@@ -1255,7 +1258,7 @@ async def search_people(request: Request,
     t0 = frm if frm is not None else t1 - (hours if hours else 2.0) * 3600.0
     sites = _scope(region_id, city_id, branch_id)
     return svc.find_people(filters, t0, t1, site_ids=sites, camera_id=camera_id,
-                           actor=_search_actor(request), limit=limit)
+                           actor=_search_actor(request), limit=limit, near=bool(near))
 
 
 @app.get("/api/v1/search/people/{global_ref}")

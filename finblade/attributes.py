@@ -95,6 +95,36 @@ FULL_REGION = (0.0, 1.0)
 FORBIDDEN_ATTRIBUTES = ("gender", "sex", "age", "ethnicity", "race", "religion",
                         "skin", "nationality", "identity", "name")
 
+# Colours CLIP confuses on a CCTV crop, so a search for one also returns the
+# other, ranked behind the exact hits and marked "near". The first real
+# deployment found it: a white shirt under indoor lighting was stored as
+# "grey" at 0.55, and an exact search for "white" returned nothing. Pixels do
+# not carry the colour a witness remembers; the search has to allow for it.
+NEAR_COLOURS: Dict[str, Tuple[str, ...]] = {
+    "white":  ("grey", "beige"),
+    "grey":   ("white", "black"),
+    "black":  ("grey", "blue"),        # navy reads as black and back
+    "blue":   ("black", "purple"),
+    "red":    ("pink", "orange"),
+    "pink":   ("red", "purple"),
+    "orange": ("red", "yellow", "brown"),
+    "yellow": ("orange", "beige"),
+    "green":  ("grey", "blue"),
+    "brown":  ("beige", "black", "orange"),
+    "beige":  ("white", "brown", "yellow"),
+    "purple": ("blue", "pink"),
+}
+COLOUR_ATTRIBUTES = ("upper_colour", "lower_colour")
+
+
+def near_labels(attr: str, label: str) -> Tuple[str, ...]:
+    """The labels a search for `label` on `attr` should also accept, exact
+    first. Non-colour attributes have no neighbours: a cap is not a helmet."""
+    if attr in COLOUR_ATTRIBUTES:
+        return (label,) + NEAR_COLOURS.get(label, ())
+    return (label,)
+
+
 DEFAULT_MIN_CONFIDENCE = 0.45
 DEFAULT_SAMPLES = 3
 DEFAULT_SAMPLE_INTERVAL_S = 3.0

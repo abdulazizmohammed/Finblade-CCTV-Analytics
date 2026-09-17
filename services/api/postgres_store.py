@@ -1074,6 +1074,17 @@ class PostgresStore(Store):
             f"SELECT {self._PS_COLS} FROM person_sightings WHERE event_id=%s", (event_id,)))
         return rows[0] if rows else None
 
+    def correct_sighting(self, event_id: str, attributes: dict, description: str) -> bool:
+        cols = {k: v for k, v in attributes.items() if k in self.SIGHTING_ATTRS}
+        extra = {k: v for k, v in attributes.items() if k not in self.SIGHTING_ATTRS}
+        sets = [f"{k}=%s" for k in cols] + ["description=%s"]
+        params: list = list(cols.values()) + [description]
+        if extra:
+            sets.append("extra=(COALESCE(extra,'{}')::jsonb || %s::jsonb)::text")
+            params.append(json.dumps(extra))
+        params.append(event_id)
+        return self._x(f"UPDATE person_sightings SET {', '.join(sets)} WHERE event_id=%s", params) > 0
+
     def record_search(self, actor: str, query: dict, hits: int, ts: float) -> None:
         self._x("INSERT INTO search_audit(ts,actor,query,hits) VALUES (%s,%s,%s,%s)",
                 (float(ts), actor, json.dumps(query, sort_keys=True), int(hits)))

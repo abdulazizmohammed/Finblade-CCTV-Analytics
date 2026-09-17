@@ -210,6 +210,9 @@ names; search is a query over an indexed table, never a scan of frames.
 | Each attribute judged on its own region of the person (head band, torso, legs) with prompt ensembles per label | Built | `attributes.DEFAULT_REGIONS`, `attr_client.score` |
 | Per-attribute confidence floors: `min_confidence` is a number or `{default: 0.45, mask: 0.85}`; a two-label attribute's winner is always ≥ 0.5, so the shared floor never filtered mask | Built | `attributes.confidence_floors`, `vote`; template ships `mask: 0.85` |
 | Re-apply raised floors to rows already tagged, from their stored confidences — no re-scoring; also retires labels the vocabulary no longer has; dry run by default, idempotent | Built | `scripts/reapply_attribute_floors.py [--apply]` |
+| Human review loop: numbered sheet of every sighting with one attribute value (`--attr mask --value yes`), then `--reject 3,7,12 --by <name>` sets those tags to `unknown` through the API. The model cannot re-judge its own crops; a person can | Built | `scripts/attributes_review.py` → `evidence/review_<attr>_<value>.jpg` + `.json` index |
+| `POST /api/v1/search/sightings/{id}/correct` `{attribute, value, by}` — a human override, `unknown` or a vocabulary label only, never a forbidden attribute; description rewritten; model confidence kept; written to `search_audit` as a correction. Ops hits carry a "wrong <attr>" button per searched attribute | Built | `service.correct_sighting`, both stores; `web/ops.html` |
+| `attributes.disable: [mask]` — stop judging an attribute on a site whose sheet shows the model confidently wrong (factory clip: 36/36 `mask: yes` at ≥ 0.91 were bare faces); stored as `unknown`. Off in the template: decide per site from that site's sheet | Built | `Vocabulary.from_config`; `service._save_sighting` |
 | `PERSON_ATTRIBUTES` event per track with a saved crop for human confirmation | Built | `events.py`; crops under `evidence/bookmarks/attr_*.jpg`, same retention as other bookmarks |
 | `person_sightings` table, indexed on time and the six attributes; retention-pruned | Built | `ddl_pg.sql`, both stores |
 | `GET /api/v1/search/people` — grouped by person (cross-camera ref) with a timeline and crop per sighting; Region/City/Branch scope; full key only; every search audited (`search_audit`); no attribute = everyone tagged in the window | Built | `service.find_people`, `app.py`; `GET /search/people/{global_ref}`, `/search/audit`, `/search/vocabulary` |
@@ -223,9 +226,13 @@ one. Measured on the two clips on this box (`evidence/attributes_sheet_v1_fullcr
 → `_v2_regions.jpg` → `attributes_sheet.jpg`, `attributes_sheet_lab.jpg`):
 upper colour, helmets and hi-vis vests are mostly right; trousers stopped
 inheriting the shirt colour once regions were introduced; **mask is
-low-trust in both directions** (false "yes" on back views was fixed by prompt
-ensembles, but a real surgical mask on the lab clip was missed) — for masks
-and caps rely on the R-11 PPE detector, which was trained for them; "bag"
+untrustworthy on the factory clip**: `evidence/review_mask_yes.jpg`
+(2026-09-17) shows all 36 `mask: yes` tags at 0.91–1.00 on bare faces — the
+model is confidently wrong, so no confidence floor helps, and a real
+surgical mask on the lab clip was missed the other way. Judge it per site
+from that site's review sheet and `disable` it where it looks like this;
+for masks and caps the R-11 PPE detector is the intended source once its
+checkpoint is retrained (today it is blind to masks, B-9); "bag"
 false-positives on empty hands; a crouching person's shirt reads as their
 bottoms; yellow gloves make a navy shirt "yellow". Search results are
 candidates with a crop each; a human confirms. Tests: `tests/test_attributes.py`.
@@ -508,7 +515,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**94 routes** — 91 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**95 routes** — 92 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 

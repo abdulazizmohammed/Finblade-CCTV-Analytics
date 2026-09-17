@@ -1244,7 +1244,11 @@ class IngestService:
                "frame": evt.get("frame"),
                "extra": {k: v for k, v in attrs.items() if k not in self.SIGHTING_ATTRS}}
         for k in self.SIGHTING_ATTRS:
-            row[k] = attrs.get(k)
+            # An attribute the camera does not judge (attributes.disable) is
+            # "unknown", same as one it judged and could not decide — the
+            # search treats both as "no answer", and the column never holds
+            # a null that reads differently from every other row.
+            row[k] = attrs.get(k) or "unknown"
         self.store.save_sighting(row)
 
     def find_people(self, filters: dict, t0: float, t1: float, site_ids=None,
@@ -1311,6 +1315,43 @@ class IngestService:
         return {"people": out, "count": len(out), "sightings": len(rows),
                 "exact": sum(1 for g in out if g["match"] == "exact"),
                 "filters": filters, "near_colours": expanded, "from": t0, "to": t1}
+
+    def correct_sighting(self, sighting_id: str, attribute: str, value: str,
+                         actor: str = "operator") -> Tuple[int, dict]:
+        """A human looked at the crop and overrode one tag.
+
+        The usual correction is "unknown" — the tagger was wrong and nobody
+        wants to replace one guess with another. A real label is accepted
+        only from the current vocabulary. The description is rewritten and
+        the correction is written to search_audit with who did it, so a
+        search hit and the audit trail always agree on where a label came
+        from. The confidence stays as the model reported it: the record says
+        what the model thought and that a person disagreed.
+        """
+        from finblade.attributes import DEFAULT_VOCABULARY, FORBIDDEN_ATTRIBUTES, describe
+        attribute, value = str(attribute), str(value)
+        if attribute in FORBIDDEN_ATTRIBUTES:
+            return 422, {"error": "forbidden attribute", "attribute": attribute}
+        allowed = set(DEFAULT_VOCABULARY.get(attribute, {}).keys())
+        if attribute not in self.SIGHTING_ATTRS and attribute not in DEFAULT_VOCABULARY:
+            return 422, {"error": "unknown attribute", "attribute": attribute}
+        if value != "unknown" and allowed and value not in allowed:
+            return 422, {"error": "value not in vocabulary", "attribute": attribute,
+                         "allowed": sorted(allowed) + ["unknown"]}
+        row = self.store.get_sighting(sighting_id)
+        if row is None:
+            return 404, {"error": "unknown sighting", "sighting_id": sighting_id}
+        previous = row.get(attribute) if attribute in self.SIGHTING_ATTRS else (row.get("extra") or {}).get(attribute)
+        labels = {k: row.get(k) for k in self.SIGHTING_ATTRS}
+        labels.update(row.get("extra") or {})
+        labels[attribute] = value
+        desc = describe({k: v for k, v in labels.items() if v})
+        if not self.store.correct_sighting(sighting_id, {attribute: value}, desc):
+            return 404, {"error": "unknown sighting", "sighting_id": sighting_id}
+        self.store.record_search(actor, {"correction": sighting_id, "attribute": attribute,
+                                         "from": previous, "to": value}, 1, time.time())
+        return 200, {"ok": True, "sighting_id": sighting_id, "attribute": attribute,
+                     "from": previous, "to": value, "description": desc}
 
     # -- outbound webhooks (finblade/webhooks.py) --
     def save_webhook(self, payload: dict, existing_id: str = None) -> Tuple[int, dict]:

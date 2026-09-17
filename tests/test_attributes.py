@@ -91,6 +91,24 @@ class TestVocabulary(unittest.TestCase):
         self.assertEqual(["item"], v.names())
         self.assertEqual(A.Vocabulary().names(), A.Vocabulary.from_config({}).names())
 
+    def test_disable_drops_an_attribute_from_judgement(self):
+        # The review sheet showed mask confidently wrong on one site's footage;
+        # a site switches it off and the rest carries on unchanged.
+        v = A.Vocabulary.from_config({"disable": ["mask"]})
+        self.assertEqual(["upper_colour", "lower_colour", "headwear", "bag", "outerwear"], v.names())
+        self.assertEqual(v.names(), A.Vocabulary.from_config({"disable": "mask"}).names())
+        with self.assertRaises(ValueError):
+            A.Vocabulary.from_config({"disable": A.Vocabulary().names()})
+        # ingest stores the unjudged attribute as "unknown", not null
+        svc = IngestService(InMemoryStore())
+        e = new_event(PERSON_ATTRIBUTES, "CAM-1", "RUH-01", T0, person_ref="pr_" + "e" * 16,
+                      attributes={"upper_colour": "blue"}, confidences={"upper_colour": 0.9}, samples=3,
+                      description="blue top")
+        self.assertEqual(202, svc.ingest_event(e)[0])
+        row = svc.store.search_sightings(T0 - 1, T0 + 1)[0]
+        self.assertEqual("unknown", row["mask"])
+        self.assertEqual(1, len(svc.store.search_sightings(T0 - 1, T0 + 1, filters={"mask": "unknown"})))
+
     def test_describe_reads_like_a_sentence_and_omits_unknowns(self):
         self.assertEqual("lab coat, blue top, black bottoms, cap, face mask, backpack",
                          A.describe({"outerwear": "lab coat", "upper_colour": "blue", "lower_colour": "black",
@@ -254,6 +272,14 @@ class SightingContract:
         a = self.store.list_search_audit()
         self.assertEqual(("full", 1, {"upper_colour": "blue"}), (a[0]["actor"], int(a[0]["hits"]), a[0]["query"]))
 
+    def test_correct_sighting(self):
+        self.store.save_sighting(sighting(mask="yes", extra={"item": "clipboard"}))
+        self.assertTrue(self.store.correct_sighting("ev-1", {"mask": "unknown", "item": "folder"}, "blue top, cap"))
+        row = self.store.get_sighting("ev-1")
+        self.assertEqual(("unknown", "blue top, cap", "folder"), (row["mask"], row["description"], row["extra"]["item"]))
+        self.assertEqual(0, len(self.store.search_sightings(T0 - 1, T0 + 1, filters={"mask": "yes"})))
+        self.assertFalse(self.store.correct_sighting("ev-nope", {"mask": "unknown"}, ""))
+
     def test_retention_prunes(self):
         self.store.save_sighting(sighting(ts=T0))
         self.store.save_sighting(sighting(event_id="ev-2", ts=T0 + 1000))
@@ -333,6 +359,25 @@ class TestService(unittest.TestCase):
         self.assertEqual({"gp_white": "exact", "gp_grey": "near"}, {p["person"]: p["match"] for p in r["people"]})
         self.assertTrue(self.svc.store.list_search_audit()[-1]["query"]["near"])
 
+    def test_human_correction_is_audited_and_bounded(self):
+        self.tag("CAM-1", T0, gref="gp_9", mask="yes")
+        sid = self.svc.store.search_sightings(T0 - 1, T0 + 1)[0]["event_id"]
+        code, out = self.svc.correct_sighting(sid, "mask", "unknown", actor="A. Reviewer")
+        self.assertEqual(200, code, out)
+        self.assertEqual(("yes", "unknown"), (out["from"], out["to"]))
+        self.assertNotIn("mask", out["description"])
+        row = self.svc.store.get_sighting(sid)
+        self.assertEqual("unknown", row["mask"])
+        self.assertEqual(0.8, row["confidences"]["mask"], "what the model thought stays on record")
+        audit = self.svc.store.list_search_audit()[-1]
+        self.assertEqual(("A. Reviewer", sid, "yes", "unknown"),
+                         (audit["actor"], audit["query"]["correction"], audit["query"]["from"], audit["query"]["to"]))
+        # a real label must be in the vocabulary; forbidden attributes never
+        self.assertEqual(422, self.svc.correct_sighting(sid, "headwear", "fedora")[0])
+        self.assertEqual(200, self.svc.correct_sighting(sid, "headwear", "hat")[0])
+        self.assertEqual(422, self.svc.correct_sighting(sid, "gender", "unknown")[0])
+        self.assertEqual(404, self.svc.correct_sighting("ev-nope", "mask", "unknown")[0])
+
     def test_no_identity_ever_enters_a_sighting(self):
         self.tag("CAM-1", T0, gref="gp_9")
         row = self.svc.store.search_sightings(T0 - 1, T0 + 1)[0]
@@ -377,6 +422,13 @@ class TestRoutes(unittest.TestCase):
         self.assertEqual(1, t["count"])
         a = self.c.get("/api/v1/search/audit").json()["searches"]
         self.assertGreaterEqual(len(a), 3)
+        # a human rejects the mask tag on that sighting
+        sid = t["sightings"][0]["sighting_id"]
+        r = self.c.post(f"/api/v1/search/sightings/{sid}/correct", json={"attribute": "mask", "value": "unknown", "by": "ops"})
+        self.assertEqual(200, r.status_code, r.text)
+        self.assertEqual(0, self.c.get("/api/v1/search/people?mask=yes&hours=1").json()["count"])
+        self.assertEqual(422, self.c.post(f"/api/v1/search/sightings/{sid}/correct", json={}).status_code)
+        self.assertEqual(404, self.c.post("/api/v1/search/sightings/nope/correct", json={"attribute": "mask"}).status_code)
 
     def test_search_needs_the_full_key_when_auth_is_on(self):
         old = dict(os.environ)

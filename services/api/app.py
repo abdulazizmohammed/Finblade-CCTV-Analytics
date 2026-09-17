@@ -1276,6 +1276,26 @@ async def search_person_timeline(request: Request, global_ref: str,
     return {"global_ref": global_ref, "sightings": rows, "count": len(rows)}
 
 
+@app.post("/api/v1/search/sightings/{sighting_id}/correct")
+async def sighting_correct(request: Request, sighting_id: str):
+    """A human overrides one tag on a sighting after looking at the crop.
+    Body: {"attribute": "mask", "value": "unknown", "by": "<operator>"}.
+    "unknown" is the normal correction; a label must be in the vocabulary.
+    Audited in search_audit. Full key only."""
+    if _auth.enabled() and _search_actor(request) != _auth.ROLE_FULL:
+        return JSONResponse(status_code=403, content={"error": "forbidden",
+                                                      "detail": "appearance search needs the full key"})
+    try:
+        body = await request.json()
+    except Exception:                                   # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict) or not body.get("attribute"):
+        return JSONResponse(status_code=422, content={"error": "attribute required"})
+    code, out = svc.correct_sighting(sighting_id, body["attribute"], body.get("value", "unknown"),
+                                     actor=str(body.get("by") or _search_actor(request)))
+    return JSONResponse(status_code=code, content=out)
+
+
 @app.get("/api/v1/search/sightings/{sighting_id}/crop")
 async def sighting_crop(request: Request, sighting_id: str):
     """The saved crop for one sighting, by the `sighting_id` a search returned.

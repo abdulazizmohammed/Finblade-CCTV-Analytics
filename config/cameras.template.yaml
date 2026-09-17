@@ -323,6 +323,13 @@ attributes:
   min_confidence:
     default: 0.45
     mask: 0.85
+  # Attributes not to judge at all on this site, stored as "unknown". Decide
+  # from the review sheet (scripts/attributes_review.py --attr mask --value
+  # yes): on the factory clip every one of 36 "mask: yes" at >= 0.91 was a
+  # bare face — a floor cannot help a model that is confidently wrong, and
+  # for that footage not tagging beats tagging. Leave empty until a sheet
+  # from THIS site's cameras says otherwise.
+  # disable: [mask]
   min_crop_height: 96          # same floor as ReID, same reason
   min_crop_confidence: 0.5
   budget_per_frame: 4          # at most this many crops scored on one frame

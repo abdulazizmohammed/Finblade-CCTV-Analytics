@@ -159,11 +159,23 @@ class Vocabulary:
     def from_config(cls, cfg: Optional[dict]) -> "Vocabulary":
         """`vocabulary:` in the camera config replaces the default wholesale;
         absent means default. A partial override would be a silent surprise.
-        `regions:` may override the crop region per attribute."""
+        `regions:` may override the crop region per attribute. `disable:`
+        lists attributes not to judge at all — the row keeps the column, as
+        "unknown". For an attribute the model gets confidently wrong on a
+        site's footage (mask on the factory clip: 36/36 false at >= 0.91),
+        not tagging is better than tagging."""
         spec = None
         if cfg and isinstance(cfg.get("vocabulary"), dict) and cfg["vocabulary"]:
             spec = cfg["vocabulary"]
         regions = (cfg or {}).get("regions") if isinstance((cfg or {}).get("regions"), dict) else None
+        disable = (cfg or {}).get("disable") or ()
+        if isinstance(disable, str):
+            disable = [disable]
+        if disable:
+            spec = {a: dict(v) for a, v in (spec or DEFAULT_VOCABULARY).items()
+                    if a not in {str(d) for d in disable}}
+            if not spec:
+                raise ValueError("attributes.disable removed every attribute; set enabled: false instead")
         return cls(spec, regions)
 
     def region(self, attr: str) -> Tuple[float, float]:

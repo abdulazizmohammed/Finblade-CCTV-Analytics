@@ -199,6 +199,11 @@ class Store:
                          limit: int = 500) -> List[dict]: return []
     def sightings_of(self, global_ref: str, t0: float, t1: float) -> List[dict]: return []
     def get_sighting(self, event_id: str) -> Optional[dict]: return None
+    def correct_sighting(self, event_id: str, attributes: Dict[str, str],
+                         description: str) -> bool:
+        """A human overrode the tagger: set these attribute labels (usually to
+        "unknown") and the rewritten description. Returns False if unknown."""
+        return False
     def record_search(self, actor: str, query: dict, hits: int, ts: float) -> None: pass
     def list_search_audit(self, limit: int = 100) -> List[dict]: return []
 
@@ -787,6 +792,18 @@ class InMemoryStore(Store):
 
     def get_sighting(self, event_id):
         return next((dict(s) for s in self._sightings if s.get("event_id") == event_id), None)
+
+    def correct_sighting(self, event_id, attributes, description):
+        for s in self._sightings:
+            if s.get("event_id") == event_id:
+                for k, v in attributes.items():
+                    if k in self.SIGHTING_ATTRS:
+                        s[k] = v
+                    else:
+                        s.setdefault("extra", {})[k] = v
+                s["description"] = description
+                return True
+        return False
 
     def record_search(self, actor, query, hits, ts):
         self._search_audit.append({"ts": ts, "actor": actor, "query": dict(query), "hits": int(hits)})

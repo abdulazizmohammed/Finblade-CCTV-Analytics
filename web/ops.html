@@ -172,6 +172,13 @@ table.zt td.muted{color:var(--fb-text-faint);}
 .hit .tl span:hover{border-color:var(--fb-teal);color:var(--fb-teal);}
 .hit .tl span.more{color:var(--fb-text-faint);cursor:default;}
 .hit .unres{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--fb-warning);margin-left:6px;}
+/* "wrong <attr>": a human overrides a tag after looking at the crop. Plain
+   chrome, not a status colour; done state is muted, it is not an alert. */
+.hit .fix{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;}
+.hit .wrong{font-family:var(--fb-font-data);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--fb-text-muted);background:transparent;border:1px solid var(--fb-line);border-radius:3px;padding:2px 7px;cursor:pointer;}
+.hit .wrong:hover{color:var(--fb-text);border-color:var(--fb-teal);}
+.hit .wrong:disabled{cursor:default;opacity:.7;}
+.hit .wrong.done{color:var(--fb-text-faint);border-style:dashed;}
 /* A near hit: the tagger stored a look-alike colour (white ↔ grey). Muted, not
    a warning — it is a maybe, and the crop decides. */
 .hit .near{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--fb-text-muted);border:1px solid var(--fb-line);border-radius:3px;padding:1px 5px;margin-left:6px;}
@@ -592,10 +599,23 @@ async function runFind(){
     const crop=s0.frame?`<img src="${esc(withKey(API+s0.frame))}" alt="" loading="lazy">`:`<div class="nocrop">no crop saved</div>`;
     const tl=p.sightings.slice(-8).map(s=>`<span data-cam="${esc(s.camera_id)}" data-zone="${esc(s.zone_id||'')}" title="${esc(s.description||'')}">${esc(fmt(s.ts))} · ${esc(s.camera_id)}${s.zone_id?' · '+esc(s.zone_id):''}</span>`).join('')+(p.sightings.length>8?`<span class="more">+${p.sightings.length-8} more</span>`:'');
     const near=anyAttr&&p.match==='near'?'<span class="near" title="the tagger stored a look-alike colour; check the crop">near match</span>':'';
+    // One "wrong" button per searched attribute, on the sighting whose crop is
+    // shown: a person looked and disagreed. The tag becomes "unknown", audited.
+    const wrong=[...q.keys()].filter(k=>k!=='hours'&&!k.endsWith('_id')).map(k=>`<button class="wrong" data-sid="${esc(s0.sighting_id||'')}" data-attr="${esc(k)}" title="this person is not '${esc(q.get(k))}' — set ${esc(k)} to unknown">wrong ${esc(k.replace('_colour',''))}</button>`).join('');
     return `<div class="hit">${crop}<div><div class="desc">${esc(p.description||'no attributes determined')}${near}${p.resolved?'':'<span class="unres">single camera · unresolved</span>'}</div>
       <div class="when">${esc(fmt(p.first_seen))} → ${esc(fmt(p.last_seen))} · ${p.cameras.map(esc).join(', ')}${p.sites.length?' · '+p.sites.map(esc).join(', '):''}</div>
-      <div class="tl">${tl}</div></div></div>`;}).join('')
+      <div class="tl">${tl}</div><div class="fix">${wrong}</div></div></div>`;}).join('')
     :'<div class="empty">nobody matching that description in the window</div>';
+  $('hits').querySelectorAll('button.wrong').forEach(b=>b.addEventListener('click',async()=>{
+    if(!b.dataset.sid){return;}
+    b.disabled=true;
+    try{
+      const resp=await fetch(`${API}/api/v1/search/sightings/${encodeURIComponent(b.dataset.sid)}/correct`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({attribute:b.dataset.attr,value:'unknown',by:'ops'})});
+      const d=await resp.json();
+      if(resp.ok){b.textContent=`${b.dataset.attr.replace('_colour','')}: ${d.from} → unknown`;b.classList.add('done');}
+      else{b.textContent=d.detail||d.error||`HTTP ${resp.status}`;b.disabled=false;}
+    }catch(e){b.textContent='failed';b.disabled=false;}
+  }));
 }
 function renderTable(){
   const all=scoped(ZONES).filter(z=>matchQ(z.zone_name,z.zone_id,z.camera_id));

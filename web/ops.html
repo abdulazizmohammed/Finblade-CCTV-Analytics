@@ -557,7 +557,11 @@ document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{TAB
 let FIND_VOCAB=null;
 async function initFind(){
   if(FIND_VOCAB){return;}
-  try{FIND_VOCAB=(await fetch(`${API}/api/v1/search/vocabulary`).then(r=>r.json())).attributes;}catch(e){$('findmeta').textContent='cannot load the attribute vocabulary — is the API up?';return;}
+  let resp;
+  try{resp=await fetch(`${API}/api/v1/search/vocabulary`);}catch(e){$('findmeta').textContent='cannot load the attribute vocabulary — is the API up?';return;}
+  if(resp.status===404){$('findmeta').textContent='This page is newer than the API it is talking to (no /api/v1/search routes). Restart the API service and reload.';return;}
+  if(!resp.ok){$('findmeta').textContent=`cannot load the attribute vocabulary (HTTP ${resp.status})`;return;}
+  FIND_VOCAB=(await resp.json()).attributes||{};
   const nice=k=>k.replace('_colour',' colour').replace('_',' ');
   $('findbar').innerHTML=Object.entries(FIND_VOCAB).map(([k,labels])=>`<div class="f"><label for="fa_${k}">${esc(nice(k))}</label><select id="fa_${k}" data-attr="${esc(k)}"><option value="">any</option>${labels.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('')}</select></div>`).join('')
     +`<div class="f"><label for="fa_hours">Last</label><select id="fa_hours"><option value="1">1 h</option><option value="2" selected>2 h</option><option value="6">6 h</option><option value="24">24 h</option><option value="72">3 days</option></select></div>

@@ -97,8 +97,12 @@ else
   grep -q FINBLADE_PORT "$REPO/.env" || echo "FINBLADE_PORT=8000" >> "$REPO/.env"
   grep -q FINBLADE_AUTOSTART_CAMERAS "$REPO/.env" \
     || echo "FINBLADE_AUTOSTART_CAMERAS=1" >> "$REPO/.env"
+  # REDIS_URL is NOT added to an existing .env. With it set the API imports the
+  # redis client and connects eagerly at startup; on a host that has run on the
+  # in-process bus (no client installed, no server) that turned a re-run of
+  # this script into a crash loop. Opting into Redis is a deliberate edit.
   grep -q REDIS_URL "$REPO/.env" \
-    || echo "REDIS_URL=redis://127.0.0.1:6379/0" >> "$REPO/.env"
+    || echo "   (no REDIS_URL in .env: the API stays on the in-process bus; add it to use Redis Streams)"
   # An .env that predates key generation has NO keys in it, and this branch
   # does not add them — so auth is off and nothing says so. Generating them
   # here would turn auth on under an operator who never asked, so say it

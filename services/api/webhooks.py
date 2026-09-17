@@ -51,7 +51,10 @@ class WebhookDispatcher:
                  context_provider: Optional[Callable] = None,
                  tenant_provider: Optional[Callable] = None,
                  post: Optional[Callable] = None, base_url: Optional[str] = None):
-        self.store = store
+        # A store, or a zero-arg callable returning the current one — the
+        # service passes the latter so a swapped store (tests, a reconnect)
+        # cannot leave the dispatcher queueing into a store nobody reads.
+        self._store = store
         # branches_in_scope(region_id, city_id, branch_id) -> set | None
         self.scope_resolver = scope_resolver or (lambda **kw: None)
         # (alert) -> {"branch": ..., "camera": ..., "zone": ...}
@@ -64,6 +67,10 @@ class WebhookDispatcher:
         self.sent = 0
         self.failed = 0
         self.last_error: Optional[str] = None
+
+    @property
+    def store(self):
+        return self._store() if callable(self._store) else self._store
 
     # ---- enqueue -------------------------------------------------------------
     def notify(self, event: str, alert: Optional[dict] = None,

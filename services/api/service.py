@@ -87,7 +87,7 @@ class IngestService:
         # Outbound webhooks. notify() only writes a queue row, so it sits on
         # the alert path safely; app.py runs the delivery loop.
         self.webhooks = WebhookDispatcher(
-            self.store, scope_resolver=self.branches_in_scope,
+            lambda: self.store, scope_resolver=self.branches_in_scope,
             context_provider=self._webhook_context,
             tenant_provider=lambda: {k.replace("tenant_", ""): v
                                      for k, v in self.store.get_org_meta().items()

@@ -63,8 +63,10 @@ class RetentionContract:
         deleted = self.store.delete_before(NOW - 365 * DAY)
         # tracker_positions is the third telemetry table under retention;
         # GPS reports at 10 s per vehicle would otherwise outgrow both.
-        self.assertEqual({"zone_state_ts": 0, "events": 0, "tracker_positions": 0},
-                         deleted)
+        # person_sightings is the fourth: one row per tagged track, with a
+        # crop path — it must age out with the events it describes.
+        self.assertEqual({"zone_state_ts": 0, "events": 0, "tracker_positions": 0,
+                          "person_sightings": 0}, deleted)
 
     def test_alerts_are_never_touched(self):
         """Alerts are the operator audit trail and each may own a snapshot JPEG

@@ -117,6 +117,47 @@ tables:
       - Large. Filter by tracker_id and ts. Under retention pruning.
       - Arrivals and departures are in events (TRACKER_ARRIVED / TRACKER_DEPARTED, camera_id = tracker_id); do not derive them from this table.
 
+  - name: person_sightings
+    purpose: One row per tracked person per camera visit with what they WORE and CARRIED, from a fixed vocabulary — a description for search, never an identity.
+    recommended_for_chatbot: caution
+    primary_key: [id]
+    columns:
+      event_id: {type: text, meaning: "the PERSON_ATTRIBUTES event this came from"}
+      ts: {type: double}
+      site_id: {type: text, meaning: "branch"}
+      camera_id: {type: text}
+      zone_id: {type: text}
+      person_ref: {type: text, meaning: "opaque per-camera hash"}
+      global_ref: {type: text, meaning: "opaque cross-camera ref; NULL when unresolved"}
+      upper_colour: {type: text, meaning: "black|white|grey|blue|red|green|yellow|brown|beige|pink|purple|orange|unknown"}
+      lower_colour: {type: text}
+      headwear: {type: text, meaning: "none|cap|hat|headscarf|helmet|unknown"}
+      mask: {type: text, meaning: "yes|no|unknown — LOW TRUST on current footage; prefer the R-11 PPE detector for masks"}
+      bag: {type: text, meaning: "none|backpack|handbag|shoulder bag|box or case|unknown"}
+      outerwear: {type: text, meaning: "none|lab coat|gown|jacket|abaya|vest|unknown"}
+      extra: {type: text, meaning: "JSON of any attribute outside the six columns"}
+      confidences: {type: text, meaning: "JSON attr -> mean probability of the winning label"}
+      samples: {type: bigint, meaning: "crops voted"}
+      description: {type: text, meaning: "e.g. 'blue top, black bottoms, cap'"}
+      frame: {type: text, meaning: "/bookmarks/... crop for a human to confirm"}
+    relationships:
+      - global_ref -> events.global_ref (journey), site_id -> branches.branch_id
+    warnings:
+      - Tags are CANDIDATES from a zero-shot model, not facts. Group by global_ref (one person seen on three cameras is three rows). NEVER infer or report gender, age or ethnicity; there are no such columns and none may be derived.
+      - Use the API (GET /api/v1/search/people) rather than this table where possible: it groups by person and writes the audit row.
+
+  - name: search_audit
+    purpose: Every appearance search — who asked, the filters, how many hits.
+    recommended_for_chatbot: yes
+    primary_key: [id]
+    columns:
+      ts: {type: double}
+      actor: {type: text, meaning: "api key role or 'chatbot'"}
+      query: {type: text, meaning: "JSON of the filters"}
+      hits: {type: bigint}
+    relationships: []
+    warnings: []
+
   - name: tracker_live
     purpose: Latest position per tracker plus which branch geofence it is inside.
     recommended_for_chatbot: yes

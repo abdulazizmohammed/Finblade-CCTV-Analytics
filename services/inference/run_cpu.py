@@ -66,8 +66,8 @@ from finblade.emission import DensityUpdateGate          # noqa: E402
 from finblade.events import (                            # noqa: E402
     CAMERA_HEARTBEAT, CAMERA_OFFLINE, CAMERA_ONLINE, CAMERA_RECOVERED,
     CAPACITY_WARNING, DENSITY_UPDATE, GROUP_CROSSING, HAZARD_FIRE,
-    HAZARD_SMOKE, LOITERING_END, LOITERING_START, PPE_COMPLIANT,
-    PPE_VIOLATION, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
+    HAZARD_SMOKE, LOITERING_END, LOITERING_START, PERSON_ATTRIBUTES,
+    PPE_COMPLIANT, PPE_VIOLATION, RESTRICTED_ZONE_ENTRY, RESTRICTED_ZONE_EXIT,
     WRONG_DIRECTION, ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, new_event,
 )
 from finblade.geometry import associate_items                   # noqa: E402
@@ -81,6 +81,8 @@ from finblade.flowrules import (                          # noqa: E402
     DirectionPolicy, GroupCrossingDetector, WrongWayDetector,
 )
 from finblade.geometry import foot_point                 # noqa: E402
+from finblade.attributes import AttributeSampler, Vocabulary, describe   # noqa: E402
+from finblade.appearance import CropQualityGate          # noqa: E402
 from finblade.identity import PersonRefHasher            # noqa: E402
 from finblade.metrics import (                           # noqa: E402
     DwellTracker, FlowCounter, ZoneStateAggregator, ZoneStats, density_per_sqm,
@@ -94,6 +96,7 @@ from finblade.zones import (in_ignored_region, zone_of,      # noqa: E402
 from services.inference.camera_worker import CameraWorker, CameraState  # noqa: E402
 from services.inference.reid_client import ReIDResolver                 # noqa: E402
 from services.inference.hazard_client import HazardDetector             # noqa: E402
+from services.inference.attr_client import ClipAttributeScorer          # noqa: E402
 from services.inference.ppe_client import (PPEDetector,                 # noqa: E402
                                            DEFAULT_MEDICAL_CHECKPOINT,
                                            MEDICAL_CHECKPOINTS)
@@ -314,6 +317,21 @@ BGR_FIRE       = (75, 75, 239)    # #ef4b4b fire  — critical, solid
 BGR_SMOKE      = (41, 160, 240)   # #f0a029 smoke — warning
 BGR_COMPLIANCE = (240, 110, 123)  # #7b6ef0 PPE violation — person-based policy
 
+def _attr_crop(frame, box):
+    """The pixels kept with an appearance tag: the person plus a little
+    context, copied out of the RAW frame so nothing is burned in. Small on
+    purpose — it is evidence for a human confirming a search hit, not a
+    still of the room."""
+    x1, y1, x2, y2 = box
+    h, w = frame.shape[:2]
+    pw, ph = (x2 - x1) * 0.15, (y2 - y1) * 0.08
+    cx1, cy1 = max(0, int(x1 - pw)), max(0, int(y1 - ph))
+    cx2, cy2 = min(w, int(x2 + pw)), min(h, int(y2 + ph))
+    if cx2 - cx1 < 16 or cy2 - cy1 < 16:
+        return None
+    return frame[cy1:cy2, cx1:cx2].copy()
+
+
 def _stamp_zone_occupancy(events, occupancy, zones) -> None:
     """Add the resulting occupancy/density to movement events, in place.
 
@@ -364,7 +382,10 @@ POST_EVENT_TYPES = {ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE,
                     # Hazards must reach the store or they cannot appear on the
                     # history page, which is the whole point of raising them.
                     HAZARD_FIRE, HAZARD_SMOKE,
-                    PPE_VIOLATION, PPE_COMPLIANT}
+                    PPE_VIOLATION, PPE_COMPLIANT,
+                    # Appearance tags exist to be searched, which happens on
+                    # the API side; a tag that stays in the worker is nothing.
+                    PERSON_ATTRIBUTES}
 # Alerts that get a saved snapshot: critical density (R-02) and restricted-zone
 # intrusion (R-06) ONLY.
 #
@@ -864,6 +885,63 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         enabled=bool(_hz_cfg.get("enabled", False)),
     )
     hazard.load()
+    # Appearance attributes for search (finblade/attributes.py). A fourth model
+    # — CLIP zero-shot — but scored on a handful of crops per track in its
+    # whole life, not per frame, so its cost is a rounding error next to the
+    # detector. Off unless the config asks; disables itself loudly without the
+    # weights. The crop gate is the ReID one: a truncated or occluded person
+    # produces a confident wrong colour exactly as it produces a bad embedding.
+    _at_cfg = getattr(cfg, "attributes", None) or {}
+    _at_vocab = Vocabulary.from_config(_at_cfg)
+    attr_scorer = ClipAttributeScorer(
+        _at_vocab, weights=_at_cfg.get("weights"),
+        device=str(_at_cfg.get("device", "0")),
+        enabled=bool(_at_cfg.get("enabled", False)),
+        half=bool(_at_cfg.get("half", True)))
+    attr_scorer.load()
+    attrs = AttributeSampler(
+        _at_vocab, attr_scorer.score,
+        gate=CropQualityGate(min_height_px=float(_at_cfg.get("min_crop_height", 96.0)),
+                             min_confidence=float(_at_cfg.get("min_crop_confidence", 0.5))),
+        samples=int(_at_cfg.get("samples", 3)),
+        sample_interval_s=float(_at_cfg.get("sample_interval_seconds", 3.0)),
+        stable_age_s=float(_at_cfg.get("stable_age_seconds", 2.0)),
+        min_confidence=float(_at_cfg.get("min_confidence", 0.45)),
+        budget_per_frame=int(_at_cfg.get("budget_per_frame", 4)),
+        crop_fn=_attr_crop)
+    attr_counter = [0]              # crops saved; a list so the closure can bump it
+
+    def _emit_attribute_tag(tag, zone_id):
+        """One PERSON_ATTRIBUTES event per track, with its best crop saved.
+
+        person_ref and global_ref are the same anonymous refs every other event
+        carries, so a search hit joins to the rest of that person's movement
+        without any new identifier. The crop is the raw pixels at the best
+        sample — saved so a human can confirm a hit, and subject to the same
+        retention as every other bookmark.
+        """
+        frame_ref = None
+        if tag.crop is not None and getattr(tag.crop, "size", 0) > 0:
+            attr_counter[0] += 1
+            _name = f"attr_{cfg.camera_id}_{attr_counter[0]:06d}_t{tag.track_id}.jpg"
+            try:
+                cv2.imwrite(os.path.join(BOOKMARKS_DIR, _name), tag.crop)
+                frame_ref = "/bookmarks/" + _name
+            except Exception:                               # noqa: BLE001
+                log.exception("attribute crop save failed")
+        who = dict(person_ref=hasher.ref(tag.track_id), track_id=tag.track_id)
+        _g = reid.global_ref(tag.track_id)
+        if _g:
+            who["global_ref"] = _g
+        ev = new_event(PERSON_ATTRIBUTES, cfg.camera_id, cfg.site_id, tag.ts,
+                       attributes=tag.attributes, confidences=tag.confidence,
+                       samples=tag.samples, description=describe(tag.attributes),
+                       **who)
+        if zone_id:
+            ev["zone_id"] = zone_id
+        if frame_ref:
+            ev["frame"] = frame_ref
+        pending_events.append(ev)
     # PPE compliance (R-11). Third model, same frame, same cadence discipline.
     # Off unless the config asks. Zone-scoped: if no zone declares required_ppe
     # there is nothing to judge and the model is not loaded at all, so a site
@@ -1426,6 +1504,15 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                              cfg.frame_width, cfg.frame_height)
             reid.resolve_pending(vnow, zone_by_tid)
 
+        # Appearance tags: score a few crops per track, emit once per track.
+        # The crop saved with the tag is cut from the RAW frame (no boxes or
+        # labels burned in) at the sampler's best-scoring box, so a human
+        # confirming a search hit sees the person, not the annotation.
+        if attr_scorer.ready and tracks:
+            for _tg in attrs.observe(frame, tracks, conf_by_tid, vnow,
+                                     cfg.frame_width, cfg.frame_height):
+                _emit_attribute_tag(_tg, zone_by_tid.get(_tg.track_id))
+
         # Warn (throttled) when most tracked people fall outside every zone —
         # almost always a polygon that does not reach the frame edge.
         if feet_total >= 50 and (now - last_zone_warn) >= 60.0:
@@ -1509,6 +1596,12 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
                     zone_id=gone_zone, dwell_time=dwell.dwell(tid, vnow),
                     **gone_who))
                 loiter_started.discard((pr, gone_zone))
+            # A track that vanished before its full sample set still yields a
+            # row if it had at least one scored crop; the crop for it was cut
+            # when it was scored, so the frame here is not needed.
+            _tg = attrs.drop(tid, vnow)
+            if _tg is not None:
+                _emit_attribute_tag(_tg, prev_zone.get(tid))
             deb.drop(tid)
             dwell.drop(tid)
             reid.drop(tid)          # frees the feature bank + releases the binding
@@ -1881,6 +1974,11 @@ def run(config_path, max_seconds=None, source=None, camera_id=None, site_id=None
         # "ready, saw nothing" — otherwise a run with no fire alerts looks
         # identical whether the detector was working or was never loaded.
         "hazard": hazard.snapshot(),
+        # Was anyone being tagged this run, and how often did the model decline
+        # to say ("unknown")? A high unknown share is the number to watch: it
+        # means the crops are too small or the lighting too poor to describe.
+        "attributes": dict(attr_scorer.snapshot(), **attrs.snapshot(),
+                           crops_saved=attr_counter[0]),
         # Same reasoning: "disabled" and "unavailable" must be distinguishable
         # from "ran and everybody was compliant". A run with no PPE alerts
         # looks identical either way without this.

@@ -51,6 +51,10 @@ PPE_COMPLIANT = "PPE_COMPLIANT"
 # person: no person_ref, no driver.
 TRACKER_ARRIVED = "TRACKER_ARRIVED"
 TRACKER_DEPARTED = "TRACKER_DEPARTED"
+# What a tracked person was wearing and carrying, from a fixed vocabulary
+# (finblade/attributes.py). A DESCRIPTION for search — "blue top, cap" —
+# never an identity, and never gender, age or ethnicity. One per track.
+PERSON_ATTRIBUTES = "PERSON_ATTRIBUTES"
 
 EVENT_TYPES = {
     ZONE_ENTRY, ZONE_EXIT, ZONE_TRANSITION, DENSITY_UPDATE, CAPACITY_WARNING,
@@ -58,7 +62,7 @@ EVENT_TYPES = {
     CAMERA_HEARTBEAT, CAMERA_ONLINE, CAMERA_OFFLINE, CAMERA_RECOVERED,
     WRONG_DIRECTION, GROUP_CROSSING, FACILITY_ENTRY, FACILITY_EXIT,
     HAZARD_FIRE, HAZARD_SMOKE, PPE_VIOLATION, PPE_COMPLIANT,
-    TRACKER_ARRIVED, TRACKER_DEPARTED,
+    TRACKER_ARRIVED, TRACKER_DEPARTED, PERSON_ATTRIBUTES,
 }
 
 # Per-type required payload keys and their python types.
@@ -105,6 +109,11 @@ _SCHEMA = {
     # confirmed. dwell_s on departure is how long it stood there.
     TRACKER_ARRIVED: {"tracker_id": str, "branch_id": str, "distance_m": _NUM},
     TRACKER_DEPARTED: {"tracker_id": str, "branch_id": str, "distance_m": _NUM},
+    # attributes: {attr: label}; confidences: {attr: prob} (plural — the
+    # singular `confidence` is the any-event detection number); samples:
+    # how many crops were voted.
+    PERSON_ATTRIBUTES: {"person_ref": str, "attributes": dict, "confidences": dict,
+                        "samples": int},
 }
 
 # Fields that are type-checked WHEN PRESENT but never required.

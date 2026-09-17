@@ -6,13 +6,13 @@ Redis, or Postgres. app.py is a thin HTTP adapter over this class.
 
 import os
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from finblade import org as _org
 from finblade import gps as _trk
 from finblade.emission import DEFAULT_KEEPALIVE, StateWriteGate
-from finblade.events import (FACILITY_ENTRY, FACILITY_EXIT, TRACKER_ARRIVED,
-                             TRACKER_DEPARTED, new_event)
+from finblade.events import (FACILITY_ENTRY, FACILITY_EXIT, PERSON_ATTRIBUTES,
+                             TRACKER_ARRIVED, TRACKER_DEPARTED, new_event)
 from finblade.presence import (
     ADMIT, DISCHARGE, DoorPolicy, FacilityRoster, apply_event,
 )
@@ -106,6 +106,8 @@ class IngestService:
         if payload.get("event_type") not in (TRACKER_ARRIVED, TRACKER_DEPARTED):
             self.store.mark_camera_seen(payload.get("camera_id"), payload.get("timestamp"),
                                         payload.get("site_id"))
+        if payload.get("event_type") == PERSON_ATTRIBUTES:
+            self._save_sighting(payload)
         action = self._apply_presence(payload)
         if self.bus is not None:
             self.bus.publish(payload)
@@ -1228,6 +1230,61 @@ class IngestService:
         self.raise_alert({"rule_id": "R-12", "severity": "INFO", "kind": "CLEAR",
                           "message": f"tracker {tracker_id} reporting again",
                           "camera_id": tracker_id, "ts": now})
+
+    # -- appearance sightings and search (finblade/attributes.py) --
+    SIGHTING_ATTRS = ("upper_colour", "lower_colour", "headwear", "mask", "bag", "outerwear")
+
+    def _save_sighting(self, evt: dict) -> None:
+        attrs = evt.get("attributes") or {}
+        row = {"event_id": evt.get("event_id"), "ts": float(evt.get("timestamp") or 0),
+               "site_id": evt.get("site_id"), "camera_id": evt.get("camera_id"),
+               "zone_id": evt.get("zone_id"), "person_ref": evt.get("person_ref"),
+               "global_ref": evt.get("global_ref"), "confidences": evt.get("confidences") or {},
+               "samples": evt.get("samples"), "description": evt.get("description"),
+               "frame": evt.get("frame"),
+               "extra": {k: v for k, v in attrs.items() if k not in self.SIGHTING_ATTRS}}
+        for k in self.SIGHTING_ATTRS:
+            row[k] = attrs.get(k)
+        self.store.save_sighting(row)
+
+    def find_people(self, filters: dict, t0: float, t1: float, site_ids=None,
+                    camera_id: str = None, actor: str = "api", limit: int = 500) -> dict:
+        """Sightings matching a description, GROUPED BY PERSON.
+
+        A person seen on three cameras is one result with a timeline, because
+        that is the question — "where did they go" — and because three rows
+        for one person reads as three people. Unresolved sightings (no
+        global_ref) stay separate: merging them would be a guess. Every call
+        is written to the audit table; this is an incident tool.
+        """
+        filters = {k: str(v) for k, v in (filters or {}).items() if v}
+        rows = self.store.search_sightings(t0, t1, filters=filters, site_ids=site_ids,
+                                           camera_id=camera_id, limit=limit)
+        groups: Dict[str, dict] = {}
+        for r in rows:
+            key = r.get("global_ref") or f"{r.get('camera_id')}:{r.get('person_ref')}"
+            g = groups.setdefault(key, {"person": key, "resolved": bool(r.get("global_ref")),
+                                        "description": r.get("description"),
+                                        "first_seen": r["ts"], "last_seen": r["ts"],
+                                        "cameras": set(), "sites": set(), "sightings": []})
+            g["first_seen"] = min(g["first_seen"], r["ts"]); g["last_seen"] = max(g["last_seen"], r["ts"])
+            g["cameras"].add(r.get("camera_id")); g["sites"].add(r.get("site_id"))
+            g["sightings"].append({k: r.get(k) for k in ("ts", "site_id", "camera_id", "zone_id",
+                                                          "description", "frame", "confidences",
+                                                          "samples")})
+        out = []
+        for g in groups.values():
+            g["cameras"] = sorted(c for c in g["cameras"] if c)
+            g["sites"] = sorted(s for s in g["sites"] if s)
+            g["sightings"].sort(key=lambda s: s["ts"])
+            out.append(g)
+        out.sort(key=lambda g: g["last_seen"], reverse=True)
+        self.store.record_search(actor, dict(filters, **{"from": t0, "to": t1,
+                                                          "site_ids": sorted(site_ids) if site_ids else None,
+                                                          "camera_id": camera_id}),
+                                 len(out), time.time())
+        return {"people": out, "count": len(out), "sightings": len(rows),
+                "filters": filters, "from": t0, "to": t1}
 
     # -- outbound webhooks (finblade/webhooks.py) --
     def save_webhook(self, payload: dict, existing_id: str = None) -> Tuple[int, dict]:

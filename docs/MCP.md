@@ -87,6 +87,7 @@ the AWS deployment, not the on-prem host.
 | Alerts | `alerts_active`, `alerts_history`, `alert`, `incident_frame` (image), `acknowledge_alert`, `resolve_alert` |
 | Events / reports | `events_history`, `occupancy_report`, `reports_list` |
 | Vehicles | `vehicles`, `vehicle`, `vehicle_track`, `vehicle_arrivals`, `vehicles_at_branch` |
+| Appearance | `find_people` (description → candidates grouped by person, with crops; audited), `person_timeline` |
 | System | `system_health`, `rules_reference` |
 
 Every listing tool takes `region_id` / `city_id` / `branch_id` (they intersect).
@@ -104,6 +105,7 @@ Time windows: `hours` back from now, or `from_ts` / `to_ts` epoch seconds UTC.
 | `zone_id` identifies a zone | unique only within a camera; the API returns 409 with candidates, surfaced verbatim as the tool error |
 | Summing camera counts = people | `areas_live` and `summary.people_in_zones` are distinct-person; `people_in_view` says "may double count" |
 | A tracker is a driver | it is a vehicle or asset; no driver field exists anywhere |
+| An appearance match identifies someone | `find_people` returns candidates matching a clothing description, never an identity; the tool description forbids gender/age/ethnicity and tells the model to say "matches the description" |
 | R-10 / R-11 are verdicts | they are evaluation models; the rule reference says so |
 
 ## 5. Security

@@ -191,6 +191,16 @@ class Store:
     def list_deliveries(self, webhook_id: str = None, limit: int = 100) -> List[dict]: return []
     def get_delivery(self, delivery_id: str) -> Optional[dict]: return None
 
+    # Appearance sightings (finblade/attributes.py). `filters` is
+    # {attr: label}; only the six known attributes are indexed columns.
+    def save_sighting(self, s: dict) -> None: pass
+    def search_sightings(self, t0: float, t1: float, filters: dict = None,
+                         site_ids=None, camera_id: str = None,
+                         limit: int = 500) -> List[dict]: return []
+    def sightings_of(self, global_ref: str, t0: float, t1: float) -> List[dict]: return []
+    def record_search(self, actor: str, query: dict, hits: int, ts: float) -> None: pass
+    def list_search_audit(self, limit: int = 100) -> List[dict]: return []
+
     # Facility roster. Default no-ops mean a backend without persistence keeps
     # working — but with the STRICT discharge policy the roster cannot be
     # rebuilt from live video, so a no-op backend resets occupancy to zero on
@@ -253,6 +263,8 @@ class InMemoryStore(Store):
         self._tracker_live: Dict[str, dict] = {}
         self._webhooks: Dict[str, dict] = {}
         self._deliveries: Dict[str, dict] = {}
+        self._sightings: List[dict] = []
+        self._search_audit: List[dict] = []
 
     def save_event(self, evt: dict) -> None:
         """Replace on event_id, matching both durable stores.
@@ -407,9 +419,12 @@ class InMemoryStore(Store):
                         if float(e.get("ts") or e.get("timestamp") or 0) >= cutoff_ts]
         before_pos = len(self._positions)
         self._positions = [p for p in self._positions if float(p.get("ts") or 0) >= cutoff_ts]
+        before_sig = len(self._sightings)
+        self._sightings = [s for s in self._sightings if float(s.get("ts") or 0) >= cutoff_ts]
         return {"zone_state_ts": before_states - len(self._zone_ts),
                 "events": before_events - len(self._events),
-                "tracker_positions": before_pos - len(self._positions)}
+                "tracker_positions": before_pos - len(self._positions),
+                "person_sightings": before_sig - len(self._sightings)}
 
     def event_count(self) -> int:
         return len(self._events)
@@ -730,6 +745,47 @@ class InMemoryStore(Store):
     def get_delivery(self, delivery_id):
         d = self._deliveries.get(str(delivery_id))
         return dict(d) if d else None
+
+    # ---- appearance sightings ----------------------------------------------
+    SIGHTING_ATTRS = ("upper_colour", "lower_colour", "headwear", "mask", "bag", "outerwear")
+
+    def save_sighting(self, s):
+        if s.get("event_id") and any(x.get("event_id") == s["event_id"] for x in self._sightings):
+            return                              # replayed event, same as save_event
+        self._sightings.append(dict(s))
+
+    def search_sightings(self, t0, t1, filters=None, site_ids=None, camera_id=None, limit=500):
+        filters = {k: v for k, v in (filters or {}).items() if v}
+        out = []
+        for s in self._sightings:
+            if not (t0 <= float(s.get("ts") or 0) <= t1):
+                continue
+            if site_ids is not None and s.get("site_id") not in site_ids:
+                continue
+            if camera_id and s.get("camera_id") != camera_id:
+                continue
+            ok = True
+            for k, v in filters.items():
+                have = s.get(k) if k in self.SIGHTING_ATTRS else (s.get("extra") or {}).get(k)
+                if have != v:
+                    ok = False
+                    break
+            if ok:
+                out.append(dict(s))
+        out.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
+        return out[:limit]
+
+    def sightings_of(self, global_ref, t0, t1):
+        rows = [dict(s) for s in self._sightings
+                if s.get("global_ref") == global_ref and t0 <= float(s.get("ts") or 0) <= t1]
+        rows.sort(key=lambda r: float(r.get("ts") or 0))
+        return rows
+
+    def record_search(self, actor, query, hits, ts):
+        self._search_audit.append({"ts": ts, "actor": actor, "query": dict(query), "hits": int(hits)})
+
+    def list_search_audit(self, limit=100):
+        return [dict(a) for a in self._search_audit[-limit:]][::-1]
 
     def rebind_global_ref(self, drop_ref, keep_ref):
         """Point stored events at the surviving ref after two identities merge."""

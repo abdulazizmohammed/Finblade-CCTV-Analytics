@@ -48,6 +48,10 @@ class CameraConfig:
     # Off by default, and additionally inert unless a zone declares
     # ppe_profile: medical.
     medical_ppe: dict = field(default_factory=dict)
+    # Appearance attributes for search (finblade/attributes.py). Optional;
+    # ABSENT MEANS OFF: a fourth model per camera and a table of what people
+    # wore are both things a site turns on deliberately.
+    attributes: dict = field(default_factory=dict)
 
 
 def load_camera_config(path: str) -> CameraConfig:
@@ -82,4 +86,5 @@ def load_camera_config(path: str) -> CameraConfig:
         hazard=cfg.get("hazard") or {},
         ppe=cfg.get("ppe") or {},
         medical_ppe=cfg.get("medical_ppe") or {},
+        attributes=cfg.get("attributes") or {},
     )

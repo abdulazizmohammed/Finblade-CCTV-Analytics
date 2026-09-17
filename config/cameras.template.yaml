@@ -287,4 +287,36 @@ medical_ppe:
   raw_log_conf: 0.25
   status: evaluation
 
+# --- appearance attributes, for "find the person in the blue top" ------------
+#
+# A FOURTH model (CLIP ViT-B/32 zero-shot, models/clip_vit_b32_laion2b.safetensors,
+# MIT) scored on a handful of crops PER TRACK — not per frame — so its GPU cost
+# is a rounding error next to the detector (~10 ms per crop, ~600 MiB fp32 /
+# ~300 MiB fp16 per worker). Off by default: it writes a table of what people
+# wore, which a site turns on deliberately (DECISIONS.md D-41).
+#
+# WHAT IT TAGS: upper/lower colour, headwear, mask, bag, outerwear — a fixed
+# vocabulary in finblade/attributes.py. It cannot be configured to infer
+# gender, age or ethnicity; the loader refuses those attribute names.
+#
+# THE MODEL WAS NOT BUILT FOR CCTV CROPS. A 100-px person under fluorescent
+# light is a hard image and "grey" vs "blue" on a shadowed shirt is a coin
+# toss. Three defences, all tunable here: several samples are voted, an
+# attribute below min_confidence is reported "unknown", and every tag ships
+# with a crop for a human to check. Watch the "unknown" share in the health
+# snapshot before trusting search results on a new camera.
+attributes:
+  enabled: true                # shared template: every UI-provisioned camera
+  weights: models/clip_vit_b32_laion2b.safetensors
+  device: "0"
+  half: true                   # fp16 on GPU halves the memory; accuracy unchanged
+  samples: 3                   # crops voted per track
+  sample_interval_seconds: 3.0 # spacing between those crops
+  stable_age_seconds: 2.0      # a track must exist this long before its first sample
+  min_confidence: 0.45         # below this an attribute is "unknown", not a guess
+  min_crop_height: 96          # same floor as ReID, same reason
+  min_crop_confidence: 0.5
+  budget_per_frame: 4          # at most this many crops scored on one frame
+  # vocabulary: {}             # replaces the default wholesale; see attributes.py
+
 zones: []

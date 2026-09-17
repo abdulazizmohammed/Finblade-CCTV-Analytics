@@ -221,6 +221,44 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
     last_error             TEXT
 );
 
+-- Appearance sightings (finblade/attributes.py): one row per tracked person
+-- per camera visit, with what they wore and carried — a DESCRIPTION drawn
+-- from a fixed vocabulary, never an identity, and never gender / age /
+-- ethnicity. Built for "find the person in the blue top with a cap in the
+-- last two hours": a query over indexed text columns, milliseconds whatever
+-- the window. Retention-pruned with the other telemetry; the crop with it.
+CREATE TABLE IF NOT EXISTS person_sightings (
+    id                     BIGSERIAL PRIMARY KEY,
+    event_id               TEXT UNIQUE,        -- the PERSON_ATTRIBUTES event this came from
+    ts                     DOUBLE PRECISION NOT NULL,
+    site_id                TEXT,
+    camera_id              TEXT NOT NULL,
+    zone_id                TEXT,
+    person_ref             TEXT,               -- opaque per-camera hash
+    global_ref             TEXT,               -- opaque cross-camera ref, NULL if unresolved
+    upper_colour           TEXT,
+    lower_colour           TEXT,
+    headwear               TEXT,
+    mask                   TEXT,
+    bag                    TEXT,
+    outerwear              TEXT,
+    extra                  TEXT,               -- JSON: any attribute outside the six columns
+    confidences            TEXT,               -- JSON: attr -> prob
+    samples                BIGINT,
+    description            TEXT,               -- "blue top, black bottoms, cap"
+    frame                  TEXT                -- /bookmarks/... crop for human confirmation
+);
+
+-- Every appearance search is written down: who asked, for what, when, how
+-- many hits. It is an incident tool, and the record is the control.
+CREATE TABLE IF NOT EXISTS search_audit (
+    id                     BIGSERIAL PRIMARY KEY,
+    ts                     DOUBLE PRECISION NOT NULL,
+    actor                  TEXT,               -- api key role or 'chatbot'
+    query                  TEXT NOT NULL,      -- JSON of the filters
+    hits                   BIGINT
+);
+
 CREATE TABLE IF NOT EXISTS cameras (
     camera_id              TEXT PRIMARY KEY,
     site_id                TEXT,               -- == branches.branch_id, see above
@@ -534,6 +572,10 @@ CREATE INDEX IF NOT EXISTS ix_zones_area ON zones(physical_area_id);
 CREATE INDEX IF NOT EXISTS ix_cities_region ON cities(region_id);
 CREATE INDEX IF NOT EXISTS ix_branches_city ON branches(city_id);
 CREATE INDEX IF NOT EXISTS ix_cameras_site ON cameras(site_id);
+CREATE INDEX IF NOT EXISTS ix_ps_ts ON person_sightings(ts);
+CREATE INDEX IF NOT EXISTS ix_ps_site_ts ON person_sightings(site_id, ts);
+CREATE INDEX IF NOT EXISTS ix_ps_attrs ON person_sightings(upper_colour, lower_colour, headwear, mask, bag, outerwear);
+CREATE INDEX IF NOT EXISTS ix_ps_gref ON person_sightings(global_ref);
 CREATE INDEX IF NOT EXISTS ix_wd_due ON webhook_deliveries(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS ix_wd_hook ON webhook_deliveries(webhook_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_tpos_tracker_ts ON tracker_positions(tracker_id, ts);

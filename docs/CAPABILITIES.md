@@ -197,6 +197,35 @@ is dropped on parse.
 | Self-hosted (offline) street tiles for an air-gapped site | **Planned** | a Saudi Arabia vector extract (Protomaps / OpenMapTiles, ODbL) served from `media/tiles/`; the OSM public servers are for light use only |
 | BLE tags (the Xiaomi Tag) as "arrived at branch" / "on board" beacons | **Planned** | `kind: BLE_TAG` is accepted; no gateway yet — needs a hardware test of address rotation |
 
+### Appearance attributes and search
+
+"Find the person in the blue top with a cap, last two hours, Jeddah." A
+**description**, never an identity. Tags come from a fixed vocabulary
+(`finblade/attributes.py`) that refuses gender / age / ethnicity attribute
+names; search is a query over an indexed table, never a scan of frames.
+
+| Capability | Status | Implementation |
+|---|---|---|
+| Per-track appearance tags: upper/lower colour, headwear, mask, bag, outerwear — CLIP zero-shot on a few crops per track, voted, "unknown" below a confidence floor | **Runs** — see below | `finblade/attributes.py`, `services/inference/attr_client.py`, `attributes:` block in the camera config (off by default; on in the template) |
+| Each attribute judged on its own region of the person (head band, torso, legs) with prompt ensembles per label | Built | `attributes.DEFAULT_REGIONS`, `attr_client.score` |
+| `PERSON_ATTRIBUTES` event per track with a saved crop for human confirmation | Built | `events.py`; crops under `evidence/bookmarks/attr_*.jpg`, same retention as other bookmarks |
+| `person_sightings` table, indexed on time and the six attributes; retention-pruned | Built | `ddl_pg.sql`, both stores |
+| `GET /api/v1/search/people` — grouped by person (cross-camera ref) with a timeline and crop per sighting; Region/City/Branch scope; full key only; every search audited (`search_audit`) | Built | `service.find_people`, `app.py`; `GET /search/people/{global_ref}`, `/search/audit`, `/search/vocabulary` |
+| Ops page "Find by appearance" tab; MCP tools `find_people`, `person_timeline` | Built | `web/ops.html`, `services/mcp/server.py` |
+| Evidence contact sheet: crop beside its tags and confidences | Built | `scripts/attributes_sheet.py` → `evidence/attributes_sheet*.jpg` |
+
+**Runs, not correct.** The model is a general image-text model, not a CCTV
+one. Measured on the two clips on this box (`evidence/attributes_sheet_v1_fullcrop.jpg`
+→ `_v2_regions.jpg` → `attributes_sheet.jpg`, `attributes_sheet_lab.jpg`):
+upper colour, helmets and hi-vis vests are mostly right; trousers stopped
+inheriting the shirt colour once regions were introduced; **mask is
+low-trust in both directions** (false "yes" on back views was fixed by prompt
+ensembles, but a real surgical mask on the lab clip was missed) — for masks
+and caps rely on the R-11 PPE detector, which was trained for them; "bag"
+false-positives on empty hands; a crouching person's shirt reads as their
+bottoms; yellow gloves make a navy shirt "yellow". Search results are
+candidates with a crop each; a human confirms. Tests: `tests/test_attributes.py`.
+
 The fallback outline in `map.html` is a **hand-drawn ~40-vertex schematic**,
 not a survey boundary. Leaflet is the one vendored third-party UI library in
 the repo — an exception to "no framework, no chart library" made because a
@@ -221,7 +250,7 @@ backends, service, HTTP).
 
 ## 5. Events
 
-23 types, one envelope, one validator shared by the pipeline and the API
+24 types, one envelope, one validator shared by the pipeline and the API
 (`finblade/events.py`, reused via `services/api/schema.py`).
 
 `ZONE_ENTRY` `ZONE_EXIT` `ZONE_TRANSITION` `DENSITY_UPDATE` `CAPACITY_WARNING`
@@ -229,7 +258,11 @@ backends, service, HTTP).
 `CAMERA_HEARTBEAT` `CAMERA_ONLINE` `CAMERA_OFFLINE` `CAMERA_RECOVERED`
 `WRONG_DIRECTION` `GROUP_CROSSING` `FACILITY_ENTRY` `FACILITY_EXIT`
 `HAZARD_FIRE` `HAZARD_SMOKE` `PPE_VIOLATION` `PPE_COMPLIANT`
-`TRACKER_ARRIVED` `TRACKER_DEPARTED`
+`TRACKER_ARRIVED` `TRACKER_DEPARTED` `PERSON_ATTRIBUTES`
+
+`PERSON_ATTRIBUTES` is one per tracked person: what they wore and carried,
+from a fixed vocabulary, with a crop — a description for search, never an
+identity (see §3, Appearance attributes).
 
 The two `TRACKER_*` events come from a GPS tracker crossing a branch
 geofence, not from a camera: `camera_id` carries the tracker id and `site_id`
@@ -448,11 +481,11 @@ crossing publishes immediately.
 Postgres is the only durable backend. `FINBLADE_INMEMORY=1` selects an in-memory
 store for tests; it is explicitly opt-in and never a fallback.
 
-**23 tables** — `alerts` `area_state_ts` `branches` `camera_transits` `cameras`
+**25 tables** — `alerts` `area_state_ts` `branches` `camera_transits` `cameras`
 `cities` `events` `facility_doors` `facility_meta` `facility_presence`
-`forwarder_cursors` `org_meta` `physical_areas` `regions` `reports`
-`tracker_live` `tracker_positions` `trackers` `webhook_deliveries` `webhooks`
-`zone_live` `zone_state_ts` `zones`
+`forwarder_cursors` `org_meta` `person_sightings` `physical_areas` `regions`
+`reports` `search_audit` `tracker_live` `tracker_positions` `trackers`
+`webhook_deliveries` `webhooks` `zone_live` `zone_state_ts` `zones`
 (`services/api/ddl_pg.sql`, idempotent `CREATE`/`ALTER ... IF NOT EXISTS`).
 
 **18 SQL views** for direct chatbot querying (`services/api/analytics_views.py`):
@@ -471,7 +504,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**89 routes** — 86 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**93 routes** — 90 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 
@@ -490,6 +523,7 @@ WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 | Organisation | `org` (tree + roll-ups), `org/index`, `org/import`, `org/meta`, `org/regions`, `org/cities`, `org/branches` (upsert + delete) |
 | Trackers | `trackers/ingest` (GET+POST, three dialects, `?key=`), `trackers` list/register/delete, `trackers/{id}/track` |
 | Webhooks | `webhooks` list/create/update/delete, `webhooks/{id}/test`, `webhooks/deliveries`, `webhooks/deliveries/{id}`, `webhooks/deliveries/{id}/retry` |
+| Search | `search/people` (full key, audited), `search/people/{global_ref}`, `search/audit`, `search/vocabulary` |
 | Ops | `health`, `healthz`, `readyz`, `finblade/status`, `finblade/flush`, `frames/orphaned` |
 
 | Capability | Status | Implementation |
@@ -568,7 +602,7 @@ where cumulative footfall has no liveness problem.
 | Operator actions taken in FinBlade applied to local alerts | Built | `_apply_finblade_ack` |
 | Chart tags on live-feed responses | Built | `services/api/charts.py` |
 | 8 chatbot tools: `cctv_live_state` `cctv_zone_history` `cctv_zone_at_time` `cctv_zone_duration` `cctv_alerts` `cctv_occupancy_report` `cctv_camera_snapshot` `cctv_incident_frame` | Built | `integrations/finblade_ai/tools.py` (SDK-native form; superseded by the MCP server below) |
-| **MCP server** — 33 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track + arrivals + at-branch; health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
+| **MCP server** — 35 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track + arrivals + at-branch; find_people + person_timeline (appearance search); health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
 | MCP resources `finblade://data-notes` `finblade://rules` `finblade://capabilities` and the `cctv_analyst` prompt | Built | `services/mcp/server.py` |
 | Bearer-token gate on the MCP transport (`FINBLADE_MCP_TOKEN`); the server itself uses the integration key, so it is read-only except alert ack/resolve | Built | `make_app` in `server.py`; tested over the real transport in `tests/test_mcp_server.py` |
 | **Outbound webhooks** — subscriptions (URL, secret, events, severities, rules, Region/City/Branch scope, extra headers) that receive a signed JSON POST on `alert.raised` / `cleared` / `acknowledged` / `resolved` and `tracker.arrived` / `departed`, with branch/camera/zone context and action links | Built | `finblade/webhooks.py`, `services/api/webhooks.py`, `docs/WEBHOOKS.md` |

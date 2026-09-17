@@ -125,6 +125,7 @@ class TestSurface(Base):
         "alerts_active", "alerts_history", "alert", "incident_frame", "acknowledge_alert", "resolve_alert",
         "events_history", "occupancy_report", "reports_list",
         "vehicles", "vehicle", "vehicle_track", "vehicle_arrivals", "vehicles_at_branch",
+        "find_people", "person_timeline",
         "system_health", "rules_reference",
     }
 
@@ -142,6 +143,21 @@ class TestSurface(Base):
         self.assertIn("unique only WITHIN a camera", desc["zone_history"])
         self.assertIn("never a person", desc["vehicles"])
         self.assertIn("double count", desc["cameras"])
+        self.assertIn("never an identity", desc["find_people"])
+        self.assertIn("gender, age or ethnicity", desc["find_people"])
+
+    def test_find_people_runs_through_the_api(self):
+        from finblade.events import PERSON_ATTRIBUTES, new_event
+        e = new_event(PERSON_ATTRIBUTES, "CAM-R1", "RUH-01", time.time() - 30, person_ref="pr_" + "c" * 16,
+                      attributes={"upper_colour": "blue", "headwear": "cap"},
+                      confidences={"upper_colour": 0.9}, samples=3, description="blue top, cap")
+        e["global_ref"] = "gp_mcp"
+        self.assertEqual(202, self.c.post("/api/v1/events/ingest", json=e).status_code)
+        r = self.call("find_people", upper_colour="blue", hours=1)
+        self.assertEqual(1, r["count"])
+        self.assertEqual("blue top, cap", r["people"][0]["description"])
+        self.assertEqual(0, self.call("find_people", upper_colour="blue", region_id="WESTERN", hours=1)["count"])
+        self.assertEqual(1, self.call("person_timeline", global_ref="gp_mcp", hours=1)["count"])
 
     def test_resources_and_prompt(self):
         res = run(self.server.list_resources())

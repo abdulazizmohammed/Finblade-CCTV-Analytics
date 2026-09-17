@@ -275,3 +275,29 @@ models:
       the integration brief used spaces. The adapter matches on a case- and
       separator-folded key so either spelling resolves, but nothing is verified
       until the weights are read.
+
+  appearance_attributes:
+    purpose: >-
+      zero-shot appearance tagging (clothing colour, headwear, mask, bag,
+      outerwear) on per-track crops, for description search — finblade/attributes.py
+    file: models/clip_vit_b32_laion2b.safetensors
+    sha256: ac4f8c4b88af6d963118cbf40ad93176d092abbedfcb752601ae1866352656e6
+    bytes: 605000000                 # approx; verify with `ls -l`
+    source: huggingface.co/laion/CLIP-ViT-B-32-laion2B-s34B-b79K (open_clip_model.safetensors)
+    architecture: open_clip ViT-B-32, LAION-2B s34B b79K
+    loaded_by: services/inference/attr_client.py (open_clip_torch 3.3.0)
+    format: safetensors             # chosen so it loads under torch's weights_only default;
+                                    # the OpenAI-format checkpoint is a pickled TorchScript
+                                    # archive that torch 2.11 refuses from a path
+    status: evaluation
+    production_validated: false
+    site_validated: false
+    license: "MIT (open_clip / LAION weights, as stated on the model card)"
+    license_verified: false
+    notes: >-
+      General-purpose image-text model, NOT trained on CCTV crops. Tags are
+      majority-voted over several crops and reported "unknown" below a
+      confidence floor; every tag carries a crop for a human to confirm. The
+      vocabulary is fixed (finblade/attributes.py) and refuses gender / age /
+      ethnicity attribute names. Evaluate the "unknown" share per camera before
+      trusting search results. DECISIONS.md D-41.

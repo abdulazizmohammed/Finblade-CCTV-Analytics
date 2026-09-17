@@ -570,6 +570,38 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
         here = [t for t in rows if t.get("at_branch_id") == branch_id]
         return {"branch_id": branch_id, "vehicles": here, "count": len(here)}
 
+    # ---- appearance search -------------------------------------------------
+    @s.tool(description=(
+        "Find people by what they were WEARING or CARRYING — a description, "
+        "never an identity: upper_colour / lower_colour (black, white, grey, blue, "
+        "red, green, yellow, brown, beige, pink, purple, orange), headwear (none, "
+        "cap, hat, headscarf, helmet), mask (yes/no), bag (none, backpack, handbag, "
+        "shoulder bag, box or case), outerwear (none, lab coat, jacket, abaya, "
+        "vest). Give only the attributes the user stated. Results are grouped by "
+        "person with a timeline of sightings (camera, zone, time) and a crop per "
+        "sighting; they are CANDIDATES for a human to confirm — colour under lab "
+        "lighting is unreliable, so say 'matches the description' not 'found'. "
+        "Never infer or report gender, age or ethnicity. Window by hours or "
+        "from_ts/to_ts. Every search is audited. " + _SCOPE_DOC))
+    def find_people(upper_colour: Optional[str] = None, lower_colour: Optional[str] = None,
+                    headwear: Optional[str] = None, mask: Optional[str] = None,
+                    bag: Optional[str] = None, outerwear: Optional[str] = None,
+                    hours: Optional[float] = None, from_ts: Optional[float] = None,
+                    to_ts: Optional[float] = None, camera_id: Optional[str] = None,
+                    region_id: Optional[str] = None, city_id: Optional[str] = None,
+                    branch_id: Optional[str] = None, limit: int = 200) -> dict:
+        p = dict(_window(hours, from_ts, to_ts, 2.0), **_scope(region_id, city_id, branch_id),
+                 upper_colour=upper_colour, lower_colour=lower_colour, headwear=headwear,
+                 mask=mask, bag=bag, outerwear=outerwear, camera_id=camera_id, limit=limit)
+        return _ok(backend.get("/api/v1/search/people", p))
+
+    @s.tool(description=(
+        "Every sighting of one person ref (a `person` value from find_people that "
+        "starts with gp_) in the last `hours`: where they were seen, when, with a "
+        "crop each. The ref is an opaque hash and names nobody."))
+    def person_timeline(global_ref: str, hours: float = 24.0) -> dict:
+        return _ok(backend.get(f"/api/v1/search/people/{global_ref}", {"hours": hours}))
+
     # ---- system ------------------------------------------------------------
     @s.tool(description=(
         "Is the CCTV system healthy: database, bus, cameras online, and the "

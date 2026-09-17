@@ -1056,3 +1056,61 @@ a worker clock running ahead cannot make a just-resolved alert unfindable.
 **Reverse:** drop the two tables, `finblade/webhooks.py`,
 `services/api/webhooks.py`, the `_notify` calls in `service.py`, the routes,
 `_webhook_loop`, and `web/webhooks.html`.
+
+## D-41 — Appearance attributes: a description index, never an identity
+**Choice:** tag each tracked person ONCE with what they wore and carried —
+upper/lower colour, headwear, mask, bag, outerwear — from a fixed vocabulary,
+using CLIP zero-shot (ViT-B/32, LAION-2B, MIT) on a few crops per track;
+store the tags as rows; answer "find the person in the blue top with a cap"
+with an indexed query, grouped by cross-camera ref, each hit carrying a crop
+for a human to confirm. Full key only, every search audited.
+
+**WHY INDEX AT INGEST AND NOT SCAN FRAMES.** Searching footage with a vision
+model at query time is slow, costs per query forever, and scales with hours
+of video. Tagging a track once (~4 image encodes) and querying a table is
+milliseconds whatever the window. A busy branch is a few thousand tracks a
+day — nothing.
+
+**WHY CLIP ZERO-SHOT AND NOT A TRAINED ATTRIBUTE MODEL.** The vocabulary is
+a list of prompts, so a site can add "clipboard" or drop "abaya" in config
+without training anything — and the project forbids training. It runs
+on-prem; the crops never leave the site. The price is that CLIP was not
+built for CCTV crops, which the evaluation sheets show plainly.
+
+**WHAT THE SHEETS SHOWED, AND WHAT CHANGED BECAUSE OF THEM.**
+`evidence/attributes_sheet_v1_fullcrop.jpg`: scoring every attribute on the
+whole crop let the dominant colour answer every question — trousers came back
+the colour of the shirt, a helmet was "seen" on a bare head, and "mask: yes"
+on 20 of 22 unmasked people. Two changes, both kept: (1) each attribute is
+judged on ITS region of the person (`DEFAULT_REGIONS`: head band, torso,
+legs), which fixed the colour echo and the phantom helmets; (2) prompt
+ensembles per label — "no mask" now also covers "turned away", which
+removed the back-of-head false positives. A third "face not visible" class
+was tried and rejected: at head-band resolution it swallowed frontal faces
+too (23/23). Still wrong after that: a real surgical mask on the lab clip was
+MISSED; "bag" false-positives on empty hands; a crouching person's shirt reads
+as bottoms; yellow gloves make a navy shirt "yellow". **Mask is therefore a
+low-trust attribute; the R-11 PPE detector, trained for masks and caps, is the
+right source for those, and the docs say so.**
+
+**THE LINE THAT MAKES THIS DEFENSIBLE.** The vocabulary loader refuses any
+attribute named gender / sex / age / ethnicity / race / religion / skin /
+nationality / identity / name, whatever a config says. Tags describe
+clothing and carried items; "abaya" and "headscarf" are garment terms and
+Wareed can strike them from the vocabulary. Results are candidates with a
+crop, and the MCP tool tells the model to say "matches the description",
+never "found". A search is a write to `search_audit`.
+
+**ONE NEW PINNED DEPENDENCY:** `open_clip_torch==3.3.0`; weights
+`models/clip_vit_b32_laion2b.safetensors` (safetensors, because the
+OpenAI-format checkpoint is a pickled archive torch 2.11 refuses from a path).
+~10 ms per crop, ~300 MiB fp16 per worker. `attributes.enabled` is on in the
+shared UI template and off by default in `finblade/config.py`.
+
+**Cost:** two modules, three routes, one table (+audit), an Ops tab, two MCP
+tools, a contact-sheet script. The worker gained ~60 lines at two hook points.
+
+**Reverse:** `attributes.enabled: false` stops tagging; dropping the two
+tables, `finblade/attributes.py`, `services/inference/attr_client.py`, the
+search routes and the Ops tab removes it. `PERSON_ATTRIBUTES` can stay in
+`EVENT_TYPES`; nothing else emits it.

@@ -153,6 +153,26 @@ table.zt tr{cursor:pointer;} table.zt tr:hover td{background:var(--fb-surface-2)
 table.zt td.muted{color:var(--fb-text-faint);}
 .twrap{overflow-x:auto;}
 
+/* find by appearance */
+.findbar{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-bottom:8px;}
+.findbar .f{display:flex;flex-direction:column;gap:4px;}
+.findbar label{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fb-text-muted);}
+.findbar select,.findbar input{background:var(--fb-void);border:1px solid var(--fb-line);color:var(--fb-text);font-family:var(--fb-font-data);font-size:11px;padding:5px 7px;border-radius:var(--fb-r);min-width:110px;}
+.findbar select:focus,.findbar input:focus{outline:none;border-color:var(--fb-teal);box-shadow:0 0 0 3px var(--fb-teal-ghost);}
+.findbar .fb-btn{font-size:11px;padding:6px 10px;}
+.findmeta{font-family:var(--fb-font-data);font-size:10.5px;color:var(--fb-text-muted);margin-bottom:10px;line-height:1.5;}
+.hits{display:flex;flex-direction:column;gap:10px;}
+.hit{display:grid;grid-template-columns:96px 1fr;gap:12px;background:var(--fb-void);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:10px;}
+.hit img{width:96px;height:128px;object-fit:cover;border-radius:var(--fb-r);background:var(--fb-surface-2);border:1px solid var(--fb-line);}
+.hit .nocrop{width:96px;height:128px;display:flex;align-items:center;justify-content:center;font-family:var(--fb-font-data);font-size:9px;color:var(--fb-text-faint);border:1px dashed var(--fb-line);border-radius:var(--fb-r);text-align:center;}
+.hit .desc{font-weight:600;font-size:13px;}
+.hit .when{font-family:var(--fb-font-data);font-size:10.5px;color:var(--fb-text-muted);margin:2px 0 6px;}
+.hit .tl{display:flex;flex-wrap:wrap;gap:5px;}
+.hit .tl span{font-family:var(--fb-font-data);font-size:10px;padding:2px 7px;border:1px solid var(--fb-line);border-radius:2px;color:var(--fb-text-muted);cursor:pointer;}
+.hit .tl span:hover{border-color:var(--fb-teal);color:var(--fb-teal);}
+.hit .tl span.more{color:var(--fb-text-faint);cursor:default;}
+.hit .unres{font-family:var(--fb-font-data);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--fb-warning);margin-left:6px;}
+
 /* attention */
 .attn .sec{margin-bottom:14px;}
 /* Alerts scroll inside their own box, as on the wall dashboard, so a busy
@@ -256,11 +276,20 @@ table.zt td.muted{color:var(--fb-text-faint);}
         <div class="tabs">
           <button class="tab on" data-tab="cam" id="tabCam">This camera's zones</button>
           <button class="tab" data-tab="all" id="tabAll">All zones in scope</button>
+          <button class="tab" data-tab="find" id="tabFind">Find by appearance</button>
         </div>
         <div id="paneCam"><div class="zones" id="zones"><div class="empty">no camera selected</div></div></div>
         <div id="paneAll" hidden>
           <div class="chips" id="chips"></div>
           <div class="twrap"><table class="zt" id="ztable"></table></div>
+        </div>
+        <div id="paneFind" hidden>
+          <!-- A DESCRIPTION search: what someone wore or carried, from a fixed
+               vocabulary. Results are candidates with a crop each, for a
+               person to confirm. Never gender, age or ethnicity. -->
+          <div class="findbar" id="findbar"></div>
+          <div class="findmeta" id="findmeta">Pick one or more attributes and search. Results are people matching the description in the window, grouped by person — candidates for you to confirm from the crops, not identifications.</div>
+          <div class="hits" id="hits"></div>
         </div>
       </div>
     </section>
@@ -518,7 +547,44 @@ function renderZones(){
   host.innerHTML=zs.length?zs.map(zcard).join(''):'<div class="empty">this camera has no zones reporting — draw them in the zone editor</div>';
 }
 const COLS=[['status','Status'],['zone_name','Zone'],['camera_id','Camera'],['site','Branch'],['occupancy','Occ'],['capacity_pct','Cap %'],['density','/m²'],['trend','Trend']];
-document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{TAB=t.dataset.tab;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));$('paneCam').hidden=TAB!=='cam';$('paneAll').hidden=TAB!=='all';if(TAB==='cam')renderZones();else renderTable();}));
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{TAB=t.dataset.tab;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));$('paneCam').hidden=TAB!=='cam';$('paneAll').hidden=TAB!=='all';$('paneFind').hidden=TAB!=='find';if(TAB==='cam')renderZones();else if(TAB==='all')renderTable();else initFind();}));
+
+// ---- find by appearance -------------------------------------------------------------
+// A query over the sightings table (never a scan of frames). The vocabulary
+// comes from the API so a site's config, not this page, decides what can be
+// asked. A hit is a person (grouped by cross-camera ref) with a crop per
+// sighting — candidates, confirmed by a human looking at the crop.
+let FIND_VOCAB=null;
+async function initFind(){
+  if(FIND_VOCAB){return;}
+  try{FIND_VOCAB=(await fetch(`${API}/api/v1/search/vocabulary`).then(r=>r.json())).attributes;}catch(e){$('findmeta').textContent='cannot load the attribute vocabulary — is the API up?';return;}
+  const nice=k=>k.replace('_colour',' colour').replace('_',' ');
+  $('findbar').innerHTML=Object.entries(FIND_VOCAB).map(([k,labels])=>`<div class="f"><label for="fa_${k}">${esc(nice(k))}</label><select id="fa_${k}" data-attr="${esc(k)}"><option value="">any</option>${labels.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('')}</select></div>`).join('')
+    +`<div class="f"><label for="fa_hours">Last</label><select id="fa_hours"><option value="1">1 h</option><option value="2" selected>2 h</option><option value="6">6 h</option><option value="24">24 h</option><option value="72">3 days</option></select></div>
+     <button class="fb-btn fb-btn--primary" id="fa_go">Search</button>`;
+  $('fa_go').addEventListener('click',runFind);
+}
+async function runFind(){
+  const q=new URLSearchParams();
+  document.querySelectorAll('#findbar select[data-attr]').forEach(s=>{if(s.value)q.set(s.dataset.attr,s.value);});
+  if(![...q.keys()].length){$('findmeta').textContent='Pick at least one attribute.';return;}
+  q.set('hours',$('fa_hours').value);
+  ['region','city','branch'].forEach(k=>{if(SCOPE[k])q.set(k+'_id',SCOPE[k]);});
+  $('findmeta').textContent='searching…';
+  let r;
+  try{const resp=await fetch(`${API}/api/v1/search/people?${q}`); if(resp.status===403){$('findmeta').textContent='Appearance search needs the full API key.';return;} r=await resp.json();}
+  catch(e){$('findmeta').textContent='search failed — API offline?';return;}
+  $('findmeta').textContent=`${r.count} ${r.count===1?'person':'people'} matching · ${r.sightings} sighting${r.sightings===1?'':'s'} · last ${$('fa_hours').value} h · ${SCOPE.sites?'in scope':'whole network'}. Candidates only — confirm from the crop.`;
+  const fmt=ts=>new Date(ts*1000).toLocaleTimeString('en-GB');
+  $('hits').innerHTML=r.people.length?r.people.map(p=>{
+    const s0=p.sightings[p.sightings.length-1]||{};
+    const crop=s0.frame?`<img src="${esc(withKey(API+s0.frame))}" alt="" loading="lazy">`:`<div class="nocrop">no crop saved</div>`;
+    const tl=p.sightings.slice(-8).map(s=>`<span data-cam="${esc(s.camera_id)}" data-zone="${esc(s.zone_id||'')}" title="${esc(s.description||'')}">${esc(fmt(s.ts))} · ${esc(s.camera_id)}${s.zone_id?' · '+esc(s.zone_id):''}</span>`).join('')+(p.sightings.length>8?`<span class="more">+${p.sightings.length-8} more</span>`:'');
+    return `<div class="hit">${crop}<div><div class="desc">${esc(p.description||'no attributes determined')}${p.resolved?'':'<span class="unres">single camera · unresolved</span>'}</div>
+      <div class="when">${esc(fmt(p.first_seen))} → ${esc(fmt(p.last_seen))} · ${p.cameras.map(esc).join(', ')}${p.sites.length?' · '+p.sites.map(esc).join(', '):''}</div>
+      <div class="tl">${tl}</div></div></div>`;}).join('')
+    :'<div class="empty">nobody matching that description in the window</div>';
+}
 function renderTable(){
   const all=scoped(ZONES).filter(z=>matchQ(z.zone_name,z.zone_id,z.camera_id));
   const counts={all:all.length,warning:all.filter(z=>zstatus(z)==='WARNING').length,critical:all.filter(z=>zstatus(z)==='CRITICAL').length,restricted:all.filter(z=>z.restricted).length,ppe:all.filter(z=>Array.isArray(z.ppe_required)&&z.ppe_required.length).length};
@@ -579,7 +645,7 @@ function renderAll(){
   const sn=JSON.stringify([SEL,Q,cams.map(c=>[c.camera_id,c.effective_state,c.people_in_view,c.site_id]),zones.map(z=>[z.camera_id,z.zone_id,zstatus(z)])]);
   if(sn!==SIG.nav){SIG.nav=sn;renderNav(cams,zones);}
   const sz=JSON.stringify([SEL,HL,TAB,FILTER,SORT,Q,zones.map(z=>[z.camera_id,z.zone_id,z.occupancy,z.density,z.status,z.capacity_pct,z.trend,z.ppe_compliant,z.ppe_non_compliant,z.ppe_not_assessable,JSON.stringify(z.ppe_violations||{})])]);
-  if(sz!==SIG.zones){SIG.zones=sz;if(TAB==='cam')renderZones();else renderTable();}
+  if(sz!==SIG.zones){SIG.zones=sz;if(TAB==='cam')renderZones();else if(TAB==='all')renderTable();}
   const sa=JSON.stringify([alerts.map(a=>[a.alert_id,a.status,a.severity,a.message]),zones.filter(z=>zrank(z)>0).map(z=>[z.camera_id,z.zone_id,z.occupancy,z.density,zstatus(z)]),cams.filter(c=>!isOn(c)).map(c=>[c.camera_id,c.effective_state,Math.round(c.seconds_since_seen||0)])]);
   if(sa!==SIG.attn){SIG.attn=sa;renderAttention(cams,zones,alerts);}
   const c=CAMS.find(x=>x.camera_id===SEL); if(c)renderFocusHead(c);

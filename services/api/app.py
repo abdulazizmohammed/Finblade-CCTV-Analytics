@@ -1211,6 +1211,73 @@ async def org_delete_branch(branch_id: str):
     return JSONResponse(status_code=code, content=body)
 
 
+# ---- appearance search -----------------------------------------------------
+# "Find the person in the blue top with a cap, last two hours, Jeddah." A
+# query over the person_sightings table (finblade/attributes.py) — never a
+# scan of frames. Full key only and audited: it is an incident tool that
+# locates a specific individual by description, which is the one thing in
+# this system that needs a reason.
+
+from finblade.attributes import DEFAULT_VOCABULARY as _ATTR_VOCAB       # noqa: E402
+
+
+def _search_actor(request: Request) -> str:
+    role = _auth.presented_role(request.url.path, request.headers, request.query_params)
+    return role or "anonymous"
+
+
+@app.get("/api/v1/search/vocabulary")
+async def search_vocabulary():
+    """The attribute names and labels a search may ask for (the default
+    vocabulary; a camera config may narrow or extend it)."""
+    return {"attributes": {a: list(labels) for a, labels in _ATTR_VOCAB.items()}}
+
+
+@app.get("/api/v1/search/people")
+async def search_people(request: Request,
+                        upper_colour: str = Query(None), lower_colour: str = Query(None),
+                        headwear: str = Query(None), mask: str = Query(None),
+                        bag: str = Query(None), outerwear: str = Query(None),
+                        hours: float = Query(None), frm: float = Query(None, alias="from"),
+                        to: float = Query(None, alias="to"), camera_id: str = Query(None),
+                        region_id: str = Query(None), city_id: str = Query(None),
+                        branch_id: str = Query(None), limit: int = Query(500)):
+    """People matching a description in a window, grouped by person, newest
+    first, each with a timeline of sightings and a crop per sighting.
+    Results are CANDIDATES for a human to confirm."""
+    if _auth.enabled() and _search_actor(request) != _auth.ROLE_FULL:
+        return JSONResponse(status_code=403, content={"error": "forbidden",
+                                                      "detail": "appearance search needs the full key"})
+    filters = {"upper_colour": upper_colour, "lower_colour": lower_colour, "headwear": headwear,
+               "mask": mask, "bag": bag, "outerwear": outerwear}
+    now = time.time()
+    t1 = to if to is not None else now
+    t0 = frm if frm is not None else t1 - (hours if hours else 2.0) * 3600.0
+    sites = _scope(region_id, city_id, branch_id)
+    return svc.find_people(filters, t0, t1, site_ids=sites, camera_id=camera_id,
+                           actor=_search_actor(request), limit=limit)
+
+
+@app.get("/api/v1/search/people/{global_ref}")
+async def search_person_timeline(request: Request, global_ref: str,
+                                 hours: float = Query(24.0)):
+    """Every sighting of one cross-camera ref in the window, oldest first."""
+    if _auth.enabled() and _search_actor(request) != _auth.ROLE_FULL:
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    now = time.time()
+    rows = svc.store.sightings_of(global_ref, now - hours * 3600.0, now)
+    svc.store.record_search(_search_actor(request), {"global_ref": global_ref, "hours": hours},
+                            len(rows), now)
+    return {"global_ref": global_ref, "sightings": rows, "count": len(rows)}
+
+
+@app.get("/api/v1/search/audit")
+async def search_audit(request: Request, limit: int = Query(100)):
+    if _auth.enabled() and _search_actor(request) != _auth.ROLE_FULL:
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    return {"searches": svc.store.list_search_audit(limit)}
+
+
 # ---- outbound webhooks -----------------------------------------------------
 # Subscriptions that push alerts (and vehicle arrivals) to FinBlade AI
 # workflows or any URL, signed, with retries. finblade/webhooks.py and

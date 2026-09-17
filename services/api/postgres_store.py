@@ -516,7 +516,7 @@ class PostgresStore(Store):
         """
         deleted = {}
         with self._pool.connection() as conn:
-            for table in ("zone_state_ts", "events", "tracker_positions"):
+            for table in ("zone_state_ts", "events", "tracker_positions", "person_sightings"):
                 deleted[table] = conn.execute(
                     f"DELETE FROM {table} WHERE ts < %s", (cutoff_ts,)).rowcount
         self._zone_cache = None
@@ -1011,6 +1011,75 @@ class PostgresStore(Store):
         rows = self._q(f"SELECT {self._WD_COLS} FROM webhook_deliveries WHERE delivery_id=%s",
                        (str(delivery_id),))
         return rows[0] if rows else None
+
+    # ---- appearance sightings ----------------------------------------------
+    SIGHTING_ATTRS = ("upper_colour", "lower_colour", "headwear", "mask", "bag", "outerwear")
+    _PS_COLS = ("id,event_id,ts,site_id,camera_id,zone_id,person_ref,global_ref,"
+                "upper_colour,lower_colour,headwear,mask,bag,outerwear,extra,confidences,"
+                "samples,description,frame")
+
+    def save_sighting(self, s: dict) -> None:
+        self._x(
+            "INSERT INTO person_sightings(event_id,ts,site_id,camera_id,zone_id,person_ref,"
+            "global_ref,upper_colour,lower_colour,headwear,mask,bag,outerwear,extra,confidences,"
+            "samples,description,frame) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (event_id) DO NOTHING",
+            (s.get("event_id"), float(s["ts"]), s.get("site_id"), s["camera_id"], s.get("zone_id"),
+             s.get("person_ref"), s.get("global_ref"), s.get("upper_colour"), s.get("lower_colour"),
+             s.get("headwear"), s.get("mask"), s.get("bag"), s.get("outerwear"),
+             json.dumps(s.get("extra") or {}), json.dumps(s.get("confidences") or {}),
+             int(s.get("samples") or 0), s.get("description"), s.get("frame")))
+
+    def _ps_out(self, rows: List[dict]) -> List[dict]:
+        for r in rows:
+            for k in ("extra", "confidences"):
+                try:
+                    r[k] = json.loads(r.get(k) or "{}")
+                except ValueError:
+                    r[k] = {}
+        return rows
+
+    def search_sightings(self, t0: float, t1: float, filters: dict = None,
+                         site_ids=None, camera_id: str = None, limit: int = 500) -> List[dict]:
+        where = ["ts BETWEEN %s AND %s"]
+        params: list = [float(t0), float(t1)]
+        for k, v in (filters or {}).items():
+            if not v:
+                continue
+            if k in self.SIGHTING_ATTRS:
+                where.append(f"{k}=%s"); params.append(str(v))
+            else:
+                # Attributes outside the six columns live in the JSON blob.
+                where.append("(extra::jsonb ->> %s)=%s"); params += [str(k), str(v)]
+        if site_ids is not None:
+            if not site_ids:
+                return []
+            where.append("site_id = ANY(%s)"); params.append(list(site_ids))
+        if camera_id:
+            where.append("camera_id=%s"); params.append(camera_id)
+        params.append(int(limit))
+        return self._ps_out(self._q(
+            f"SELECT {self._PS_COLS} FROM person_sightings WHERE {' AND '.join(where)} "
+            "ORDER BY ts DESC LIMIT %s", params))
+
+    def sightings_of(self, global_ref: str, t0: float, t1: float) -> List[dict]:
+        return self._ps_out(self._q(
+            f"SELECT {self._PS_COLS} FROM person_sightings WHERE global_ref=%s "
+            "AND ts BETWEEN %s AND %s ORDER BY ts", (global_ref, float(t0), float(t1))))
+
+    def record_search(self, actor: str, query: dict, hits: int, ts: float) -> None:
+        self._x("INSERT INTO search_audit(ts,actor,query,hits) VALUES (%s,%s,%s,%s)",
+                (float(ts), actor, json.dumps(query, sort_keys=True), int(hits)))
+
+    def list_search_audit(self, limit: int = 100) -> List[dict]:
+        rows = self._q("SELECT id,ts,actor,query,hits FROM search_audit ORDER BY ts DESC LIMIT %s",
+                       (int(limit),))
+        for r in rows:
+            try:
+                r["query"] = json.loads(r.get("query") or "{}")
+            except ValueError:
+                r["query"] = {}
+        return rows
 
     # ---- identity merge write-back ----------------------------------------
     def rebind_global_ref(self, drop_ref: str, keep_ref: str) -> int:

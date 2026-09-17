@@ -73,10 +73,13 @@ class Backend:
         if self.key:
             self._s.headers["Authorization"] = f"Bearer {self.key}"
 
+    def _headers_for(self, path: str) -> Optional[Dict[str, str]]:
+        return ({"Authorization": f"Bearer {self.search_key}"}
+                if self.search_key and path.startswith("/api/v1/search/") else None)
+
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        h = {"Authorization": f"Bearer {self.search_key}"} \
-            if self.search_key and path.startswith("/api/v1/search/") else None
-        r = self._s.get(self.base + path, params=_clean(params), timeout=self.timeout, headers=h)
+        r = self._s.get(self.base + path, params=_clean(params), timeout=self.timeout,
+                        headers=self._headers_for(path))
         return _decode(r.status_code, r.headers.get("content-type", ""), r.content)
 
     def post(self, path: str, body: Optional[Dict[str, Any]] = None) -> Any:
@@ -84,7 +87,8 @@ class Backend:
         return _decode(r.status_code, r.headers.get("content-type", ""), r.content)
 
     def get_bytes(self, path: str, params: Optional[Dict[str, Any]] = None):
-        r = self._s.get(self.base + path, params=_clean(params), timeout=self.timeout)
+        r = self._s.get(self.base + path, params=_clean(params), timeout=self.timeout,
+                        headers=self._headers_for(path))
         return r.status_code, r.headers.get("content-type", ""), r.content
 
 
@@ -601,6 +605,8 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
         "A colour also matches its look-alikes (white~grey/beige, black~grey/navy, "
         "red~pink/orange …): each hit is `match: exact` or `near` — report near "
         "hits as 'possibly, tagged as grey'. Pass near=false for exact only. "
+        "Each sighting carries a `sighting_id`: call sighting_crop(sighting_id) to "
+        "SHOW the crop — the `frame` path is not fetchable on its own. "
         "Never infer or report gender, age or ethnicity. Window by hours or "
         "from_ts/to_ts. Every search is audited. " + _SCOPE_DOC))
     def find_people(upper_colour: Optional[str] = None, lower_colour: Optional[str] = None,
@@ -625,6 +631,19 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
     def person_timeline(global_ref: str, hours: float = 24.0) -> dict:
         r = backend.get(f"/api/v1/search/people/{global_ref}", {"hours": hours})
         return _ok(r, hint=_SEARCH_HINT if isinstance(r, dict) and r.get("status") == 403 else "")
+
+    @s.tool(description=(
+        "The saved JPEG crop of one sighting from find_people / person_timeline, "
+        "by its `sighting_id`. Returns an image of the person's clothing as the "
+        "tagger saw it — show it so a human can confirm or reject the candidate. "
+        "The person is unidentified and must stay so."))
+    def sighting_crop(sighting_id: str) -> Image:
+        code, ctype, body = backend.get_bytes(f"/api/v1/search/sightings/{sighting_id}/crop")
+        if code == 403:
+            raise ApiError(f"API 403 — {_SEARCH_HINT}")
+        if code >= 400 or not body:
+            raise ApiError(f"no crop for sighting {sighting_id} (HTTP {code})")
+        return Image(data=body, format="jpeg")
 
     # ---- system ------------------------------------------------------------
     @s.tool(description=(

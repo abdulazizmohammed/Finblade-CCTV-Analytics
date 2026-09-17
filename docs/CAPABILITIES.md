@@ -211,6 +211,7 @@ names; search is a query over an indexed table, never a scan of frames.
 | `PERSON_ATTRIBUTES` event per track with a saved crop for human confirmation | Built | `events.py`; crops under `evidence/bookmarks/attr_*.jpg`, same retention as other bookmarks |
 | `person_sightings` table, indexed on time and the six attributes; retention-pruned | Built | `ddl_pg.sql`, both stores |
 | `GET /api/v1/search/people` — grouped by person (cross-camera ref) with a timeline and crop per sighting; Region/City/Branch scope; full key only; every search audited (`search_audit`); no attribute = everyone tagged in the window | Built | `service.find_people`, `app.py`; `GET /search/people/{global_ref}`, `/search/audit`, `/search/vocabulary` |
+| `GET /api/v1/search/sightings/{sighting_id}/crop` — the saved crop by the id a search returned (the contract for integrations; `frame` is a filesystem-shaped path, not one); full key; 404 when aged out | Built | `app.py`; MCP `sighting_crop` returns it as an image block |
 | Near-colour search: a colour also matches its CCTV look-alikes (`NEAR_COLOURS`: white ~ grey/beige, black ~ grey/navy, red ~ pink/orange …); exact hits rank first, each hit carries `match: exact|near`, `near=0` for exact only. Non-colour attributes never widen. Came from the first live tag: a white shirt stored as grey | Built | `finblade/attributes.py` `near_labels`, `service.find_people`; Ops tab "near match" badge |
 | Ops page "Find by appearance" tab; MCP tools `find_people`, `person_timeline` | Built | `web/ops.html`, `services/mcp/server.py` |
 | Evidence contact sheet: crop beside its tags and confidences | Built | `scripts/attributes_sheet.py` → `evidence/attributes_sheet*.jpg` |
@@ -505,7 +506,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**93 routes** — 90 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**94 routes** — 91 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 
@@ -603,7 +604,7 @@ where cumulative footfall has no liveness problem.
 | Operator actions taken in FinBlade applied to local alerts | Built | `_apply_finblade_ack` |
 | Chart tags on live-feed responses | Built | `services/api/charts.py` |
 | 8 chatbot tools: `cctv_live_state` `cctv_zone_history` `cctv_zone_at_time` `cctv_zone_duration` `cctv_alerts` `cctv_occupancy_report` `cctv_camera_snapshot` `cctv_incident_frame` | Built | `integrations/finblade_ai/tools.py` (SDK-native form; superseded by the MCP server below) |
-| **MCP server** — 35 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track + arrivals + at-branch; find_people + person_timeline (appearance search); health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
+| **MCP server** — 36 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track + arrivals + at-branch; find_people + person_timeline + sighting_crop (appearance search, crop as image); health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
 | MCP resources `finblade://data-notes` `finblade://rules` `finblade://capabilities` and the `cctv_analyst` prompt | Built | `services/mcp/server.py` |
 | Bearer-token gate on the MCP transport (`FINBLADE_MCP_TOKEN`); the server itself uses the integration key, so it is read-only except alert ack/resolve | Built | `make_app` in `server.py`; tested over the real transport in `tests/test_mcp_server.py` |
 | Appearance search from the chatbot needs the full key: optional `FINBLADE_MCP_SEARCH_KEY` is sent on `/api/v1/search/*` only, everything else keeps the integration scope; unset, the tools return the API's 403 | Built | `Backend.get` in `services/mcp/server.py`; `docs/MCP.md` §1 |

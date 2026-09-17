@@ -1289,9 +1289,13 @@ class IngestService:
             m = _match(r)
             if m == "exact":
                 g["match"] = "exact"
+            # sighting_id is the contract for fetching the crop
+            # (GET /api/v1/search/sightings/{id}/crop); `frame` stays for the
+            # UI's <img> but is a filesystem-shaped path, not a promise.
             g["sightings"].append(dict({k: r.get(k) for k in ("ts", "site_id", "camera_id", "zone_id",
                                                                "description", "frame", "confidences",
-                                                               "samples")}, match=m))
+                                                               "samples")}, match=m,
+                                       sighting_id=r.get("event_id")))
         out = []
         for g in groups.values():
             g["cameras"] = sorted(c for c in g["cameras"] if c)

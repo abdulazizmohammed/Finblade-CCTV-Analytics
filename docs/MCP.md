@@ -81,8 +81,9 @@ asyncio.run(main())
 
 Map each MCP tool to a Messages API tool (`name`, `description`, `input_schema`)
 and execute `tool_use` blocks with `s.call_tool(name, input)`. Image tools
-(`camera_snapshot`, `incident_frame`) return an `image` content block — pass it
-to the model as an image.
+(`camera_snapshot`, `incident_frame`, `sighting_crop`) return an `image`
+content block — pass it to the model as an image **and render it to the
+user**; a search hit without its crop is a description, not evidence.
 
 **Through Anthropic's remote MCP connector** (`mcp_servers=[{type:"url",…}]` +
 `tools=[{type:"mcp_toolset", mcp_server_name:…}]`, beta `mcp-client-2025-11-20`):
@@ -100,7 +101,7 @@ the AWS deployment, not the on-prem host.
 | Alerts | `alerts_active`, `alerts_history`, `alert`, `incident_frame` (image), `acknowledge_alert`, `resolve_alert` |
 | Events / reports | `events_history`, `occupancy_report`, `reports_list` |
 | Vehicles | `vehicles`, `vehicle`, `vehicle_track`, `vehicle_arrivals`, `vehicles_at_branch` |
-| Appearance | `find_people` (description → candidates grouped by person, with crops; audited), `person_timeline` |
+| Appearance | `find_people` (description → candidates grouped by person; audited), `person_timeline`, `sighting_crop` (image, by the `sighting_id` in a result) |
 | System | `system_health`, `rules_reference` |
 
 Every listing tool takes `region_id` / `city_id` / `branch_id` (they intersect).

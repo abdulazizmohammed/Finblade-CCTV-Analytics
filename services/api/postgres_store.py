@@ -1069,6 +1069,11 @@ class PostgresStore(Store):
             f"SELECT {self._PS_COLS} FROM person_sightings WHERE global_ref=%s "
             "AND ts BETWEEN %s AND %s ORDER BY ts", (global_ref, float(t0), float(t1))))
 
+    def get_sighting(self, event_id: str) -> Optional[dict]:
+        rows = self._ps_out(self._q(
+            f"SELECT {self._PS_COLS} FROM person_sightings WHERE event_id=%s", (event_id,)))
+        return rows[0] if rows else None
+
     def record_search(self, actor: str, query: dict, hits: int, ts: float) -> None:
         self._x("INSERT INTO search_audit(ts,actor,query,hits) VALUES (%s,%s,%s,%s)",
                 (float(ts), actor, json.dumps(query, sort_keys=True), int(hits)))

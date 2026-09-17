@@ -198,6 +198,7 @@ class Store:
                          site_ids=None, camera_id: str = None,
                          limit: int = 500) -> List[dict]: return []
     def sightings_of(self, global_ref: str, t0: float, t1: float) -> List[dict]: return []
+    def get_sighting(self, event_id: str) -> Optional[dict]: return None
     def record_search(self, actor: str, query: dict, hits: int, ts: float) -> None: pass
     def list_search_audit(self, limit: int = 100) -> List[dict]: return []
 
@@ -783,6 +784,9 @@ class InMemoryStore(Store):
                 if s.get("global_ref") == global_ref and t0 <= float(s.get("ts") or 0) <= t1]
         rows.sort(key=lambda r: float(r.get("ts") or 0))
         return rows
+
+    def get_sighting(self, event_id):
+        return next((dict(s) for s in self._sightings if s.get("event_id") == event_id), None)
 
     def record_search(self, actor, query, hits, ts):
         self._search_audit.append({"ts": ts, "actor": actor, "query": dict(query), "hits": int(hits)})

@@ -125,7 +125,7 @@ class TestSurface(Base):
         "alerts_active", "alerts_history", "alert", "incident_frame", "acknowledge_alert", "resolve_alert",
         "events_history", "occupancy_report", "reports_list",
         "vehicles", "vehicle", "vehicle_track", "vehicle_arrivals", "vehicles_at_branch",
-        "find_people", "person_timeline",
+        "find_people", "person_timeline", "sighting_crop",
         "system_health", "rules_reference",
     }
 
@@ -158,6 +158,31 @@ class TestSurface(Base):
         self.assertEqual("blue top, cap", r["people"][0]["description"])
         self.assertEqual(0, self.call("find_people", upper_colour="blue", region_id="WESTERN", hours=1)["count"])
         self.assertEqual(1, self.call("person_timeline", global_ref="gp_mcp", hours=1)["count"])
+        # The crop comes back as an IMAGE block by sighting_id — the chatbot
+        # could not show the `frame` path and told the user to open the UI.
+        from mcp.server.mcpserver.exceptions import ToolError
+        sid = r["people"][0]["sightings"][0]["sighting_id"]
+        self.assertEqual(e["event_id"], sid)
+        with self.assertRaises(ToolError):                          # no crop saved for that one
+            run(self.server.call_tool("sighting_crop", {"sighting_id": sid}))
+        import os, tempfile
+        from services.api import app as _appmod
+        os.makedirs(_appmod._BOOKMARKS_DIR, exist_ok=True)
+        fd, p = tempfile.mkstemp(prefix="attr_test_", suffix=".jpg", dir=_appmod._BOOKMARKS_DIR)
+        os.write(fd, b"\xff\xd8\xff\xe0JPEGBYTES"); os.close(fd)
+        try:
+            e2 = new_event(PERSON_ATTRIBUTES, "CAM-R1", "RUH-01", time.time() - 20, person_ref="pr_" + "d" * 16,
+                           attributes={"upper_colour": "blue"}, confidences={"upper_colour": 0.9}, samples=3,
+                           description="blue top", frame="/bookmarks/" + os.path.basename(p))
+            self.assertEqual(202, self.c.post("/api/v1/events/ingest", json=e2).status_code)
+            res = run(self.server.call_tool("sighting_crop", {"sighting_id": e2["event_id"]}))
+            block = res.content[0] if hasattr(res, "content") else res[0]
+            self.assertEqual("image", block.type)
+            self.assertEqual("image/jpeg", block.mime_type)
+        finally:
+            os.unlink(p)
+        with self.assertRaises(ToolError):
+            run(self.server.call_tool("sighting_crop", {"sighting_id": "ev-nope"}))
 
     def test_resources_and_prompt(self):
         res = run(self.server.list_resources())

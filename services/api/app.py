@@ -1269,9 +1269,42 @@ async def search_person_timeline(request: Request, global_ref: str,
         return JSONResponse(status_code=403, content={"error": "forbidden"})
     now = time.time()
     rows = svc.store.sightings_of(global_ref, now - hours * 3600.0, now)
+    for r in rows:
+        r["sighting_id"] = r.get("event_id")
     svc.store.record_search(_search_actor(request), {"global_ref": global_ref, "hours": hours},
                             len(rows), now)
     return {"global_ref": global_ref, "sightings": rows, "count": len(rows)}
+
+
+@app.get("/api/v1/search/sightings/{sighting_id}/crop")
+async def sighting_crop(request: Request, sighting_id: str):
+    """The saved crop for one sighting, by the `sighting_id` a search returned.
+
+    The contract for integrations (the MCP `sighting_crop` tool), for the same
+    reasons as /incidents/{id}/frame: the `frame` path is filesystem-shaped
+    and guessable; an id is neither, and it must exist as a row first. Full
+    key only, like the search that produced it.
+    """
+    if _auth.enabled() and _search_actor(request) != _auth.ROLE_FULL:
+        return JSONResponse(status_code=403, content={"error": "forbidden",
+                                                      "detail": "appearance search needs the full key"})
+    row = svc.store.get_sighting(sighting_id)
+    if row is None:
+        return JSONResponse(status_code=404, content={"error": "unknown sighting", "sighting_id": sighting_id})
+    ref = row.get("frame")
+    if not ref:
+        return JSONResponse(status_code=404, content={"error": "this sighting has no crop", "sighting_id": sighting_id})
+    name = os.path.basename(str(ref))
+    path = os.path.realpath(os.path.join(_BOOKMARKS_DIR, name))
+    if not path.startswith(os.path.realpath(_BOOKMARKS_DIR) + os.sep):
+        return JSONResponse(status_code=400, content={"error": "invalid frame reference"})
+    if not os.path.isfile(path):
+        return JSONResponse(status_code=404, content={
+            "error": "crop no longer on disk", "sighting_id": sighting_id,
+            "detail": "crops age out with the retention window"})
+    with open(path, "rb") as fh:
+        return Response(content=fh.read(), media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.get("/api/v1/search/audit")

@@ -368,6 +368,17 @@ class TestRoutes(unittest.TestCase):
                                              headers={"Authorization": "Bearer integ-key-integ-key"}).status_code)
             self.assertEqual(200, self.c.get("/api/v1/search/people?upper_colour=red",
                                              headers={"Authorization": "Bearer full-key-full-key"}).status_code)
+            # Through the MCP layer with only the integration key, the tool
+            # error must say what the HOST is missing — the Wareed chatbot
+            # reported it as "this connection lacks the permission", and the
+            # operator went looking at the wrong end.
+            from services.mcp.server import TestClientBackend, build_server
+            import asyncio
+            srv = build_server(TestClientBackend(self.c, api_key="integ-key-integ-key"))
+            with self.assertRaises(Exception) as cm:
+                asyncio.run(srv.call_tool("find_people", {"upper_colour": "red", "hours": 1}))
+            self.assertIn("FINBLADE_MCP_SEARCH_KEY", str(cm.exception))
+            self.assertIn("403", str(cm.exception))
         finally:
             os.environ.clear(); os.environ.update(old)
 

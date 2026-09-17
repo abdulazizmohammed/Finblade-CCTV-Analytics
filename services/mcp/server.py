@@ -134,10 +134,19 @@ class ApiError(ToolError):
     what to send next."""
 
 
-def _ok(data: Any) -> Any:
+def _ok(data: Any, hint: str = "") -> Any:
     if isinstance(data, dict) and data.get("error") is True:
-        raise ApiError(f"API {data.get('status')}: {json.dumps(data.get('detail'))[:600]}")
+        raise ApiError(f"API {data.get('status')}: {json.dumps(data.get('detail'))[:600]}"
+                       + (f" — {hint}" if hint else ""))
     return data
+
+
+# What a 403 on the search routes means operationally. It is a server
+# configuration gap, not a permission the chatbot user lacks — say so, or the
+# model tells the user "you don't have access" and nobody checks the host.
+_SEARCH_HINT = ("appearance search runs with the FULL API key: this MCP server has no "
+                "FINBLADE_MCP_SEARCH_KEY set, or was started before it was added. "
+                "Set it in the MCP host's .env and restart finblade-mcp.")
 
 
 # ------------------------------------------------------------------ helpers --
@@ -606,14 +615,16 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
                  upper_colour=upper_colour, lower_colour=lower_colour, headwear=headwear,
                  mask=mask, bag=bag, outerwear=outerwear, camera_id=camera_id, limit=limit,
                  near=1 if near else 0)
-        return _ok(backend.get("/api/v1/search/people", p))
+        r = backend.get("/api/v1/search/people", p)
+        return _ok(r, hint=_SEARCH_HINT if isinstance(r, dict) and r.get("status") == 403 else "")
 
     @s.tool(description=(
         "Every sighting of one person ref (a `person` value from find_people that "
         "starts with gp_) in the last `hours`: where they were seen, when, with a "
         "crop each. The ref is an opaque hash and names nobody."))
     def person_timeline(global_ref: str, hours: float = 24.0) -> dict:
-        return _ok(backend.get(f"/api/v1/search/people/{global_ref}", {"hours": hours}))
+        r = backend.get(f"/api/v1/search/people/{global_ref}", {"hours": hours})
+        return _ok(r, hint=_SEARCH_HINT if isinstance(r, dict) and r.get("status") == 403 else "")
 
     # ---- system ------------------------------------------------------------
     @s.tool(description=(
@@ -699,7 +710,14 @@ def main(argv=None) -> int:
     ap.add_argument("--stdio", action="store_true", help="serve over stdio instead of HTTP")
     args = ap.parse_args(argv)
 
-    server = build_server(Backend(args.api_url, args.api_key))
+    backend = Backend(args.api_url, args.api_key)
+    server = build_server(backend)
+    # Say it at startup, because the failure mode is a 403 an hour later in a
+    # chatbot transcript: appearance search needs the FULL key on /search/*.
+    print("appearance search (find_people / person_timeline): "
+          + ("ENABLED via FINBLADE_MCP_SEARCH_KEY" if backend.search_key
+             else "DISABLED — set FINBLADE_MCP_SEARCH_KEY=<full FINBLADE_API_KEY> in .env and restart"),
+          file=sys.stderr)
     if args.stdio:
         server.run(transport="stdio")
         return 0

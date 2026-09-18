@@ -238,6 +238,7 @@ async def _facility_counts_loop():
     while True:
         try:
             await asyncio.sleep(COUNTS_TICK)
+            svc.expire_presence()          # no-op unless FINBLADE_PRESENCE_EXPIRE_HOURS is set
             svc.publish_facility_counts()
         except asyncio.CancelledError:
             break

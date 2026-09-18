@@ -332,6 +332,8 @@ above 0 means this file does not cover the cameras actually running.
 | `FINBLADE_REPORT_INTERVAL` | `3600` | R-08 scheduled report cadence, seconds |
 | `DATABASE_URL` | unset | switches to Postgres |
 | `REDIS_URL` | unset | switches to the Redis Streams bus |
+| `FINBLADE_PRESENCE_UNMATCHED_EXIT` | `evict_oldest` | facility count: an observed exit whose ref matches nobody discharges the longest-present occupant; `ignore` = strict (the exit is dropped, the count only ever grows). D-42 |
+| `FINBLADE_PRESENCE_EXPIRE_HOURS` | `0` (off) | retire roster entries older than this — set longer than any plausible visit (a lab that closes at night: `16`) |
 | `FB_LOG_LEVEL` | `INFO` | |
 
 ---

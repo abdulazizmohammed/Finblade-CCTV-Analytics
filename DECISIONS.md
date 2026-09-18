@@ -1114,3 +1114,66 @@ tools, a contact-sheet script. The worker gained ~60 lines at two hook points.
 tables, `finblade/attributes.py`, `services/inference/attr_client.py`, the
 search routes and the Ops tab removes it. `PERSON_ATTRIBUTES` can stay in
 `EVENT_TYPES`; nothing else emits it.
+
+## D-42 — Facility count: an observed exit always counts, even when the ref is a stranger
+**Choice:** when the door sees someone walk lobby → door → outside and the
+roster holds nobody under that ref, discharge the longest-present occupant
+instead of nobody (`FacilityRoster(unmatched_exit="evict_oldest")`, the
+default; `FINBLADE_PRESENCE_UNMATCHED_EXIT=ignore` restores the strict
+rule). Add an optional expiry horizon (`FINBLADE_PRESENCE_EXPIRE_HOURS`,
+off unless set) that retires entries older than a site's plausible visit,
+counted as `expired`, never mixed into discharges. Supersedes the "strict,
+no timeout" paragraph that headed `finblade/presence.py` and the matching
+line in D-9.
+
+**WHAT THE WAREED INSTANCE SHOWED (2026-09-18, three days of one door).**
+`admitted 1303, discharged 179, discharge_unknown 1008, turned_back 1831,
+ambiguous 719; occupancy 120, every one 11–43 h old, none under 4 h`, in a
+building that holds 25–35 people. Two causes, both structural:
+
+1. *Exits could not find their entry.* The roster keys on `global_ref`, and
+   ReID's TTL on that box is 1,800 s (300 s by default, D-9). Anyone inside
+   longer than that is a stranger on the way out, so 85 % of exits were
+   discarded and the roster only ever grew. This is not a bug in either
+   module; it is two correct designs that do not compose — privacy-bounded
+   identity, and a count that was quietly assuming identity lasts a visit.
+2. *Entries were inflated by the door's geometry:* no `OUTSIDE` zone, so
+   everyone visible on the pavement through the glass was "at the door" with
+   no far side, and a track re-acquired on unzoned floor read as a new
+   arrival. That is a siting fix (`scripts/redraw_door_zones.py`, the editor
+   now lists `OUTSIDE`), not a policy one, and is recorded here for the
+   numbers only.
+
+**WHY DISCHARGE RATHER THAN RAISE THE REID TTL.** Holding every visitor's
+appearance embedding in RAM for a working day would make the refs match —
+and would turn a 30-minute privacy bound into an 8-hour one, for a count
+that can be made right without it. The door observation is the strong
+signal (it needs a clean lobby → door → outside sequence); the ref match is
+the weak one (the doorway gives ReID its worst crops, and the TTL is short
+by design). The old rule keyed the count on the weak signal and threw the
+strong one away.
+
+**WHY THE OLDEST.** If the ref did not match, the person's original ref has
+most likely expired, which means they have been inside longer than the
+TTL — the oldest rows are the likeliest candidates. Which row goes is a
+heuristic; how many go is not, and occupancy is the number anyone reads.
+Individual roster membership was never reliable at hour scale and nothing
+in the API promises it.
+
+**THE ERROR THIS INTRODUCES, STATED.** A phantom exit (a tracker
+hallucinating the sequence; a visitor stepping out to take a call and coming
+back as a new track) now subtracts a real person, where before it subtracted
+nobody. The returning visitor is an entry again, so that case nets to zero;
+the hallucination is one wrong count that the next real crossing does not
+compound. Bounded error replaces unbounded drift. The split
+`discharged_matched` / `discharged_unmatched` keeps the share that needed
+the fallback visible, and `discharge_on_empty` records an exit with nobody
+to remove (a cold start, or a door counting people who never came in)
+rather than letting the count go negative.
+
+**Cost:** ~40 lines in `presence.py`, the env knobs in `service.py`, one
+call on the counts tick, five tests; `test_facility_baseline`'s pinned
+"phantom is still there" test now pins the opposite.
+
+**Reverse:** `FINBLADE_PRESENCE_UNMATCHED_EXIT=ignore` per host, no code
+change. The counters keep both readings.

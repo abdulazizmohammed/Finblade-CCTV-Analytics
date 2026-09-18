@@ -424,7 +424,13 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
         "not yet seen to leave, door entry/exit rates, declared baseline and "
         "stale entries. Different from zone occupancy — it survives a person "
         "walking into a corridor no camera watches. If no door zones are "
-        "configured the roster cannot move; say so rather than reporting 0."))
+        "configured the roster cannot move; say so rather than reporting 0. "
+        "Trust check: `doors[].net` (entries minus exits) should track "
+        "`occupancy`; when `stale` is most of `occupancy` the figure is drift, "
+        "not people, and should be reported with that caveat. In `stats`, "
+        "`discharged_unmatched` are exits counted without an identity match "
+        "(normal: identity is forgotten after minutes), `expired` are entries "
+        "retired by the site's horizon."))
     def facility_occupancy() -> dict:
         return _ok(backend.get("/api/v1/facility/occupancy"))
 

@@ -4,6 +4,7 @@ All the API's business logic lives here so it is unit-testable without FastAPI,
 Redis, or Postgres. app.py is a thin HTTP adapter over this class.
 """
 
+import logging
 import os
 import time
 from typing import Dict, List, Optional, Tuple
@@ -27,6 +28,8 @@ from .webhooks import WebhookDispatcher
 # habit as the forwarder's envelope version.
 FACILITY_COUNTS = "FACILITY_COUNTS"
 FACILITY_SCHEMA_VERSION = 1
+
+log = logging.getLogger("finblade.service")
 
 # How long a door policy built from the zones table is reused before rebuilding.
 # Zones change when an operator saves the editor, which also invalidates this
@@ -56,7 +59,22 @@ class IngestService:
             people, stats, doors = self.store.load_presence()
         except Exception:                                   # noqa: BLE001
             people, stats, doors = [], {}, []
-        self.roster = FacilityRoster.from_records(people, stats=stats, doors=doors)
+        # D-42: an exit whose ref matches nobody still discharges someone
+        # (the longest-present) — evict_oldest — unless a site asks for the
+        # original strict behaviour with FINBLADE_PRESENCE_UNMATCHED_EXIT=ignore.
+        # FINBLADE_PRESENCE_EXPIRE_HOURS (0 = off) retires anyone "inside"
+        # longer than a plausible visit; see FacilityRoster.expire.
+        policy = (os.environ.get("FINBLADE_PRESENCE_UNMATCHED_EXIT") or "evict_oldest").strip().lower()
+        if policy not in FacilityRoster.UNMATCHED_EXIT_POLICIES:
+            log.warning("FINBLADE_PRESENCE_UNMATCHED_EXIT=%r is not one of %s; using evict_oldest",
+                        policy, FacilityRoster.UNMATCHED_EXIT_POLICIES)
+            policy = "evict_oldest"
+        try:
+            self.presence_expire_s = max(0.0, float(os.environ.get("FINBLADE_PRESENCE_EXPIRE_HOURS") or 0)) * 3600.0
+        except ValueError:
+            self.presence_expire_s = 0.0
+        self.roster = FacilityRoster.from_records(people, stats=stats, doors=doors,
+                                                  unmatched_exit=policy)
         self._policy: Optional[DoorPolicy] = None
         self._policy_at = 0.0
         self._presence_dirty = False
@@ -319,9 +337,27 @@ class IngestService:
                 "bus": type(self.bus).__name__ if self.bus else None,
                 "gate": self.counts_gate.stats()}
 
+    def expire_presence(self, now: float = None) -> int:
+        """Retire roster entries older than FINBLADE_PRESENCE_EXPIRE_HOURS.
+        A no-op when unset. Called from the facility tick and before a
+        snapshot, so the horizon holds without a dedicated timer."""
+        if not self.presence_expire_s:
+            return 0
+        now = time.time() if now is None else now
+        gone = self.roster.expire(self.presence_expire_s, now)
+        if gone:
+            log.info("facility: expired %d roster entr%s older than %.1f h",
+                     len(gone), "y" if len(gone) == 1 else "ies", self.presence_expire_s / 3600.0)
+            self._flush_presence(force=True, now=now)
+            self.publish_facility_counts(now)
+        return len(gone)
+
     def facility_state(self, now: float = None, stale_after_s: float = 3600.0) -> dict:
         now = time.time() if now is None else now
+        self.expire_presence(now)
         body = self.roster.snapshot(now=now, stale_after_s=stale_after_s)
+        body["unmatched_exit"] = self.roster.unmatched_exit
+        body["expire_after_s"] = self.presence_expire_s or None
         body["policy"] = {
             "doors": sorted(z for z, t in self.door_policy(now).zone_types.items()
                             if t in ("DOOR", "ENTRANCE", "EXIT")),

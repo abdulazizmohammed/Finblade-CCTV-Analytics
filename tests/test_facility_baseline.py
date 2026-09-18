@@ -62,14 +62,24 @@ class RekeyTest(unittest.TestCase):
         self.assertEqual(self.r.stats["discharge_unknown"], 0)
         self.assertEqual(self.r.stats["rekeyed"], 1)
 
-    def test_without_the_rekey_the_phantom_is_still_there(self):
-        # The bug this exists to fix, pinned so a regression is loud.
+    def test_without_the_rekey_the_exit_still_counts(self):
+        # Before D-42 this pinned the phantom: the exit under an unfamiliar ref
+        # removed nobody and occupancy stayed 1 for ever. Now the exit removes
+        # the longest-present occupant — the rekey is still worth doing (it
+        # names the right person) but the COUNT no longer depends on it.
         apply_event(self.r, ev(0, "ZONE_ENTRY", zone_to="IN",
                                person_ref="p_track7"), POLICY)
         apply_event(self.r, ev(60, "ZONE_TRANSITION", zone_from="LOBBY",
                                zone_to="OUT", person_ref="gp_abc"), POLICY)
-        self.assertEqual(self.r.occupancy(), 1)
-        self.assertEqual(self.r.stats["discharge_unknown"], 1)
+        self.assertEqual(self.r.occupancy(), 0)
+        self.assertEqual(self.r.stats["discharge_unknown"], 1, "still visible as unmatched")
+        self.assertEqual(self.r.stats["discharged_unmatched"], 1)
+        # and the strict policy is still available, phantom included
+        strict = FacilityRoster(unmatched_exit="ignore")
+        apply_event(strict, ev(0, "ZONE_ENTRY", zone_to="IN", person_ref="p_track7"), POLICY)
+        apply_event(strict, ev(60, "ZONE_TRANSITION", zone_from="LOBBY",
+                               zone_to="OUT", person_ref="gp_abc"), POLICY)
+        self.assertEqual(strict.occupancy(), 1)
 
     def test_the_entry_keeps_its_arrival_time(self):
         apply_event(self.r, ev(11.5, "ZONE_ENTRY", zone_to="IN",
@@ -357,6 +367,36 @@ class ServiceIntegrationTest(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(body["occupancy"], 0)
         self.assertEqual(self.svc.roster.baseline, 0)
+
+    def test_env_selects_the_discharge_policy_and_expiry(self):
+        # D-42 knobs: the default evicts on an unmatched exit and never
+        # expires; a site may opt back into strict, and set a horizon.
+        self.assertEqual("evict_oldest", self.svc.roster.unmatched_exit)
+        self.assertEqual(0.0, self.svc.presence_expire_s)
+        self._post(1, "ZONE_ENTRY", 0.0, zone_to="IN", person_ref=PR, global_ref="gp_in",
+                   confidence=0.9)
+        self._post(2, "ZONE_TRANSITION", 60.0, zone_from="LOBBY", zone_to="OUT",
+                   person_ref=PR, global_ref="gp_someone_else")
+        self.assertEqual(0, self.svc.roster.occupancy())
+        self.assertEqual(1, self.svc.roster.stats["discharged_unmatched"])
+        old = dict(os.environ)
+        os.environ["FINBLADE_PRESENCE_UNMATCHED_EXIT"] = "ignore"
+        os.environ["FINBLADE_PRESENCE_EXPIRE_HOURS"] = "16"
+        try:
+            svc = IngestService(InMemoryStore())
+            self.assertEqual("ignore", svc.roster.unmatched_exit)
+            self.assertEqual(16 * 3600.0, svc.presence_expire_s)
+            svc.roster.admit("yesterday", 0.0, "IN")
+            svc.roster.admit("today", 20 * 3600.0, "IN")
+            state = svc.facility_state(now=24 * 3600.0)
+            self.assertEqual(1, state["occupancy"], "the 24 h-old entry expired on read")
+            self.assertEqual(1, state["stats"]["expired"])
+            self.assertEqual(("ignore", 16 * 3600.0), (state["unmatched_exit"], state["expire_after_s"]))
+            os.environ["FINBLADE_PRESENCE_UNMATCHED_EXIT"] = "guess"
+            self.assertEqual("evict_oldest", IngestService(InMemoryStore()).roster.unmatched_exit,
+                             "a typo falls back to the default, loudly, rather than failing to start")
+        finally:
+            os.environ.clear(); os.environ.update(old)
 
 
 class BaselineSurvivesRestartTest(unittest.TestCase):

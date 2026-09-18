@@ -457,18 +457,23 @@ the lab checkpoint `scripts/ppe_check.py --source <video> --profile medical
 ## 8. Facility presence
 
 Occupancy that survives someone walking out of every camera's view. Counted on
-**door crossings by global identity**, never on per-camera detection counts.
+**door crossings**, never on per-camera detection counts. The count moves by
+one at a door, in or out; identity is used to name the row, not to decide
+whether the count moves (D-42).
 
 | Capability | Status | Implementation |
 |---|---|---|
 | Roster of who is inside, persisted across restarts | Built | `finblade/presence.py` `FacilityRoster` |
 | Direction resolved from the zones either side of a door | Built | `presence.py` `DoorPolicy` |
 | One-way `ENTRANCE`/`EXIT` zones resolve on arrival | Built | `presence.py` |
-| Two-way `DOOR` zones resolve on departure | Built | ambiguous crossings counted, never guessed |
-| Declared opening baseline that drains as people leave | Built | `POST /api/v1/facility/baseline` |
+| Two-way `DOOR` zones resolve on departure; `OUTSIDE` zones give the far side a name | Built | ambiguous crossings counted, never guessed; `tools/zone-editor.html` lists all types |
+| **Unmatched exit discharges the longest-present occupant** (`FINBLADE_PRESENCE_UNMATCHED_EXIT=evict_oldest`, the default) — an observed exit whose ref was never admitted (ReID forgets after its TTL) still moves the count; `ignore` restores the strict policy. Split visible as `discharged_matched` / `discharged_unmatched`; never below zero (`discharge_on_empty`) | Built | `FacilityRoster.discharge`; D-42 |
+| Expiry backstop, off by default: `FINBLADE_PRESENCE_EXPIRE_HOURS=16` retires anyone "inside" longer than a plausible visit, counted as `expired`, run on the counts tick and before a snapshot | Built | `FacilityRoster.expire`, `service.expire_presence` |
+| Declared opening baseline that drains as people leave (before any eviction) | Built | `POST /api/v1/facility/baseline` |
 | Per-door entry/exit totals and rates | Built | `presence.py` `DoorCounters` |
 | Drift report — roster entries nobody has seen | Built | `GET /api/v1/facility/stale` |
 | Identity rekey when two refs merge | Built | `presence.py` `rekey` |
+| Read-only diagnostic of everything the count depends on; door redraw helper | Built | `scripts/facility_diagnose.sh`, `scripts/redraw_door_zones.py` |
 
 ## 9. Event bus
 

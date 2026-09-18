@@ -15,25 +15,42 @@ numbers are not interchangeable and must not be conflated on a dashboard:
 
 This module is the second one, and the trade in that table is the whole design.
 
-DISCHARGE POLICY — strict, chosen deliberately. A person leaves the roster only
-when a crossing into an EXIT zone is observed. There is no absence timeout and
-no scheduled reset. Two consequences the caller owns:
+DISCHARGE POLICY. A person leaves the roster only when a crossing OUT through a
+door is observed. There is no absence timeout by default. What changed on
+2026-09-18 (DECISIONS.md D-42) is what happens when the crossing out is
+observed but its ref matches nobody on the roster:
+
+  BEFORE  the exit was discarded (``discharge_unknown``), the count stayed one
+          too high for ever. On the Wareed instance 1,008 of 1,187 exits went
+          this way, because the ref is the cross-camera identity and ReID
+          forgets it after 30 minutes — nobody who stayed longer than that
+          could ever be discharged. 120 phantoms, 11-43 hours old.
+  NOW     ``unmatched_exit="evict_oldest"`` (the default): the exit is real —
+          the camera watched a person walk lobby -> door -> outside — so it
+          removes the longest-present occupant. WHICH row goes is a heuristic
+          (the oldest is the one whose ref has most likely expired); HOW MANY
+          go is not: the count moves by one, at the door, which is the number
+          this module exists for. ``"ignore"`` restores the old behaviour.
+
+Two consequences the caller still owns:
 
   1. The roster MUST be persisted. It is the authoritative occupancy figure, and
      an in-memory-only roster silently resets to zero on restart while the
      building is still full. Zone occupancy can be rebuilt from the next frame;
      this cannot be rebuilt from anything.
-  2. Drift is one-directional and unbounded. Every missed exit is a permanent
-     phantom occupant, and nothing here corrects it. ``stale()`` exists so an
-     operator can SEE the drift accumulating; it removes nobody. Auto-discharging
-     the long-unseen would silently convert "we cannot see them" into "they have
-     left", which is the failure the strict policy exists to avoid.
+  2. Drift is now bounded but not zero. A phantom exit (a tracker hallucinating
+     lobby -> door -> out) subtracts a real person; before, a missed exit added
+     a phantom for ever. One wrong count that the next crossing does not
+     compound beats an error that only ever grows. ``stale()`` still reports
+     the long-unseen; ``expire()`` can retire entries older than a site's
+     plausible day, OFF unless the caller asks, counted as ``expired``.
 
 DELIBERATELY IDENTITY-AGNOSTIC. The count changes only at the doors, so it never
 asks "is the person in the canteen the same one who came in at 09:04". That
 question needs cross-camera re-identification; this number does not, and keeping
 the dependency out is what makes the count robust while ReID is still unproven.
-``ref`` is any token that stays stable for one person's crossing of a door.
+``ref`` is any token that stays stable for one person's crossing of a door —
+and, since D-42, that is ALL it has to be stable for.
 
 Pure stdlib — unit-testable without cv2, torch or a database.
 """
@@ -278,8 +295,14 @@ class FacilityRoster:
     camera can see right now. That is the point.
     """
 
-    def __init__(self, site_id: Optional[str] = None, baseline: int = 0):
+    UNMATCHED_EXIT_POLICIES = ("evict_oldest", "ignore")
+
+    def __init__(self, site_id: Optional[str] = None, baseline: int = 0,
+                 unmatched_exit: str = "evict_oldest"):
         self.site_id = site_id
+        if unmatched_exit not in self.UNMATCHED_EXIT_POLICIES:
+            raise ValueError(f"unmatched_exit must be one of {self.UNMATCHED_EXIT_POLICIES}")
+        self.unmatched_exit = unmatched_exit
         self._people: Dict[str, Presence] = {}
         # People known to be inside before this system could observe anyone —
         # a cold start into an occupied building. They have no refs, so they
@@ -299,12 +322,20 @@ class FacilityRoster:
             # re-crossing the entrance polygon); counted so a runaway figure is
             # visible rather than inferred.
             "readmit_ignored": 0,
-            # A discharge for someone never admitted. Expected in bulk right
-            # after a cold start — everyone already in the building will leave
-            # without this roster having seen them arrive — and a standing
-            # non-zero rate afterwards means entrance detection is missing
-            # people that exit detection catches.
+            # An exit whose ref was never admitted. Under evict_oldest this is
+            # how many exits needed the fallback (the share of `discharged`
+            # that could not be matched by identity); under "ignore" it is the
+            # count of exits thrown away. Either way a standing high rate says
+            # the ref does not survive a visit — on Wareed, 85% of exits.
             "discharge_unknown": 0,
+            # Split of `discharged`: by ref, or by evicting the longest-present.
+            "discharged_matched": 0,
+            "discharged_unmatched": 0,
+            # An unmatched exit with nobody on the roster: a cold start, or a
+            # door counting people who never came in. Ignored, never negative.
+            "discharge_on_empty": 0,
+            # Entries retired by expire(): older than the site's plausible day.
+            "expired": 0,
             # Bidirectional-door crossings where neither side of the door was
             # observed, so the direction could not be established. NOT guessed
             # — see DoorPolicy. A rising figure here means a door zone needs an
@@ -356,27 +387,55 @@ class FacilityRoster:
         if not ref:
             return False
         if ref not in self._people:
-            # Never let occupancy go negative by "removing" someone who was
-            # never counted. The discrepancy is recorded, not absorbed.
             self.stats["discharge_unknown"] += 1
-            # ...and if a baseline was declared, this is very likely one of the
+            # If a baseline was declared, this is very likely one of the
             # people it stands for: they were inside before we could see them,
             # so they leave without ever having been admitted. Draining the
-            # baseline here is what makes an opening count decay to nothing as
-            # the original population turns over, instead of sitting on top of
-            # the roster for ever.
-            #
-            # It is a guess, but a bounded one. It cannot push the count below
-            # zero, it can only ever remove people the operator declared, and
-            # when the baseline is zero this is a no-op and the old behaviour
-            # is exactly preserved.
+            # baseline first is what makes an opening count decay to nothing
+            # as the original population turns over.
             if self.baseline > 0:
                 self.baseline -= 1
                 self.stats["baseline_discharged"] += 1
+                return False
+            if self.unmatched_exit == "evict_oldest" and self._people:
+                # The exit happened; only the name is missing. The person on
+                # the roster the longest is the one whose ref has most likely
+                # expired (ReID forgets after its TTL), so they go. The count
+                # moves by exactly one, at the door, as an admit does.
+                oldest = min(self._people.values(), key=lambda p: p.admitted_at)
+                del self._people[oldest.ref]
+                self.stats["discharged"] += 1
+                self.stats["discharged_unmatched"] += 1
+                return True
+            # Never let occupancy go negative by "removing" someone who was
+            # never counted. Recorded, not absorbed.
+            if not self._people:
+                self.stats["discharge_on_empty"] += 1
             return False
         del self._people[ref]
         self.stats["discharged"] += 1
+        self.stats["discharged_matched"] += 1
         return True
+
+    def expire(self, max_age_s: float, now: float) -> List[dict]:
+        """Retire everyone admitted more than max_age_s ago. Returns them.
+
+        The backstop for exits the door never saw — a person who left while
+        the camera was down, or through a door with no zone. OFF unless the
+        caller runs it: a site chooses a horizon longer than any plausible
+        visit (a lab that closes at night: ~16 h), so that this converts
+        "inside since yesterday" into "gone", never "in a meeting" into
+        "gone". Counted as `expired`, separate from discharges, so the share
+        of the roster that had to be guessed away stays visible.
+        """
+        if max_age_s <= 0:
+            return []
+        gone = [p for p in self._people.values() if (now - p.admitted_at) > max_age_s]
+        for p in gone:
+            del self._people[p.ref]
+            self._crossing.pop(p.ref, None)
+        self.stats["expired"] += len(gone)
+        return [p.to_dict(now) for p in gone]
 
     def rekey(self, old_ref: str, new_ref: str) -> bool:
         """Move a roster entry onto the identity it turned out to be.
@@ -461,12 +520,10 @@ class FacilityRoster:
     def clear(self) -> int:
         """Empty the roster. Returns how many people were on it.
 
-        The companion to the strict discharge policy rather than a contradiction
-        of it. Strict discharge means the roster only ever grows unless a
-        crossing is observed, so a count that has drifted — a tracker that
-        fragmented, a door that was retyped, a camera replaced mid-day — has no
-        way back to zero on its own. Without this an operator's only recourse is
-        editing the table by hand.
+        The operator's reset. A count that has drifted — a tracker that
+        fragmented, a door that was retyped, a camera replaced mid-day — has
+        no way back to zero on its own beyond expire(), and without this an
+        operator's only recourse is editing the table by hand.
 
         Door tallies and the lifetime counters are deliberately NOT reset: they
         record how much traffic was observed, which remains true regardless of
@@ -528,10 +585,11 @@ class FacilityRoster:
     def stale(self, older_than_s: float, now: float) -> List[dict]:
         """Roster entries nobody has seen for a while. READ-ONLY — removes none.
 
-        This is the drift report. Under the strict policy an entry here is
-        either a person genuinely in an unmonitored space or an exit that was
-        missed, and no amount of data in this module distinguishes them. A human
-        decides; that is why this returns a list instead of deleting rows.
+        This is the drift report. An entry here is either a person genuinely in
+        an unmonitored space or an exit the door never saw, and no amount of
+        data in this module distinguishes them. A human decides — or expire()
+        does, at a horizon the site chose; this returns a list and deletes
+        nothing.
         """
         return [p.to_dict(now) for p in
                 sorted(self._people.values(), key=lambda p: p.last_seen)
@@ -569,7 +627,8 @@ class FacilityRoster:
     @classmethod
     def from_records(cls, records, site_id: Optional[str] = None,
                      stats: Optional[dict] = None,
-                     doors: Optional[List[dict]] = None) -> "FacilityRoster":
+                     doors: Optional[List[dict]] = None,
+                     unmatched_exit: str = "evict_oldest") -> "FacilityRoster":
         # The baseline rides in on the stats dict rather than through a fourth
         # store argument. It has to survive a restart — an opening count that
         # evaporated when the API bounced would be worse than not having one,
@@ -577,7 +636,8 @@ class FacilityRoster:
         # already round-trips through the store as key/value pairs. Adding a
         # column would mean touching every backend, and one of them is behind.
         stats = dict(stats or {})
-        roster = cls(site_id=site_id, baseline=int(stats.pop("baseline", 0) or 0))
+        roster = cls(site_id=site_id, baseline=int(stats.pop("baseline", 0) or 0),
+                     unmatched_exit=unmatched_exit)
         roster.doors.load_records(doors)
         for r in records or []:
             ref = r.get("ref")

@@ -103,6 +103,63 @@ class TestRosterArithmetic(unittest.TestCase):
         self.assertFalse(r.discharge("p1", 21.0, "DOOR-OUT"))
         self.assertEqual(r.occupancy(), 0)
         self.assertEqual(r.stats["discharged"], 1)
+        self.assertEqual(r.stats["discharge_on_empty"], 1)
+
+    # ---- D-42: an unmatched exit still discharges someone -----------------
+    def test_unmatched_exit_evicts_the_longest_present(self):
+        # Wareed, day three: 1,008 of 1,187 exits carried a ref the roster had
+        # never admitted (ReID forgets after 30 min), and were thrown away.
+        # The camera watched those people walk out; the count must move.
+        r = FacilityRoster()
+        r.admit("morning", 9 * 3600.0, "DOOR")
+        r.admit("noon", 12 * 3600.0, "DOOR")
+        r.admit("afternoon", 15 * 3600.0, "DOOR")
+        self.assertTrue(r.discharge("stranger", 17 * 3600.0, "DOOR"))
+        self.assertEqual(r.occupancy(), 2)
+        self.assertEqual([m["ref"] for m in r.members()], ["noon", "afternoon"],
+                         "the oldest goes: their ref is the one most likely to have expired")
+        self.assertEqual((1, 0, 1, 1), (r.stats["discharged"], r.stats["discharged_matched"],
+                                        r.stats["discharged_unmatched"], r.stats["discharge_unknown"]))
+        # a matched exit still removes exactly the person named
+        self.assertTrue(r.discharge("afternoon", 17.5 * 3600.0, "DOOR"))
+        self.assertEqual([m["ref"] for m in r.members()], ["noon"])
+        self.assertEqual((2, 1, 1), (r.stats["discharged"], r.stats["discharged_matched"],
+                                     r.stats["discharged_unmatched"]))
+        # count = entries - exits, never below zero
+        self.assertTrue(r.discharge("another-stranger", 18 * 3600.0, "DOOR"))
+        self.assertFalse(r.discharge("yet-another", 18.1 * 3600.0, "DOOR"))
+        self.assertEqual(r.occupancy(), 0)
+        self.assertEqual(r.stats["discharge_on_empty"], 1)
+
+    def test_baseline_drains_before_anyone_is_evicted(self):
+        # A declared opening count stands for people who were inside before the
+        # roster could see them; an unmatched exit is one of them first.
+        r = FacilityRoster(baseline=1)
+        r.admit("p1", 10.0, "DOOR")
+        self.assertFalse(r.discharge("stranger", 20.0, "DOOR"))
+        self.assertEqual((0, 1, 1), (r.baseline, r.occupancy(), r.stats["baseline_discharged"]))
+        self.assertTrue(r.discharge("stranger-2", 30.0, "DOOR"))
+        self.assertEqual(r.occupancy(), 0)
+
+    def test_ignore_policy_keeps_the_old_strict_behaviour(self):
+        r = FacilityRoster(unmatched_exit="ignore")
+        r.admit("p1", 10.0, "DOOR")
+        self.assertFalse(r.discharge("stranger", 20.0, "DOOR"))
+        self.assertEqual(r.occupancy(), 1)
+        self.assertEqual((0, 1), (r.stats["discharged"], r.stats["discharge_unknown"]))
+        with self.assertRaises(ValueError):
+            FacilityRoster(unmatched_exit="guess")
+
+    def test_expire_retires_only_the_implausibly_old_and_counts_them(self):
+        r = FacilityRoster()
+        r.admit("yesterday", 0.0, "DOOR")
+        r.admit("today", 10 * 3600.0, "DOOR")
+        self.assertEqual([], r.expire(0.0, 20 * 3600.0), "0 = off, removes nobody")
+        gone = r.expire(16 * 3600.0, 20 * 3600.0)
+        self.assertEqual(["yesterday"], [g["ref"] for g in gone])
+        self.assertEqual([m["ref"] for m in r.members()], ["today"])
+        self.assertEqual((1, 0), (r.stats["expired"], r.stats["discharged"]),
+                         "expiry is not a discharge; the split stays visible")
 
     def test_trailing_events_do_not_resurrect_a_departed_person(self):
         # A worker can emit a last sighting after the exit crossing. If that
@@ -376,10 +433,12 @@ class TestDriftIsVisible(unittest.TestCase):
 
 
 class TestPersistence(unittest.TestCase):
-    """Under strict discharge the roster cannot be rebuilt from live frames."""
+    """The roster cannot be rebuilt from live frames; it must round-trip."""
 
     def test_round_trip_preserves_occupancy_members_and_counters(self):
-        r = FacilityRoster(site_id="SITE-DXB-01")
+        # "ignore" here so the ghost exit leaves p1 in place: this test is
+        # about the round trip, not the discharge policy (tested above).
+        r = FacilityRoster(site_id="SITE-DXB-01", unmatched_exit="ignore")
         r.admit("p1", 10.0, "DOOR-IN")
         r.admit("p2", 20.0, "DOOR-IN")
         r.note_seen("p1", 30.0, "ZONE-01")
@@ -387,7 +446,8 @@ class TestPersistence(unittest.TestCase):
         r.discharge("ghost", 41.0, "DOOR-OUT")
 
         restored = FacilityRoster.from_records(r.to_records(),
-                                               site_id=r.site_id, stats=r.stats)
+                                               site_id=r.site_id, stats=r.stats,
+                                               unmatched_exit="ignore")
         self.assertEqual(restored.occupancy(), 1)
         self.assertTrue(restored.contains("p1"))
         self.assertEqual(restored.get("p1").last_zone, "ZONE-01")
@@ -395,6 +455,12 @@ class TestPersistence(unittest.TestCase):
         self.assertEqual(restored.stats["discharge_unknown"], 1,
                          "drift counters must survive a restart, not reset")
         self.assertEqual(restored.stats["admitted"], 2)
+        self.assertEqual(restored.stats["discharged_matched"], 1)
+        # a store that predates D-42 hands back stats without the new keys
+        old = FacilityRoster.from_records([], stats={"admitted": 5, "discharged": 2})
+        self.assertEqual((5, 2, 0, 0), (old.stats["admitted"], old.stats["discharged"],
+                                        old.stats["discharged_unmatched"], old.stats["expired"]))
+        self.assertEqual("evict_oldest", old.unmatched_exit)
 
     def test_restored_roster_keeps_accepting_transitions(self):
         r = FacilityRoster()

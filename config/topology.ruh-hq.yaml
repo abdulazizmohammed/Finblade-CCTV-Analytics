@@ -1,0 +1,94 @@
+# Camera topology — Wareed RUH-HQ (Riyadh head office), five cameras.
+#
+# Surveyed 2026-09-18 from 72 h of observed cross-camera walks
+# (scripts/propose_topology.py --site RUH-HQ --hours 72: 10,615 sightings,
+# 10 pairs, every pair with 10-189 real handovers), then reviewed:
+#
+#   * NO overlapping pairs. The old topology.yaml declared CAM-03 <-> CAM-04
+#     overlapping; the data says the shortest hop between them is 3.4 s,
+#     median 10.5 s — two cameras a short walk apart, not one floor seen
+#     twice. An overlap entry tells ReID to accept a zero gap, which is a
+#     licence to merge two different people standing in each view.
+#   * The four CAM-ST1-* / CAM-ST-05 entries named cameras that do not exist
+#     at this site and are dropped.
+#   * min_seconds is the surveyed p05 relaxed by ~30 %, max_seconds the p95
+#     widened by ~25 %. The gate exists to refuse the IMPOSSIBLE (the same
+#     person on two cameras far apart within a second, or a match to someone
+#     who left an hour ago), not to enforce average walking pace; a floor at
+#     p05 would reject the fastest one in twenty genuine walks.
+#   * Every pair is surveyed, so allow_unknown_pairs is false: a camera added
+#     later without an entry here is refused, loudly, rather than matched on
+#     a permissive default nobody chose.
+#
+# Layout the numbers imply (unverified against a floor plan): CAM-01 is the
+# door camera; CAM-04 (16 s) and CAM-03 (27 s) are nearest it, CAM-05 (69 s)
+# farthest; CAM-03 <-> CAM-05 carries the most traffic. If that does not
+# match the building, the survey window caught something odd — re-run it.
+#
+# Activate: FINBLADE_TOPOLOGY=config/topology.ruh-hq.yaml in .env, restart
+# the API (workers pick it up on their next start).
+
+overlapping_pairs: []
+
+transits:
+  # 114 walks — p05 7.2s, median 41.4s, p95 137.7s
+  - a: CAM-01
+    b: CAM-02
+    min_seconds: 5.0
+    max_seconds: 172.0
+  # 66 walks — p05 8.4s, median 26.9s, p95 110.0s
+  - a: CAM-01
+    b: CAM-03
+    min_seconds: 6.0
+    max_seconds: 138.0
+  # 20 walks — p05 7.9s, median 16.3s, p95 103.5s
+  - a: CAM-01
+    b: CAM-04
+    min_seconds: 5.5
+    max_seconds: 130.0
+  # 128 walks — p05 17.5s, median 68.9s, p95 222.7s
+  - a: CAM-01
+    b: CAM-05
+    min_seconds: 12.0
+    max_seconds: 278.0
+  # 32 walks — p05 16.3s, median 52.7s, p95 172.2s
+  - a: CAM-02
+    b: CAM-03
+    min_seconds: 9.0
+    max_seconds: 215.0
+  # 10 walks — p05 20.3s, median 73.4s, p95 166.2s  (fewest samples; watch it)
+  - a: CAM-02
+    b: CAM-04
+    min_seconds: 14.0
+    max_seconds: 208.0
+  # 101 walks — p05 9.0s, median 34.9s, p95 192.5s
+  - a: CAM-02
+    b: CAM-05
+    min_seconds: 6.0
+    max_seconds: 240.0
+  # 29 walks — p05 3.4s, median 10.5s, p95 65.4s  (the nearest pair)
+  - a: CAM-03
+    b: CAM-04
+    min_seconds: 2.0
+    max_seconds: 82.0
+  # 189 walks — p05 22.6s, median 29.9s, p95 237.1s
+  - a: CAM-03
+    b: CAM-05
+    min_seconds: 15.0
+    max_seconds: 296.0
+  # 45 walks — p05 10.7s, median 93.5s, p95 244.9s
+  - a: CAM-04
+    b: CAM-05
+    min_seconds: 7.5
+    max_seconds: 306.0
+
+# Unused while every pair is listed; kept so a future camera has a defined
+# fallback the moment allow_unknown_pairs is flipped back on.
+default_transit:
+  min_seconds: 0.0
+  max_seconds: 120.0
+
+overlap_tolerance_seconds: 5.0
+
+# Every pair above is surveyed. A pair not listed here is refused.
+allow_unknown_pairs: false

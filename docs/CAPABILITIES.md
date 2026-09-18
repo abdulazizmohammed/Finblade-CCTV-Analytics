@@ -475,6 +475,7 @@ whether the count moves (D-42).
 | Drift report — roster entries nobody has seen | Built | `GET /api/v1/facility/stale` |
 | Identity rekey when two refs merge | Built | `presence.py` `rekey` |
 | Read-only diagnostic of everything the count depends on; door redraw helper | Built | `scripts/facility_diagnose.sh`, `scripts/redraw_door_zones.py` |
+| `POST /api/v1/facility/rebuild` `{"hours": 24}` — replay the stored zone events through a fresh roster under the *current* zones and discharge rule, so a fix made at noon reaches the morning; door tallies restart from `since`; previous roster kept if the replay fails | Built | `service.rebuild_facility` |
 
 ## 9. Event bus
 
@@ -521,7 +522,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**97 routes** — 94 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**98 routes** — 95 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 

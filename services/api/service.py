@@ -386,6 +386,63 @@ class IngestService:
         }
         return body
 
+    def rebuild_facility(self, since: float, now: float = None) -> Tuple[int, dict]:
+        """Replay the zone events since `since` through a fresh roster under
+        the CURRENT door policy and discharge rule, and replace the roster.
+
+        The roster is event-sourced, so a rule fixed or a zone redrawn at noon
+        leaves the morning's mistakes in place: an exit the old rule called
+        ambiguous stays uncounted for ever. Replaying the stored events is how
+        the fix reaches the past. Same events, same code path as live ingest
+        (apply_event with the rekey), so the result is what the roster WOULD
+        hold had the current rules been in force since `since`.
+
+        Door tallies and lifetime counters restart from `since` — they now
+        describe the replay, and the old totals described a door drawn wrong.
+        The declared baseline is dropped for the same reason clear() drops it.
+        Persisted immediately.
+        """
+        now = time.time() if now is None else now
+        since = float(since)
+        if since >= now:
+            return 422, {"error": "since must be in the past"}
+        events = self.store.list_events(since, now, limit=500_000)
+        events.sort(key=lambda e: float(e.get("timestamp") or 0))
+        fresh = FacilityRoster(site_id=self.roster.site_id,
+                               unmatched_exit=self.roster.unmatched_exit)
+        old, self.roster = self.roster, fresh
+        policy = self.door_policy(now)
+        fed = 0
+        actions: Dict[str, int] = {}
+        try:
+            for e in events:
+                if e.get("event_type") not in ("ZONE_ENTRY", "ZONE_EXIT", "ZONE_TRANSITION"):
+                    continue
+                if e.get("derived"):
+                    continue
+                fed += 1
+                view = dict(e)
+                view["ts"] = e.get("timestamp")
+                gref, pref = e.get("global_ref"), e.get("person_ref")
+                if gref and pref:
+                    fresh.rekey(pref, gref)
+                if gref or pref:
+                    view["person_ref"] = gref or pref
+                action = apply_event(fresh, view, policy)
+                if action:
+                    actions[action] = actions.get(action, 0) + 1
+            if self.presence_expire_s:
+                fresh.expire(self.presence_expire_s, now)
+        except Exception:                                   # noqa: BLE001
+            self.roster = old                               # never leave a half-built roster live
+            log.exception("facility rebuild failed; previous roster kept")
+            return 500, {"error": "rebuild failed; previous roster kept"}
+        self._flush_presence(force=True, now=now)
+        self.publish_facility_counts(now, force=True)
+        return 200, {"ok": True, "since": since, "events_replayed": fed, "actions": actions,
+                     "occupancy_before": old.occupancy(), "occupancy": fresh.occupancy(),
+                     "stats": dict(fresh.stats)}
+
     def clear_facility(self) -> Tuple[int, dict]:
         """Operator reset for a drifted roster. Persisted immediately."""
         removed = self.roster.clear()

@@ -368,6 +368,46 @@ class ServiceIntegrationTest(unittest.TestCase):
         self.assertEqual(body["occupancy"], 0)
         self.assertEqual(self.svc.roster.baseline, 0)
 
+    def test_rebuild_replays_history_under_the_current_rules(self):
+        # The Wareed visitor: admitted OUT -> DOOR -> LOBBY at 11:04, left at
+        # 11:07 with a track acquired inside the door strip. Under a policy
+        # that has no OUTSIDE zone the departure is ambiguous and they stay.
+        self.store.save_zones("CAM-D", [
+            {"zone_id": "DOOR", "zone_type": "DOOR", "normalized_polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]},
+            {"zone_id": "LOBBY", "zone_type": "MONITORED", "normalized_polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]},
+            {"zone_id": "PAVEMENT", "zone_type": "MONITORED", "normalized_polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]},
+        ])
+        self.store.upsert_camera("CAM-D")
+        self.svc.invalidate_door_policy()
+        T = 1_000_000.0
+        def post(n, et, t, **kw):
+            e = {"event_id": f"d{n}", "event_type": et, "camera_id": "CAM-D", "site_id": "S", "timestamp": t}
+            e.update(kw); self.assertEqual(202, self.svc.ingest_event(e)[0])
+        PA, PB = "pr_" + "a" * 16, "pr_" + "b" * 16
+        GA, GB = "gp_" + "1" * 16, "gp_" + "2" * 16
+        post(1, "ZONE_ENTRY", T, zone_to="DOOR", person_ref=PA, global_ref=GA, confidence=0.9)
+        post(2, "ZONE_TRANSITION", T + 2, zone_from="DOOR", zone_to="LOBBY", person_ref=PA, global_ref=GA)
+        post(3, "ZONE_ENTRY", T + 180, zone_to="DOOR", person_ref=PB, global_ref=GB, confidence=0.9)
+        post(4, "ZONE_TRANSITION", T + 183, zone_from="DOOR", zone_to="PAVEMENT", person_ref=PB, global_ref=GB)
+        self.assertEqual(2, self.svc.roster.occupancy(),
+                         "pavement typed MONITORED reads as interior: the departure is a SECOND entry "
+                         "— the inflation the Wareed door showed")
+        # the operator retypes the pavement as OUTSIDE — the live roster does
+        # not change; a rebuild re-judges the day
+        zones = [dict(z, zone_type="OUTSIDE") if z["zone_id"] == "PAVEMENT" else z
+                 for z in self.store.list_zones("CAM-D")]
+        self.store.save_zones("CAM-D", zones)
+        self.svc.invalidate_door_policy()
+        self.assertEqual(2, self.svc.roster.occupancy())
+        code, out = self.svc.rebuild_facility(T - 1, now=T + 600)
+        self.assertEqual(200, code, out)
+        self.assertEqual((2, 0), (out["occupancy_before"], out["occupancy"]))
+        self.assertEqual(4, out["events_replayed"])
+        self.assertEqual(1, out["stats"]["admitted"])
+        self.assertEqual(1, out["stats"]["discharged_unmatched"], "nowhere -> door -> OUTSIDE evicted the visitor")
+        self.assertEqual(0, self.svc.roster.occupancy())
+        self.assertEqual(422, self.svc.rebuild_facility(T + 9999, now=T + 600)[0])
+
     def test_env_selects_the_discharge_policy_and_expiry(self):
         # D-42 knobs: the default evicts on an unmatched exit and never
         # expires; a site may opt back into strict, and set a horizon.

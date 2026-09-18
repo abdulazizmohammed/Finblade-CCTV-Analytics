@@ -677,6 +677,30 @@ async def facility_clear():
     return JSONResponse(status_code=code, content=body)
 
 
+@app.post("/api/v1/facility/rebuild")
+async def facility_rebuild(request: Request):
+    """Replay the stored zone events through the roster under the CURRENT
+    zones and discharge rule, replacing it. {"hours": 24} or {"since": <epoch>}.
+
+    A rule fixed or a door redrawn at noon does not reach the morning: the
+    roster is event-sourced and an exit the old rule called ambiguous stays
+    uncounted. This re-derives the roster from the events as they would be
+    judged now. Full key only; persisted immediately.
+    """
+    try:
+        body = await request.json()
+    except Exception:                                   # noqa: BLE001
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    now = time.time()
+    if body.get("since") is not None:
+        since = float(body["since"])
+    else:
+        since = now - float(body.get("hours") or 24.0) * 3600.0
+    code, out = svc.rebuild_facility(since, now)
+    return JSONResponse(status_code=code, content=out)
+
+
 @app.post("/api/v1/facility/baseline")
 async def facility_baseline(request: Request):
     """Declare how many people were already inside before counting started.

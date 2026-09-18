@@ -156,10 +156,10 @@ button.primary:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal
   <label class="lbl" for="zid">Zone ID</label><input type="text" id="zid" value="ZONE-01">
   <label class="lbl" for="zname">Name</label><input type="text" id="zname" value="Lobby">
   <label class="lbl" for="ztype">Type</label>
-  <select id="ztype">
-    <option>MONITORED</option><option>RESTRICTED</option><option>ENTRANCE</option>
-    <option>EXIT</option><option>DOOR</option><option>TRANSITION</option>
-    <option>UNMONITORED</option>
+  <select id="ztype" title="MONITORED: interior floor. DOOR: two-way doorway, a strip of floor across the threshold — needs a MONITORED zone touching its inside and an OUTSIDE zone beyond it. OUTSIDE: floor beyond the facility boundary (pavement, car park, the view through the glass). ENTRANCE / EXIT: one-way doors, resolve on arrival.">
+    <option>MONITORED</option><option>RESTRICTED</option><option>DOOR</option>
+    <option>OUTSIDE</option><option>ENTRANCE</option><option>EXIT</option>
+    <option>TRANSITION</option><option>UNMONITORED</option>
   </select>
   <div class="pair">
     <div><label class="lbl" for="cap">Capacity</label><input type="number" id="cap" value="40" min="0"></div>

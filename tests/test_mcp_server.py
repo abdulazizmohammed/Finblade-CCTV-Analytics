@@ -125,7 +125,7 @@ class TestSurface(Base):
         "alerts_active", "alerts_history", "alert", "incident_frame", "acknowledge_alert", "resolve_alert",
         "events_history", "occupancy_report", "reports_list",
         "vehicles", "vehicle", "vehicle_track", "vehicle_arrivals", "vehicles_at_branch",
-        "find_people", "person_timeline", "sighting_crop",
+        "find_people", "person_timeline", "sighting_crop", "sighting_crop_link", "incident_frame_link",
         "system_health", "rules_reference",
     }
 
@@ -179,6 +179,11 @@ class TestSurface(Base):
             block = res.content[0] if hasattr(res, "content") else res[0]
             self.assertEqual("image", block.type)
             self.assertEqual("image/jpeg", block.mime_type)
+            # and the clickable form: a URL, in the search result and on demand
+            hit = self.call("find_people", upper_colour="blue", hours=1)["people"][0]
+            self.assertTrue(any(s.get("crop_url") for s in hit["sightings"]))
+            link = self.call("sighting_crop_link", sighting_id=e2["event_id"])
+            self.assertIn("/api/v1/search/sightings/" + e2["event_id"] + "/crop", link["url"])
         finally:
             os.unlink(p)
         with self.assertRaises(ToolError):

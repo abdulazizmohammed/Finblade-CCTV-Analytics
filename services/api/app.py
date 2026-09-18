@@ -39,7 +39,9 @@ BUSINESS_END_HOUR = int(os.environ.get("FINBLADE_BUSINESS_END_HOUR",
 
 from . import charts as _charts
 from . import redact as _redact
+from . import service as _svc_mod
 from .service import IngestService
+from finblade import links as _links
 from .store import InMemoryStore
 from .bus import InMemoryBus
 from .report import render_report_html, render_report_csv
@@ -1272,6 +1274,7 @@ async def search_person_timeline(request: Request, global_ref: str,
     rows = svc.store.sightings_of(global_ref, now - hours * 3600.0, now)
     for r in rows:
         r["sighting_id"] = r.get("event_id")
+        r["crop_url"] = _svc_mod._crop_url(r)
     svc.store.record_search(_search_actor(request), {"global_ref": global_ref, "hours": hours},
                             len(rows), now)
     return {"global_ref": global_ref, "sightings": rows, "count": len(rows)}
@@ -1295,6 +1298,37 @@ async def sighting_correct(request: Request, sighting_id: str):
     code, out = svc.correct_sighting(sighting_id, body["attribute"], body.get("value", "unknown"),
                                      actor=str(body.get("by") or _search_actor(request)))
     return JSONResponse(status_code=code, content=out)
+
+
+@app.get("/api/v1/search/sightings/{sighting_id}/crop/link")
+async def sighting_crop_link(request: Request, sighting_id: str):
+    """A signed, expiring, key-free URL to one sighting's crop — for a chat
+    that cannot render an image and must hand the user something to click.
+    404 when the sighting has no crop; the link itself is not checked
+    against disk (the crop route answers that when opened)."""
+    if _auth.enabled() and _search_actor(request) != _auth.ROLE_FULL:
+        return JSONResponse(status_code=403, content={"error": "forbidden",
+                                                      "detail": "appearance search needs the full key"})
+    row = svc.store.get_sighting(sighting_id)
+    if row is None or not row.get("frame"):
+        return JSONResponse(status_code=404, content={"error": "no crop for that sighting",
+                                                      "sighting_id": sighting_id})
+    url, exp = _links.sign(f"/api/v1/search/sightings/{sighting_id}/crop")
+    return {"sighting_id": sighting_id, "url": url, "expires_at": exp,
+            "public_base": _links.public_base()}
+
+
+@app.get("/api/v1/incidents/{alert_id}/frame/link")
+async def incident_frame_link(alert_id: str):
+    """Same, for an alert's saved incident frame."""
+    alert = _find_alert(alert_id)
+    if alert is None:
+        return JSONResponse(status_code=404, content={"error": "unknown alert", "alert_id": alert_id})
+    if not alert.get("frame"):
+        return JSONResponse(status_code=404, content={"error": "this alert has no incident frame",
+                                                      "alert_id": alert_id, "rule_id": alert.get("rule_id")})
+    url, exp = _links.sign(f"/api/v1/incidents/{alert_id}/frame")
+    return {"alert_id": alert_id, "url": url, "expires_at": exp, "public_base": _links.public_base()}
 
 
 @app.get("/api/v1/search/sightings/{sighting_id}/crop")

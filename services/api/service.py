@@ -9,6 +9,7 @@ import os
 import time
 from typing import Dict, List, Optional, Tuple
 
+from finblade import links as _links
 from finblade import org as _org
 from finblade import gps as _trk
 from finblade.emission import DEFAULT_KEEPALIVE, StateWriteGate
@@ -46,6 +47,13 @@ _PRESENCE_FLUSH_S = 30.0
 # typo guard, so a fat-fingered 40000 cannot bury the observed roster under a
 # number no building holds.
 _MAX_BASELINE = 100_000
+
+
+def _crop_url(row: dict) -> Optional[str]:
+    """Signed link to a sighting's crop, or None when it has no crop."""
+    if not row.get("frame") or not row.get("event_id"):
+        return None
+    return _links.sign(f"/api/v1/search/sightings/{row['event_id']}/crop")[0]
 
 
 class IngestService:
@@ -1335,7 +1343,9 @@ class IngestService:
             g["sightings"].append(dict({k: r.get(k) for k in ("ts", "site_id", "camera_id", "zone_id",
                                                                "description", "frame", "confidences",
                                                                "samples")}, match=m,
-                                       sighting_id=r.get("event_id")))
+                                       sighting_id=r.get("event_id"),
+                                       # a clickable, expiring, key-free link to the crop
+                                       crop_url=_crop_url(r)))
         out = []
         for g in groups.values():
             g["cameras"] = sorted(c for c in g["cameras"] if c)

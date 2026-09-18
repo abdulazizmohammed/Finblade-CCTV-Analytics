@@ -488,7 +488,8 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
     @s.tool(description=(
         "The saved JPEG frame for an alert (the scene when it fired; for R-11 a "
         "crop of the person accused, unidentified). Returns an image, or an error "
-        "when no frame was saved."))
+        "when no frame was saved. If the chat cannot display images, use "
+        "incident_frame_link instead and give the user the URL."))
     def incident_frame(alert_id: str) -> Image:
         code, ctype, body = backend.get_bytes(f"/api/v1/incidents/{alert_id}/frame")
         if code >= 400 or not body:
@@ -611,8 +612,10 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
         "A colour also matches its look-alikes (white~grey/beige, black~grey/navy, "
         "red~pink/orange …): each hit is `match: exact` or `near` — report near "
         "hits as 'possibly, tagged as grey'. Pass near=false for exact only. "
-        "Each sighting carries a `sighting_id`: call sighting_crop(sighting_id) to "
-        "SHOW the crop — the `frame` path is not fetchable on its own. "
+        "Each sighting carries `crop_url`: a clickable, expiring link to the crop "
+        "that needs no login — GIVE IT TO THE USER (as a markdown link) so they can "
+        "see the person; it is the evidence. sighting_crop(sighting_id) returns the "
+        "same image inline for clients that render images. `frame` is not a URL. "
         "Never infer or report gender, age or ethnicity. Window by hours or "
         "from_ts/to_ts. Every search is audited. " + _SCOPE_DOC))
     def find_people(upper_colour: Optional[str] = None, lower_colour: Optional[str] = None,
@@ -650,6 +653,22 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
         if code >= 400 or not body:
             raise ApiError(f"no crop for sighting {sighting_id} (HTTP {code})")
         return Image(data=body, format="jpeg")
+
+    @s.tool(description=(
+        "A clickable link to one sighting's crop for a chat that cannot show "
+        "images: signed, expires (default 60 min), needs no login, opens that one "
+        "image and nothing else. find_people already includes it as `crop_url`; "
+        "use this to re-issue one that has expired. Present it as a markdown link."))
+    def sighting_crop_link(sighting_id: str) -> dict:
+        r = backend.get(f"/api/v1/search/sightings/{sighting_id}/crop/link")
+        return _ok(r, hint=_SEARCH_HINT if isinstance(r, dict) and r.get("status") == 403 else "")
+
+    @s.tool(description=(
+        "A clickable link to an alert's saved incident frame (R-02 / R-06 scene, "
+        "R-11 crop), for a chat that cannot show images: signed, expires, no login "
+        "needed, opens that one image only. Error when the alert has no frame."))
+    def incident_frame_link(alert_id: str) -> dict:
+        return _ok(backend.get(f"/api/v1/incidents/{alert_id}/frame/link"))
 
     # ---- system ------------------------------------------------------------
     @s.tool(description=(

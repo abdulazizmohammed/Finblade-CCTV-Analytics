@@ -39,11 +39,18 @@ except for the two that are the whole point of the integration.
 
 A wrong key is 401. A valid scoped key on a route it may not use is 403 — the
 two are different problems and telling them apart saves an integrator an hour.
+
+A FOURTH FORM, for one purpose: a signed, expiring link to a single image
+(`?exp=&sig=`, finblade/links.py), so a chatbot that cannot render an image
+block can hand the user a URL to click without putting a key into the chat.
+It opens exactly the crop or frame it was signed for, until it expires.
 """
 
 import hmac
 import os
 from typing import Optional, Tuple
+
+from finblade import links as _links
 
 # Paths that must work without a key, or nothing can bootstrap:
 #   /web, /tools   the dashboard itself (it then asks the user for the key)
@@ -152,6 +159,13 @@ def presented_role(path: str, headers, query_params) -> Optional[str]:
             return ROLE_FULL
         if integration and _matches(candidate, integration):
             return ROLE_INTEGRATION
+    # A signed, expiring link to ONE image (finblade/links.py): no key in the
+    # URL, so it can sit in a chat transcript. It presents as the full role
+    # because the routes it can open are full-key routes — but the signature
+    # is bound to this exact path, so that is all it can open.
+    if _links.is_signable(path) and _links.verify(path, query_params.get("exp"),
+                                                   query_params.get("sig")):
+        return ROLE_FULL
     return None
 
 

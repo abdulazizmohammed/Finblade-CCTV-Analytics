@@ -334,6 +334,9 @@ above 0 means this file does not cover the cameras actually running.
 | `REDIS_URL` | unset | switches to the Redis Streams bus |
 | `FINBLADE_PRESENCE_UNMATCHED_EXIT` | `evict_oldest` | facility count: an observed exit whose ref matches nobody discharges the longest-present occupant; `ignore` = strict (the exit is dropped, the count only ever grows). D-42 |
 | `FINBLADE_PRESENCE_EXPIRE_HOURS` | `0` (off) | retire roster entries older than this — set longer than any plausible visit (a lab that closes at night: `16`) |
+| `FINBLADE_PUBLIC_URL` | `FINBLADE_SELF_URL` | the address a user's browser reaches this API on; the base of signed image links and webhook action links |
+| `FINBLADE_LINK_TTL_MINUTES` | `60` | how long a signed image link stays valid |
+| `FINBLADE_LINK_SECRET` | derived from the full key | dedicated signing secret for image links, if you want key rotation not to void them |
 | `FB_LOG_LEVEL` | `INFO` | |
 
 ---

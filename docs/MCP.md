@@ -85,6 +85,15 @@ and execute `tool_use` blocks with `s.call_tool(name, input)`. Image tools
 content block — pass it to the model as an image **and render it to the
 user**; a search hit without its crop is a description, not evidence.
 
+**If your chat cannot render image blocks**, nothing is lost: every
+`find_people` sighting carries `crop_url`, and `sighting_crop_link` /
+`incident_frame_link` return the same kind of URL on demand. They are signed
+and expire (default 60 min, `FINBLADE_LINK_TTL_MINUTES`), carry no API key,
+and open exactly one image — safe to print in a transcript. Render them as
+links. The host must be reachable from the user's browser: set
+`FINBLADE_PUBLIC_URL=http://ec2-98-80-30-36.compute-1.amazonaws.com:8000`
+in the CCTV host's `.env`.
+
 **Through Anthropic's remote MCP connector** (`mcp_servers=[{type:"url",…}]` +
 `tools=[{type:"mcp_toolset", mcp_server_name:…}]`, beta `mcp-client-2025-11-20`):
 only when the server is reachable from the public internet over HTTPS — i.e.
@@ -101,7 +110,8 @@ the AWS deployment, not the on-prem host.
 | Alerts | `alerts_active`, `alerts_history`, `alert`, `incident_frame` (image), `acknowledge_alert`, `resolve_alert` |
 | Events / reports | `events_history`, `occupancy_report`, `reports_list` |
 | Vehicles | `vehicles`, `vehicle`, `vehicle_track`, `vehicle_arrivals`, `vehicles_at_branch` |
-| Appearance | `find_people` (description → candidates grouped by person; audited), `person_timeline`, `sighting_crop` (image, by the `sighting_id` in a result) |
+| Appearance | `find_people` (description → candidates grouped by person, each sighting with a clickable `crop_url`; audited), `person_timeline`, `sighting_crop` (image block), `sighting_crop_link` (URL) |
+| Images as links | `sighting_crop_link`, `incident_frame_link` — signed, expiring (default 60 min), key-free URLs to one image, for a chat that cannot render image blocks. Set `FINBLADE_PUBLIC_URL` on the CCTV host to the address users' browsers can reach |
 | System | `system_health`, `rules_reference` |
 
 Every listing tool takes `region_id` / `city_id` / `branch_id` (they intersect).

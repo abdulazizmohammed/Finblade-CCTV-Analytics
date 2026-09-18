@@ -81,7 +81,19 @@ class IngestService:
             self.presence_expire_s = max(0.0, float(os.environ.get("FINBLADE_PRESENCE_EXPIRE_HOURS") or 0)) * 3600.0
         except ValueError:
             self.presence_expire_s = 0.0
-        self.roster = FacilityRoster.from_records(people, stats=stats, doors=doors,
+        # The roster's site: FINBLADE_SITE_ID, else the one site every camera
+        # reports. Never guessed when they disagree — a wrong branch label is
+        # worse than none for anything routing occupancy by Region/City/Branch.
+        # (Was never set: the facility figure reported site_id null on a
+        # five-camera site with every camera at RUH-HQ.)
+        site = (os.environ.get("FINBLADE_SITE_ID") or "").strip() or None
+        if site is None:
+            try:
+                sites = {c.get("site_id") for c in self.store.list_cameras() if c.get("site_id")}
+                site = sites.pop() if len(sites) == 1 else None
+            except Exception:                               # noqa: BLE001
+                site = None
+        self.roster = FacilityRoster.from_records(people, site_id=site, stats=stats, doors=doors,
                                                   unmatched_exit=policy)
         self._policy: Optional[DoorPolicy] = None
         self._policy_at = 0.0

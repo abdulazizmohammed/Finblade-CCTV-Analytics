@@ -326,6 +326,33 @@ class TestBidirectionalDoor(unittest.TestCase):
         self.assertEqual(act, ADMIT)
         self.assertEqual(self.r.occupancy(), 1)
 
+    def test_a_typed_outside_zone_settles_a_crossing_whose_other_side_was_unseen(self):
+        # Wareed door, 2026-09-18 11:07 KSA: a visitor's track was acquired
+        # INSIDE the door strip (no lobby zone before it) and stepped onto the
+        # OUTSIDE zone. "nowhere -> door -> OUTSIDE" is a departure: the far
+        # side is declared, not merely unobserved.
+        self._walk_in("p1")
+        apply_event(self.r, ev("ZONE_ENTRY", "p1", 600.0, zone_to="MAIN-DOOR"), TWO_WAY)
+        act = apply_event(self.r, ev("ZONE_TRANSITION", "p1", 602.0,
+                                     zone_from="MAIN-DOOR", zone_to="FORECOURT"), TWO_WAY)
+        self.assertEqual(act, DISCHARGE)
+        self.assertEqual(self.r.occupancy(), 0)
+        self.assertEqual(self.r.stats["ambiguous_crossings"], 0)
+        # and the mirror: from the OUTSIDE zone, through the door, onto floor
+        # no zone covers — they came in.
+        apply_event(self.r, ev("ZONE_TRANSITION", "p2", 700.0,
+                               zone_from="FORECOURT", zone_to="MAIN-DOOR"), TWO_WAY)
+        act = apply_event(self.r, ev("ZONE_EXIT", "p2", 703.0, zone_from="MAIN-DOOR"), TWO_WAY)
+        self.assertEqual(act, ADMIT)
+        self.assertEqual(self.r.occupancy(), 1)
+        # OUTSIDE -> door -> OUTSIDE (looked in, went away) still moves nobody
+        apply_event(self.r, ev("ZONE_TRANSITION", "p3", 800.0,
+                               zone_from="FORECOURT", zone_to="MAIN-DOOR"), TWO_WAY)
+        act = apply_event(self.r, ev("ZONE_TRANSITION", "p3", 803.0,
+                                     zone_from="MAIN-DOOR", zone_to="FORECOURT"), TWO_WAY)
+        self.assertEqual(act, AMBIGUOUS)
+        self.assertEqual(self.r.occupancy(), 1)
+
     def test_reaching_the_door_and_turning_back_changes_nothing(self):
         self._walk_in("p1")
         apply_event(self.r, ev("ZONE_TRANSITION", "p1", 700.0,

@@ -467,7 +467,7 @@ whether the count moves (D-42).
 | Roster of who is inside, persisted across restarts | Built | `finblade/presence.py` `FacilityRoster` |
 | Direction resolved from the zones either side of a door | Built | `presence.py` `DoorPolicy` |
 | One-way `ENTRANCE`/`EXIT` zones resolve on arrival | Built | `presence.py` |
-| Two-way `DOOR` zones resolve on departure; `OUTSIDE` zones give the far side a name | Built | ambiguous crossings counted, never guessed; `tools/zone-editor.html` lists all types |
+| Two-way `DOOR` zones resolve on departure; `OUTSIDE` zones give the far side a name — and settle a crossing whose other side was unseen (`nowhere → door → OUTSIDE` = exit, `OUTSIDE → door → nowhere` = entry); only both-sides-unknown stays ambiguous | Built | `presence._resolve_crossing`; `tools/zone-editor.html` lists all types |
 | **Unmatched exit discharges the longest-present occupant** (`FINBLADE_PRESENCE_UNMATCHED_EXIT=evict_oldest`, the default) — an observed exit whose ref was never admitted (ReID forgets after its TTL) still moves the count; `ignore` restores the strict policy. Split visible as `discharged_matched` / `discharged_unmatched`; never below zero (`discharge_on_empty`) | Built | `FacilityRoster.discharge`; D-42 |
 | Expiry backstop, off by default: `FINBLADE_PRESENCE_EXPIRE_HOURS=16` retires anyone "inside" longer than a plausible visit, counted as `expired`, run on the counts tick and before a snapshot | Built | `FacilityRoster.expire`, `service.expire_presence` |
 | Declared opening baseline that drains as people leave (before any eviction) | Built | `POST /api/v1/facility/baseline` |

@@ -686,9 +686,31 @@ def _resolve_crossing(roster: FacilityRoster, policy: DoorPolicy, ref: str,
     event sequence, and nothing in the data separates them. Picking a direction
     there would be a coin toss applied to the authoritative occupancy figure,
     so it is counted and left alone.
+
+    ONE REFINEMENT (2026-09-18). "Beyond" is two different things: a zone an
+    operator typed OUTSIDE, and no zone at all. A typed OUTSIDE zone is
+    evidence — that floor is outside the building by declaration — while
+    NOWHERE is the absence of it. So when one side is unknown but the OTHER
+    side is a typed OUTSIDE zone, the direction is settled:
+
+      nowhere -> door -> OUTSIDE   they left (from floor no zone covers)   DISCHARGE
+      OUTSIDE -> door -> nowhere   they came in (onto uncovered floor)     ADMIT
+
+    Only both-sides-unknown stays ambiguous. First case seen on the Wareed
+    door: a visitor's track was acquired inside the door strip itself and
+    stepped out onto the OUTSIDE zone; the old rule counted it ambiguous and
+    the roster kept them for ever.
     """
     came_from_inside = policy.is_interior(from_zone)
     went_beyond = policy.is_beyond(to_zone)
+    from_outside = policy.kind(from_zone) == OUTSIDE       # typed, not merely unseen
+    to_outside = policy.kind(to_zone) == OUTSIDE
+    if not came_from_inside and went_beyond:
+        # Both sides "beyond" — but is one of them a declared OUTSIDE zone?
+        if to_outside and not from_outside:
+            came_from_inside = True                        # left onto declared outside
+        elif from_outside and not to_outside:
+            went_beyond = False                            # came in from declared outside
 
     # Door tallies record the CROSSING, whether or not the roster moved. A
     # cold-start exit by someone never admitted is still traffic through that

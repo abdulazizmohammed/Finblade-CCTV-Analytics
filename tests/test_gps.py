@@ -300,6 +300,32 @@ class TestService(unittest.TestCase):
         self.assertEqual([], [a for a in self.svc.list_alerts() if a["rule_id"] == "R-12"
                               and a["kind"] != "CLEAR"])
 
+    def test_r12_survives_a_restart_without_re_raising_and_folds_old_duplicates(self):
+        # The dedupe flag lived in memory: every API restart re-raised R-12
+        # for a phone that had been off for days — 200 open alerts on the
+        # Wareed instance. The store is the record that survives.
+        self.svc.register_tracker({"tracker_id": "V-1", "name": "Van 1", "home_branch_id": "RUH-01"})
+        self.svc.ingest_position(pos(ts=T0))
+        self.assertEqual(["V-1"], self.svc.check_silent_trackers(now=T0 + 400))
+        # "restart": a fresh service over the same store
+        from services.api.service import IngestService
+        svc2 = IngestService(self.svc.store)
+        self.assertEqual([], svc2.check_silent_trackers(now=T0 + 800), "already open in the store")
+        r12 = [a for a in svc2.list_alerts() if a["rule_id"] == "R-12" and a["kind"] != "CLEAR"]
+        self.assertEqual(1, len(r12))
+        # and the duplicates that already exist from earlier restarts fold into the first
+        for i in range(3):
+            svc2.raise_alert({"rule_id": "R-12", "severity": "AMBER", "kind": "FIRE", "camera_id": "V-1",
+                              "message": "dup", "ts": T0 + 900 + i})
+        self.assertEqual(4, len([a for a in svc2.list_alerts() if a["rule_id"] == "R-12" and a["kind"] != "CLEAR"]))
+        self.assertEqual(3, svc2.dedupe_silent_tracker_alerts(now=T0 + 1000))
+        left = [a for a in svc2.list_alerts() if a["rule_id"] == "R-12" and a["kind"] != "CLEAR"]
+        self.assertEqual(1, len(left))
+        self.assertAlmostEqual(T0 + 400, float(left[0]["ts"]), delta=1.0, msg="the earliest survives")
+        # recovery still clears it
+        svc2.ingest_position(pos(ts=T0 + 1100))
+        self.assertEqual([], [a for a in svc2.list_alerts() if a["rule_id"] == "R-12" and a["kind"] != "CLEAR"])
+
     def test_never_seen_and_disabled_trackers_never_alert(self):
         self.svc.register_tracker({"tracker_id": "V-NEW"})
         self.svc.register_tracker({"tracker_id": "V-OFF", "enabled": False})

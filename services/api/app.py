@@ -187,6 +187,12 @@ async def _webhook_loop():
 async def _tracker_monitor():
     """R-12: a GPS tracker that stops reporting. Same shape as R-07 above;
     the rule itself lives in the service so it is testable without a loop."""
+    try:
+        n = svc.dedupe_silent_tracker_alerts()
+        if n:
+            log.warning("R-12: folded %d duplicate open tracker-silent alert(s) into one per tracker", n)
+    except Exception:                              # noqa: BLE001
+        log.exception("R-12 dedupe at startup failed")
     while True:
         try:
             await asyncio.sleep(15)

@@ -1314,14 +1314,51 @@ class IngestService:
     # R-12: a tracker that stops reporting. Same shape as R-07 for cameras
     # (raise once, auto-resolve on recovery) so the alert feed treats them
     # alike. Driven by a loop in app.py.
+    def _open_r12(self) -> Dict[str, List[dict]]:
+        """Open R-12 alerts by tracker id, from the store — the record that
+        survives a restart, which the in-memory flag does not."""
+        out: Dict[str, List[dict]] = {}
+        for a in self.store.list_alerts(unacked_only=False):
+            if a.get("rule_id") == "R-12" and a.get("kind") != "CLEAR" \
+                    and str(a.get("status") or "OPEN").upper() in ("OPEN", "ACK", "ACKNOWLEDGED"):
+                out.setdefault(str(a.get("camera_id")), []).append(a)
+        return out
+
+    def dedupe_silent_tracker_alerts(self, now: Optional[float] = None) -> int:
+        """Fold duplicate open R-12 alerts per tracker into the earliest one.
+
+        The dedupe flag lived only in memory, so every API restart re-raised
+        "tracker silent" for a phone that had been off for days: 200 open
+        AMBER alerts for one condition on the Wareed instance. Run at startup;
+        returns how many duplicates were resolved.
+        """
+        now = time.time() if now is None else now
+        closed = 0
+        for tid, alerts in self._open_r12().items():
+            alerts.sort(key=lambda a: float(a.get("ts") or a.get("raised_at") or 0))
+            for dup in alerts[1:]:
+                self.resolve(str(dup.get("alert_id")), "DISMISSED", "system-dedupe", now,
+                             note="duplicate of an earlier open R-12 for the same tracker")
+                closed += 1
+            self._tracker_silent[tid] = True
+        return closed
+
     def check_silent_trackers(self, now: Optional[float] = None) -> List[str]:
         now = time.time() if now is None else now
         fired = []
+        open_r12 = None
         for t in self.trackers(now):
             tid = t["tracker_id"]
             if t.get("enabled") is False or t["state"] == "NEVER_SEEN":
                 continue
             if t["state"] == "OFFLINE" and not self._tracker_silent.get(tid):
+                # Memory says "not yet raised" — but memory is empty after a
+                # restart. The store knows whether one is already open.
+                if open_r12 is None:
+                    open_r12 = self._open_r12()
+                if open_r12.get(tid):
+                    self._tracker_silent[tid] = True
+                    continue
                 self._tracker_silent[tid] = True
                 mins = int(self.TRACKER_SILENT_S // 60)
                 self.raise_alert({

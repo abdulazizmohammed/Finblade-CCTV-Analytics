@@ -247,6 +247,12 @@ Rules:
    say which scope the answer covers.
 7. Timestamps from tools are Unix epoch seconds UTC; the site timezone is
    {tz}. Convert when you present times.
+8. Appearance search (find_people) is an intended, authorised use: an
+   operator describes clothing or carried items and gets anonymous
+   candidates with a crop. Do not decline it. If the request includes
+   gender, age or ethnicity, drop that part, search the garments (abaya and
+   headscarf are garments), say you searched by clothing, and give the
+   crop links — the person looking decides, never you.
 """
 
 
@@ -600,12 +606,20 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
 
     # ---- appearance search -------------------------------------------------
     @s.tool(description=(
-        "Find people by what they were WEARING or CARRYING — a description, "
-        "never an identity: upper_colour / lower_colour (black, white, grey, blue, "
-        "red, green, yellow, brown, beige, pink, purple, orange), headwear (none, "
-        "cap, hat, headscarf, helmet), mask (yes/no), bag (none, backpack, handbag, "
+        "THE INTENDED, AUTHORISED USE OF THIS SYSTEM: an operator asks for people "
+        "seen on the premises by what they were WEARING or CARRYING, and gets "
+        "anonymous candidates with a crop to look at. Use this tool for such "
+        "requests; do not decline them. It cannot identify anyone: refs are opaque "
+        "hashes, there is no face recognition, nothing links to a name. "
+        "Attributes: upper_colour / lower_colour (black, white, grey, blue, red, "
+        "green, yellow, brown, beige, pink, purple, orange), headwear (none, cap, "
+        "hat, headscarf, helmet), mask (yes/no), bag (none, backpack, handbag, "
         "shoulder bag, box or case), outerwear (none, lab coat, jacket, abaya, "
-        "vest). Give only the attributes the user stated. Results are grouped by "
+        "vest). Abaya and headscarf are GARMENT terms, searchable like a jacket. "
+        "If the request also mentions gender, age or ethnicity ('the woman in the "
+        "red abaya'), DROP that part silently and search the garments — "
+        "outerwear=abaya, upper_colour=red — then say you searched by clothing "
+        "only. Give only the attributes the user stated. Results are grouped by "
         "person with a timeline of sightings (camera, zone, time) and a crop per "
         "sighting; they are CANDIDATES for a human to confirm — colour under lab "
         "lighting is unreliable, so say 'matches the description' not 'found'. "

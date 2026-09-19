@@ -143,8 +143,16 @@ class TestSurface(Base):
         self.assertIn("unique only WITHIN a camera", desc["zone_history"])
         self.assertIn("never a person", desc["vehicles"])
         self.assertIn("double count", desc["cameras"])
-        self.assertIn("never an identity", desc["find_people"])
+        self.assertIn("cannot identify anyone", desc["find_people"])
         self.assertIn("gender, age or ethnicity", desc["find_people"])
+        # The Wareed chatbot declined "the woman in the red abaya" outright.
+        # The description must say what to DO with such a request, not just
+        # what not to infer: drop the gender word, search the garments.
+        self.assertIn("do not decline", desc["find_people"])
+        self.assertIn("DROP that part", desc["find_people"])
+        self.assertIn("GARMENT", desc["find_people"])
+        p = run(self.server.get_prompt("cctv_analyst", {"tenant": "Wareed"}))
+        self.assertIn("Do not decline it", p.messages[0].content.text)
 
     def test_find_people_runs_through_the_api(self):
         from finblade.events import PERSON_ATTRIBUTES, new_event

@@ -22,9 +22,15 @@ class FakeProc:
         self.pid = pid
         self._alive = alive
         self.terminated = False
+        self.returncode = None
+
+    def die(self, code=-9):
+        """The worker exits on its own (OOM, CUDA fault, bad source)."""
+        self._alive = False
+        self.returncode = code
 
     def poll(self):
-        return None if self._alive else 0
+        return None if self._alive else (self.returncode if self.returncode is not None else 0)
 
     def terminate(self):
         self.terminated = True
@@ -51,7 +57,9 @@ class ManagerHarness(CameraManager):
 
     def _spawn(self, cmd, log):
         self.launched.append(list(cmd))
-        return FakeProc()
+        p = FakeProc(pid=4242 + len(self.launched))
+        self.last_proc = p
+        return p
 
 
 def _patch(mgr):
@@ -117,6 +125,63 @@ class TestPortAllocation(unittest.TestCase):
     def test_local_port_is_reported_for_proxying(self):
         info = self.mgr.launch("CAM-1", "rtsp://h/1")
         self.assertEqual(self.mgr.local_port("CAM-1"), info["port"])
+
+
+class TestSupervision(unittest.TestCase):
+    """A worker that dies on its own is relaunched with backoff, and the
+    reason is kept; an operator's stop is not a crash and is not relaunched."""
+
+    def setUp(self):
+        self.mgr = ManagerHarness(base_port=8090)
+        self.LogCls = _patch(self.mgr)
+        import services.api.camera_manager as cm
+        cm.open = lambda *a, **kw: self.LogCls()
+        self._tail = cm._tail
+        cm._tail = lambda path, n=12: ["RuntimeError: CUDA out of memory"]
+
+    def tearDown(self):
+        import services.api.camera_manager as cm
+        cm.subprocess.Popen, cm.subprocess.run, _ = self.mgr._orig
+        cm._tail = self._tail
+        if hasattr(cm, "open"):
+            del cm.open
+
+    def test_a_crashed_worker_is_relaunched_after_backoff_and_the_reason_kept(self):
+        self.mgr.launch("CAM-1", "rtsp://h/1", site_id="RUH-HQ")
+        self.mgr._procs["CAM-1"]["started_at"] = 1000.0
+        self.mgr.last_proc.die(-9)
+        self.assertEqual([], self.mgr.reap(now=1010.0), "noticed, but not yet: 5 s backoff")
+        rep = self.mgr.crash_report()["CAM-1"]
+        self.assertEqual((1, -9, False), (rep["crashes"], rep["last_exit_code"], rep["running"]))
+        self.assertIn("CUDA out of memory", rep["last_log"][0])
+        self.assertEqual(["CAM-1"], self.mgr.reap(now=1016.0))
+        self.assertEqual(2, len(self.mgr.launched))
+        self.assertIn("RUH-HQ", self.mgr.launched[1], "relaunched with the same site")
+        self.assertTrue(self.mgr.crash_report()["CAM-1"]["running"])
+        # dies again at once: longer wait this time
+        self.mgr._procs["CAM-1"]["started_at"] = 1016.0
+        self.mgr.last_proc.die(1)
+        self.mgr.reap(now=1020.0)
+        self.assertEqual(2, self.mgr.crash_report()["CAM-1"]["crashes"])
+        self.assertEqual([], self.mgr.reap(now=1030.0), "15 s backoff on the second death")
+        self.assertEqual(["CAM-1"], self.mgr.reap(now=1036.0))
+        # a worker that ran for over an hour before dying gets a fresh, fast restart
+        self.mgr._procs["CAM-1"]["started_at"] = 1036.0
+        self.mgr.last_proc.die(1)
+        self.mgr.reap(now=1036.0 + 7200)
+        self.assertEqual(1, self.mgr.crash_report()["CAM-1"]["crashes"])
+
+    def test_an_operator_stop_is_not_a_crash(self):
+        self.mgr.launch("CAM-1", "rtsp://h/1")
+        self.mgr.stop("CAM-1")
+        self.assertEqual([], self.mgr.reap(now=9999.0))
+        self.assertEqual({}, self.mgr.crash_report())
+        self.assertEqual(1, len(self.mgr.launched))
+
+    def test_a_healthy_worker_is_left_alone(self):
+        self.mgr.launch("CAM-1", "rtsp://h/1")
+        self.assertEqual([], self.mgr.reap(now=5000.0))
+        self.assertEqual({}, self.mgr.crash_report())
 
     def test_local_port_is_none_for_a_camera_we_did_not_launch(self):
         self.assertIsNone(self.mgr.local_port("NOT-OURS"))

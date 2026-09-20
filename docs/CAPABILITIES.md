@@ -637,6 +637,7 @@ where cumulative footfall has no liveness problem.
 | MCP server as a systemd service, installed by the same script once `.env` has `FINBLADE_MCP_TOKEN` (never an open endpoint on boot) | Built | `deploy/finblade-mcp.service`, `scripts/install_service.sh` |
 | Dev Postgres as a systemd service, ordered before the API | Built | `deploy/finblade-postgres.service`, `scripts/install_pg_service.sh` |
 | Camera pipeline autostart after an API restart | Built | `FINBLADE_AUTOSTART_CAMERAS` |
+| Worker supervision: a pipeline that exits on its own is relaunched with backoff (5 s → 15 s → 60 s → 5 min; reset after an hour's clean run), never given up on; exit code and the last log lines are kept in `/api/v1/health` → `checks.camera_workers` so the *reason* is visible. An operator's Stop is not a crash and is not relaunched | Built | `CameraManager.reap` / `crash_report`, `_camera_supervisor` in `app.py` |
 | Server-side camera-offline monitor | Built | `app.py` `_offline_monitor` |
 | Background loop failure counters surfaced in `/api/v1/health` | Built | `_loop_errors` |
 | Evidence artifacts: annotated frames, contact sheet, metrics, events, alerts | Built | written to `evidence/` |

@@ -413,9 +413,30 @@ async def _autostart_cameras():
         log.warning("could not autostart: %s", ", ".join(skipped))
 
 
+async def _camera_supervisor():
+    """Relaunch camera workers that died on their own (CameraManager.reap).
+
+    Until this existed a crashed worker stayed dead — the camera read OFFLINE
+    until somebody pressed Start, and the reason it died scrolled off the
+    end of a log nobody opened. The crash count and log tail are in /health.
+    """
+    while True:
+        try:
+            await asyncio.sleep(15)
+            relaunched = await asyncio.to_thread(cam_mgr.reap)
+            if relaunched:
+                _loop_errors["supervisor_relaunches"] = _loop_errors.get("supervisor_relaunches", 0) + len(relaunched)
+        except asyncio.CancelledError:
+            break
+        except Exception:                          # noqa: BLE001
+            _loop_errors["supervisor"] = _loop_errors.get("supervisor", 0) + 1
+            log.exception("camera supervisor tick failed")
+
+
 @asynccontextmanager
 async def lifespan(app):
     tasks = [asyncio.create_task(_offline_monitor()),
+             asyncio.create_task(_camera_supervisor()),
              asyncio.create_task(_tracker_monitor()),
              asyncio.create_task(_webhook_loop()),
              asyncio.create_task(_report_scheduler()),
@@ -1990,6 +2011,12 @@ def _dependency_checks() -> dict:
                                  "effective_state") == "OFFLINE"])}
     except Exception as exc:                        # noqa: BLE001
         checks["cameras"] = {"ok": False, "error": exc.__class__.__name__}
+    # Workers that died and were (or will be) relaunched, with the log tail
+    # that says why. Empty is the healthy state; a camera with a rising count
+    # is the one to read first.
+    crashes = cam_mgr.crash_report()
+    checks["camera_workers"] = {"ok": not crashes, "crashed": crashes,
+                                "relaunches": _loop_errors.get("supervisor_relaunches", 0)}
 
     fw = forwarder.status()
     checks["forwarder"] = {

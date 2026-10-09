@@ -8,7 +8,7 @@ For *what each capability is built out of* — library, version, and the
 deliberate non-choices (no pydantic, no ORM, no JS framework, no chart library)
 — see [TECH_STACK.md](TECH_STACK.md).
 
-**Last updated:** 2026-09-15
+**Last updated:** 2026-10-08
 
 ---
 
@@ -57,6 +57,7 @@ capabilities are `TC-M-01`..`TC-M-10` in [TEST_CASES.md](TEST_CASES.md).
 | Detection masking via `UNMONITORED` zones | Built | `finblade/zones.py` `in_ignored_region` |
 | Frame-skip to a target process FPS | Built | `process_fps` in the camera config |
 | Tracking-quality regime reporting (RELIABLE / STRAINED / SATURATED) | Built | `finblade/crowding.py` |
+| Synchronised six-camera file bank over RTSP (stream copy, publishers released on one barrier) | Runs | `scripts/nv_warehouse_start.sh`, `config/cameras.nvw.yaml`; CAM-NVW-00..05 on branch RUH-WH1. Measured 2026-10-08: all six ONLINE on CUDA, 0–5 tracks/frame, 14 identities / 11 cross-camera — not validated, contact sheet in `evidence/nvw/` |
 
 One OS process per camera, launched and supervised by the API
 (`services/api/camera_manager.py`). Workers post to the API over HTTP; they do

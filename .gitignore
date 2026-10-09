@@ -4,6 +4,9 @@ __pycache__/
 venv/
 .pytest_cache/
 media/*.mp4
+# Third-party multi-camera dataset (NVIDIA warehouse, ~1.8 GB, licence not yet
+# confirmed). Re-copied locally, never committed — see scripts/nv_warehouse_*.
+media/nv_warehouse/
 media/cam1_frame.jpg
 media/*_frame.jpg
 *.Zone.Identifier

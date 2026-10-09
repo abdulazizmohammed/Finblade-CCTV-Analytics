@@ -1,0 +1,59 @@
+# CAM-NVW-00..05 — six-camera warehouse bank (NVIDIA multi-camera dataset).
+#
+# ONE config shared by all six workers; camera_id / site_id / source are given
+# per worker on the command line by scripts/nv_warehouse_start.sh:
+#
+#   run_cpu.py --config config/cameras.nvw.yaml \
+#       --camera-id CAM-NVW-00 --site-id RUH-WH1 \
+#       --source rtsp://127.0.0.1:8554/nvw_cam00 --port 8190 ...
+#
+# WHY NOT config/cameras.template.yaml. The template is what UI-provisioned
+# cameras launch with, and it turns on four extra models (fire/smoke, PPE,
+# medical PPE, CLIP attributes). Six workers x six models does not fit this box:
+# 15 GB of RAM, and an 8 GB GPU the template itself warns has a history of PCIe
+# faults under sustained multi-model load. This bank runs detector + ReID only.
+# The cameras are still REGISTERED through the API (so they sit under their
+# branch on the Network page); they are just not launched by camera_manager.
+#
+# Source: 6 x 1920x1080 @ 30 fps, MPEG-4 Part 2, 300 s, 9000 frames each —
+# synchronised recordings, published together over RTSP with -c:v copy (the
+# detector sees the source pixels; nothing is re-encoded).
+
+camera_id: CAM-NVW-00          # overridden by --camera-id
+site_id: RUH-WH1               # overridden by --site-id; see config/org.demo-warehouse.yaml
+
+source: ""                     # overridden by --source
+frame_width: 1920              # auto-detected from the stream anyway
+frame_height: 1080
+
+model_path: models/yolo11s.pt
+device: cuda                   # falls back to CPU if CUDA is unavailable
+conf_threshold: 0.4            # template value; see its notes before moving it
+person_class_id: 0
+# 10 of the source's 30 fps. Six cameras share one GPU; at 15 fps x 1280 (the
+# template) the detector alone would keep it near saturation. Raise only after
+# watching nvidia-smi with all six running.
+process_fps: 10
+# People here are mostly mid-aisle, 150-500 px tall in a 1080p frame; 960 keeps
+# them well resolved at roughly half the cost of 1280.
+imgsz: 960
+
+reid:
+  enabled: true
+  weights: models/osnet_x0_25_msmt17.pt
+  device: "0"
+  interval_seconds: 0.4
+  max_samples: 8
+  budget_per_frame: 8
+  min_samples_to_resolve: 3
+  # 1080p main stream: the template's own guidance is 96 px (9% of frame).
+  min_crop_height: 96
+  min_crop_confidence: 0.5
+
+# hazard / ppe / medical_ppe / attributes: deliberately ABSENT, which run_cpu.py
+# reads as disabled. Enable PPE here (with required_ppe on a zone) once zones are
+# drawn — many workers in this footage wear hi-vis vests and some do not.
+
+# Zones are pulled from the API at startup and hot-reloaded. Draw them in
+# /tools/zone-editor.html; nothing is guessed here.
+zones: []

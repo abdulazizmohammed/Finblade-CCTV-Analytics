@@ -103,7 +103,7 @@ def main():
         print(line)
 
     print("\n== conversation endpoints (GET lists, POST creates)")
-    found = []
+    live, found = [], []
     for path in CANDIDATES:
         url = c.base_url + path
         row = f"  {path:38s}"
@@ -116,24 +116,83 @@ def main():
         if g.status_code == 404:
             print(row)
             continue
+        live.append((path, g))
         try:
             p = s.post(url, json={}, headers=h, timeout=20)
             row += f"  POST {p.status_code}  {short(p, 160)}"
             if p.status_code < 300:
-                found.append(path)
+                found.append((path, {}))
         except Exception as exc:                             # noqa: BLE001
             row += f"  POST {exc.__class__.__name__}"
         print(row)
 
+    # A path that exists but rejected an empty body is the interesting one: it
+    # has just said what it wants. Ask it properly rather than guessing.
+    for path, g in live:
+        if any(p == path for p, _ in found):
+            continue
+        url = c.base_url + path
+        print(f"\n== {path} exists — working out what it wants")
+
+        # What is already there says more than any guess: an existing session
+        # shows the exact field values this deployment uses.
+        try:
+            data = g.json()
+            rows = data.get("results") if isinstance(data, dict) else data
+            if isinstance(rows, list) and rows:
+                print(f"  existing sessions ({len(rows)}), newest shown:")
+                print("   ", json.dumps(rows[0])[:400])
+            else:
+                print(f"  no existing sessions to copy ({short(g, 120)})")
+        except ValueError:
+            print(f"  GET body was not JSON: {short(g, 120)}")
+
+        # DRF publishes its field metadata, including the allowed choices.
+        choices = {}
+        try:
+            o = s.options(url, headers=h, timeout=20)
+            meta = o.json() if o.status_code < 300 else {}
+            fields = (((meta.get("actions") or {}).get("POST")) or {}) if isinstance(meta, dict) else {}
+            for name, spec in (fields or {}).items():
+                if isinstance(spec, dict):
+                    req = spec.get("required")
+                    ch = [x.get("value") for x in (spec.get("choices") or []) if isinstance(x, dict)]
+                    if ch:
+                        choices[name] = ch
+                    print(f"  field {name:16s} type={spec.get('type')} required={req}"
+                          + (f" choices={ch}" if ch else ""))
+            if not fields:
+                print(f"  OPTIONS gave no POST metadata ({o.status_code})")
+        except Exception as exc:                             # noqa: BLE001
+            print(f"  OPTIONS failed: {exc.__class__.__name__}")
+
+        # Now try, using the choices if it gave any and a short list of
+        # plausible values if it did not.
+        types = choices.get("type") or ["chat", "agent", "conversation", "assistant", "default"]
+        for t in types:
+            body = {"title": "FinBlade CCTV", "type": t}
+            try:
+                p = s.post(url, json=body, headers=h, timeout=20)
+            except Exception as exc:                         # noqa: BLE001
+                print(f"  POST type={t!r:14s} {exc.__class__.__name__}")
+                continue
+            print(f"  POST type={t!r:14s} {p.status_code}  {short(p, 200)}")
+            if p.status_code < 300:
+                found.append((path, body))
+                break
+
     print()
     if found:
-        print("CREATES A CONVERSATION:", ", ".join(found))
-        print(f"  put it in .env:  FINBLADE_CHAT_SESSIONS_PATH={found[0]}")
+        path, body = found[0]
+        print(f"CREATES A CONVERSATION: POST {path} with {json.dumps(body)}")
+        print("  put these in .env:")
+        print(f"    FINBLADE_CHAT_SESSIONS_PATH={path}")
+        if body:
+            print(f"    FINBLADE_CHAT_SESSION_BODY={json.dumps(body)}")
     else:
-        print("None of the candidates created one. Two things worth trying:")
-        print("  * the route index above — anything named session/conversation/chat")
-        print("  * FinBlade's own integration guide, or the BOM integration's")
-        print("    Web.config: its finbladesessionspath (if set) is this answer")
+        print("Still nothing created one. The route index above, or FinBlade's")
+        print("integration guide, has the answer — paste this output and it is")
+        print("a one-line .env change, not a code change.")
     return 0
 
 

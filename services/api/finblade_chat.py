@@ -54,10 +54,21 @@ TOKEN_SKEW_S = 300.0
 # these are tried in order and the one that works is remembered.
 SESSION_PATHS = ("/sessions/", "/api/v1/sessions/")
 
-# Bodies to try when creating it. Empty first: most of these APIs name the
-# conversation themselves, and an unexpected field is what a strict serialiser
-# rejects.
-SESSION_BODIES = ({}, {"title": "FinBlade CCTV"}, {"name": "FinBlade CCTV"})
+# Bodies to try when creating it, in order. The Wareed deployment answers an
+# empty one with {"type": ["This field is required."], "title": [...]}, so a
+# titled-and-typed body comes first; the bare ones stay for deployments that
+# name conversations themselves and reject unexpected fields.
+#
+# `type` values are guesses by nature — FINBLADE_CHAT_SESSION_BODY overrides
+# the lot with one JSON object once a deployment's real value is known (the
+# probe script finds it from the API's own OPTIONS metadata).
+SESSION_BODIES = (
+    {"title": "FinBlade CCTV", "type": "chat"},
+    {"title": "FinBlade CCTV", "type": "agent"},
+    {"title": "FinBlade CCTV"},
+    {},
+    {"name": "FinBlade CCTV"},
+)
 
 
 class FinBladeChat:
@@ -83,6 +94,20 @@ class FinBladeChat:
         self.auth_scheme = auth_scheme or env("FINBLADE_CHAT_AUTH_SCHEME", "Token")
         # What the chat endpoint calls the conversation it wants.
         self.conversation_field = env("FINBLADE_CHAT_CONVERSATION_FIELD", "conversation_id")
+        # Exact body for opening a conversation, as JSON. Set it once the
+        # deployment's required fields are known and the guessing stops.
+        self.session_body = None
+        raw = env("FINBLADE_CHAT_SESSION_BODY", "").strip()
+        if raw:
+            import json as _json
+            try:
+                parsed = _json.loads(raw)
+                if isinstance(parsed, dict):
+                    self.session_body = parsed
+                else:
+                    log.warning("FINBLADE_CHAT_SESSION_BODY must be a JSON object; ignoring")
+            except ValueError:
+                log.warning("FINBLADE_CHAT_SESSION_BODY is not valid JSON; ignoring")
         self.reasoning_effort = reasoning_effort or env("FINBLADE_CHAT_EFFORT", "minimal")
         try:
             self.timeout_s = float(timeout_s if timeout_s is not None
@@ -190,10 +215,11 @@ class FinBladeChat:
         """
         post, _ = self._session()
         paths = [self.sessions_path] if self.sessions_path else list(SESSION_PATHS)
+        bodies = [self.session_body] if self.session_body else list(SESSION_BODIES)
         why = ""
         for path in paths:
             url = self.base_url + path
-            for body in SESSION_BODIES:
+            for body in bodies:
                 try:
                     r = post(url, json=body, headers=self._headers(),
                              timeout=min(self.timeout_s, 30))

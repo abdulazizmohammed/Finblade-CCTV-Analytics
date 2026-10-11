@@ -188,11 +188,43 @@ class TestConversations(unittest.TestCase):
                           "https://finblade.test/api/v1/sessions/"], tried,
                          "the dead path is not tried again")
 
-    def test_a_strict_serialiser_that_wants_a_title(self):
-        t = Transport(Resp(200, {"auth_token": "T"}), Resp(400, text="title required"),
+    def test_the_first_body_tried_carries_a_title_and_a_type(self):
+        """What the Wareed deployment asks for: POST {} there answers
+        {"type": ["This field is required."], "title": [...]}."""
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}),
+                      Resp(200, {"answer": "a"}))
+        client(t).ask("q")
+        self.assertEqual({"title": "FinBlade CCTV", "type": "chat"}, t.calls[1][1]["json"])
+
+    def test_a_rejected_type_falls_through_to_the_next(self):
+        t = Transport(Resp(200, {"auth_token": "T"}),
+                      Resp(400, text='{"type":["not a valid choice"]}'),
                       Resp(200, {"id": "c1"}), Resp(200, {"answer": "a"}))
         self.assertEqual(200, client(t).ask("q")[0])
-        self.assertEqual({"title": "FinBlade CCTV"}, t.calls[2][1]["json"])
+        self.assertEqual("agent", t.calls[2][1]["json"]["type"])
+
+    def test_an_explicit_body_stops_the_guessing(self):
+        old = dict(os.environ)
+        os.environ["FINBLADE_CHAT_SESSION_BODY"] = '{"title":"CCTV","type":"assistant"}'
+        try:
+            t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}),
+                          Resp(200, {"answer": "a"}))
+            c = client(t)
+            self.assertEqual({"title": "CCTV", "type": "assistant"}, c.session_body)
+            c.ask("q")
+            self.assertEqual({"title": "CCTV", "type": "assistant"}, t.calls[1][1]["json"])
+            self.assertEqual(3, len(t.calls), "one attempt, not five")
+        finally:
+            os.environ.clear(); os.environ.update(old)
+
+    def test_a_malformed_session_body_is_ignored_not_fatal(self):
+        old = dict(os.environ)
+        os.environ["FINBLADE_CHAT_SESSION_BODY"] = "not json"
+        try:
+            c = client()
+            self.assertIsNone(c.session_body, "falls back to the built-in attempts")
+        finally:
+            os.environ.clear(); os.environ.update(old)
 
     def test_when_no_conversation_can_be_opened_it_says_why(self):
         t = Transport(Resp(200, {"auth_token": "T"}), Resp(404), Resp(404))

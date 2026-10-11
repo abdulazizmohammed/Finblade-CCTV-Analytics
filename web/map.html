@@ -287,7 +287,15 @@ function renderVehicles(){
 function renderTrail(){
   layers.trail.clearLayers();
   if(!TRAIL.id||TRAIL.points.length<2) return;
-  L.polyline(TRAIL.points.map(p=>[p.lat,p.lon]),{color:themeVar('--fb-text-muted'),weight:2,dashArray:'4 3',opacity:.85,interactive:false}).addTo(layers.trail);
+  const pts=TRAIL.points.map(p=>[p.lat,p.lon]);
+  // Two strokes, as a map label gets a text-shadow: a dark casing underneath so
+  // the trail stays readable over pale roads as well as dark blocks, then the
+  // line itself in the vehicle's own colour — it belongs to that vehicle, and a
+  // weight-2 muted dash disappeared against OSM's street grid.
+  L.polyline(pts,{color:themeVar('--fb-void'),weight:8,opacity:.75,lineCap:'round',lineJoin:'round',interactive:false}).addTo(layers.trail);
+  L.polyline(pts,{color:themeVar('--fb-text'),weight:3.5,dashArray:'7 5',opacity:.95,lineCap:'round',lineJoin:'round',interactive:false}).addTo(layers.trail);
+  // Where the hour started, so the direction of travel is readable at a glance.
+  L.circleMarker(pts[0],{radius:4,color:themeVar('--fb-void'),weight:2,fillColor:themeVar('--fb-text'),fillOpacity:.95,interactive:false}).addTo(layers.trail);
 }
 function renderAll(){renderFences();renderPins();renderVehicles();renderTrail();}
 map.on('zoomend',()=>{renderPins();renderFences();});

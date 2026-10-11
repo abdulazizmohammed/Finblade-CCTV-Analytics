@@ -30,9 +30,19 @@ import sys
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-# CAM-01 (2688x1520), from the editor screenshot. Threshold = where the
-# glass door meets the floor tiles, running down-left across the frame.
-THRESHOLD = [(0.385, 0.405), (0.200, 0.560)]          # right corner, left corner
+# CAM-01 (2688x1520). THRESHOLD is where the glass door frame meets the floor
+# tiles, running down-left across the frame — NOT a line chosen for tidiness.
+#
+# Corrected 2026-10-11 from a live frame with the zones drawn on it. The first
+# pass put this line about one floor tile INSIDE the sill, which typed a strip
+# of interior floor as OUTSIDE: someone who walked up to the doors from the
+# lobby and stopped there produced lobby -> door -> outside, and the roster
+# counted a departure for a person still in the building. That is how the door
+# came to log 2,388 exits against 1,592 entries.
+#
+# Getting this line wrong in the other direction is harmless by comparison:
+# a strip of pavement typed as the doorway only delays the crossing.
+THRESHOLD = [(0.371, 0.345), (0.176, 0.487)]          # right corner, left corner
 INWARD = (0.060, 0.070)                              # ~1.2 m into the lobby at that depth
 GLASS_TOP = [(0.121, 0.193), (0.357, 0.057)]         # top-left, top-right of the door opening
 
@@ -72,8 +82,15 @@ def main(argv=None) -> int:
     key = os.environ.get("FINBLADE_API_KEY")
     h = {"Authorization": f"Bearer {key}"} if key else {}
 
-    zones = [z for z in requests.get(f"{base}/api/v1/zones", headers=h, timeout=15).json()["zones"]
-             if z.get("camera_id") == args.camera]
+    try:
+        r = requests.get(f"{base}/api/v1/zones", headers=h, timeout=15)
+    except requests.exceptions.ConnectionError:
+        print(f"cannot reach the API at {base} — is finblade-api running?", file=sys.stderr)
+        return 2
+    if r.status_code != 200:
+        print(f"GET /api/v1/zones -> {r.status_code} {r.text[:200]}", file=sys.stderr)
+        return 2
+    zones = [z for z in r.json().get("zones", []) if z.get("camera_id") == args.camera]
     if not zones:
         print(f"no zones on {args.camera}"); return 1
     before = os.path.join(REPO, "evidence", f"zones_{args.camera}_before.json")

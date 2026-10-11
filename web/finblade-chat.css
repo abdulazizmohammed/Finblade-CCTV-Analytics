@@ -18,9 +18,26 @@
   background:var(--fb-surface); border:1px solid var(--fb-line);
   border-radius:var(--fb-r-lg); box-shadow:0 10px 40px rgba(0,0,0,.55);
 }
+/* Maximised: the whole working area, for reading a long answer or looking at
+   an incident frame properly. Not true fullscreen — the operator must still
+   see the console behind it, which is the thing being discussed. */
+.fbc-panel.max{top:14px; right:14px; bottom:14px; left:auto;
+  width:min(760px, calc(100vw - 28px)); max-height:none;}
+.fbc-panel.max .fbc-shot img{max-height:60vh;}
+.fbc-panel.max .fbc-msg{max-width:min(620px, 88%);}
+
+/* Minimised: the title bar alone, parked above the button. The thread is kept,
+   so this is "out of the way", not "closed". */
+.fbc-panel.min{max-height:none;}
+.fbc-panel.min .fbc-log,
+.fbc-panel.min .fbc-ex,
+.fbc-panel.min .fbc-in,
+.fbc-panel.min .fbc-foot{display:none;}
+.fbc-panel.min .fbc-head{border-bottom:none; cursor:pointer;}
+
 .fbc-head{display:flex; align-items:center; gap:8px; padding:10px 12px;
   border-bottom:1px solid var(--fb-line);}
-.fbc-head .eyebrow{margin:0; flex:1;}
+.fbc-head .eyebrow{margin:0; flex:1; white-space:nowrap;}
 .fbc-state{font-family:var(--fb-font-data); font-size:9.5px; letter-spacing:.08em;
   text-transform:uppercase; color:var(--fb-text-muted);
   border:1px solid var(--fb-line); border-radius:3px; padding:2px 6px;}
@@ -72,7 +89,10 @@
 
 @media (max-width:520px){
   .fbc-panel{right:10px; left:10px; width:auto; bottom:60px;}
+  .fbc-panel.max{top:10px; right:10px; bottom:10px; left:10px; width:auto;}
   .fbc-open{right:10px; bottom:10px;}
+  /* Four glyphs plus a status pill will not fit beside the title on a phone. */
+  .fbc-state{display:none;}
 }
 @media (prefers-reduced-motion:no-preference){
   .fbc-panel{animation:fbcIn .12s ease-out;}

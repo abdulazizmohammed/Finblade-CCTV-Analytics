@@ -16,9 +16,35 @@
 (function () {
   var SESSION = null;          // FinBlade's thread id, so follow-ups keep context
   var BUSY = false;
+  var MODE = 'normal';         // normal | max | min
   var CTX = function () { return ''; };
 
   function el(id) { return document.getElementById(id); }
+
+  // Browser storage can throw (private window, blocked site data) and a
+  // remembered panel size is never worth breaking the chat for.
+  function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function save(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* fine */ } }
+
+  function setMode(mode) {
+    MODE = (mode === 'max' || mode === 'min') ? mode : 'normal';
+    var p = el('fbcPanel');
+    if (!p) return;
+    p.classList.toggle('max', MODE === 'max');
+    p.classList.toggle('min', MODE === 'min');
+    var mx = el('fbcMax');
+    mx.textContent = MODE === 'max' ? '⤡' : '⤢';
+    mx.title = MODE === 'max' ? 'Restore' : 'Maximise';
+    mx.setAttribute('aria-label', MODE === 'max' ? 'Restore' : 'Maximise');
+    mx.setAttribute('aria-pressed', MODE === 'max' ? 'true' : 'false');
+    var mn = el('fbcMin');
+    mn.textContent = MODE === 'min' ? '▴' : '–';
+    mn.title = MODE === 'min' ? 'Restore' : 'Minimise to the title bar';
+    save('fbcMode', MODE);
+    // A thread scrolled to the newest message should still be, at any size.
+    var log = el('fbcLog');
+    if (log) log.scrollTop = log.scrollHeight;
+  }
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -39,7 +65,7 @@
 
   function imageUrls(text) {
     var out = [];
-    String(text || '').replace(/(?:MEDIA:)?(https?:\/\/[^\s<>"')\]]+)/gi, function (_, url) {
+    String(text || '').replace(/(?:MEDIA:)?(https?:\/\/[^\s<>")\]]+)/gi, function (_, url) {
       // A sentence ends after the link often enough to matter.
       url = url.replace(/[.,;:!?]+$/, '');
       try {
@@ -144,6 +170,10 @@
       + '    <span class="fbc-state" id="fbcState">Online</span>'
       + '    <button class="fbc-x" id="fbcNew" title="New chat — forget this thread"'
       + '      aria-label="New chat">⟳</button>'
+      + '    <button class="fbc-x" id="fbcMin" title="Minimise to the title bar"'
+      + '      aria-label="Minimise">–</button>'
+      + '    <button class="fbc-x" id="fbcMax" title="Maximise"'
+      + '      aria-label="Maximise" aria-pressed="false">⤢</button>'
       + '    <button class="fbc-x" id="fbcClose" aria-label="Close">✕</button></header>'
       + '  <div class="fbc-log" id="fbcLog"></div>'
       + '  <div class="fbc-ex" id="fbcEx"></div>'
@@ -157,10 +187,26 @@
       + '</section>';
     document.body.appendChild(host);
 
+    // normal | max | min. Remembered, because an operator who wants the panel
+    // large wants it large tomorrow too — and because a demo should not have
+    // to resize it on camera.
+    setMode(load('fbcMode') || 'normal');
+    el('fbcMax').addEventListener('click', function () {
+      setMode(MODE === 'max' ? 'normal' : 'max');
+      if (MODE !== 'min') el('fbcAsk').focus();
+    });
+    el('fbcMin').addEventListener('click', function () {
+      setMode(MODE === 'min' ? 'normal' : 'min');
+    });
+    // Minimised, the title bar is the way back up.
+    el('fbcPanel').querySelector('.fbc-head').addEventListener('click', function (e) {
+      if (MODE === 'min' && e.target.closest('button') === null) setMode('normal');
+    });
+
     el('fbcOpen').addEventListener('click', function () {
       var p = el('fbcPanel');
       p.hidden = !p.hidden;
-      if (!p.hidden) { el('fbcAsk').focus(); }
+      if (!p.hidden) { if (MODE === 'min') setMode('normal'); el('fbcAsk').focus(); }
     });
     el('fbcClose').addEventListener('click', function () { el('fbcPanel').hidden = true; });
     // A conversation accumulates context, which is what makes "and yesterday?"

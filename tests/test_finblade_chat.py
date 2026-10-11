@@ -424,6 +424,26 @@ class TestRoutes(unittest.TestCase):
         # ...and head off the answer it kept giving.
         self.assertIn("no image, video feed or upload is needed", sent)
 
+    def test_a_live_camera_is_reported_as_online(self):
+        """REGRESSION. The snapshot read svc.cameras() — raw store rows, which
+        carry no effective_state, that being derived from the heartbeat in
+        _camera_list. Every camera therefore looked not-online and the chat
+        told an operator watching five live feeds that 0 of 5 were online."""
+        import time as _t
+        appmod.svc.store.upsert_camera("CAM-CHAT", site_id="RUH-01")
+        appmod.svc.store.mark_camera_seen("CAM-CHAT", _t.time(), "RUH-01")
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}),
+                      Resp(200, {"answer": "a"}))
+        appmod.chat = client(t)
+        try:
+            self.c.post("/api/v1/chat/ask", json={"question": "are all cameras online?"})
+            sent = t.calls[-1][1]["json"]["message"]
+            cams = [ln for ln in sent.splitlines() if ln.startswith("- Cameras:")][0]
+            self.assertNotIn("0 of", cams, cams)
+            self.assertRegex(cams, r"- Cameras: [1-9]\d* of [1-9]\d* online")
+        finally:
+            appmod.svc.store.delete_camera("CAM-CHAT")
+
     def test_the_chat_needs_the_full_key_when_auth_is_on(self):
         """It reaches everything the MCP does, including appearance search."""
         appmod.chat = client()

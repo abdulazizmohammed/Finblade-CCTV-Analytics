@@ -1429,7 +1429,11 @@ def _chat_live_state() -> str:
     except Exception:                                   # noqa: BLE001
         pass
     try:
-        cams = svc.cameras()
+        # _camera_list, NOT svc.cameras(): the store rows carry no
+        # effective_state — it is derived from the heartbeat here. Reading the
+        # raw rows made every camera look not-online, so the chat reported
+        # "0 of 5 cameras online" to an operator looking at five live feeds.
+        cams = _camera_list()
         online = [c for c in cams if c.get("effective_state") == "ONLINE"]
         bits.append(f"Cameras: {len(online)} of {len(cams)} online")
         in_view = sum(int(c.get("people_in_view") or 0) for c in online)

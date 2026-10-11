@@ -919,6 +919,21 @@ class PostgresStore(Store):
         rows.reverse()
         return rows
 
+    def position_days(self, tracker_id: str, tz: str = "Asia/Riyadh",
+                      limit: int = 60) -> List[dict]:
+        """Which site-local days this tracker has positions for, newest first.
+
+        Grouped in the SITE's timezone, not UTC: a Riyadh evening run after
+        21:00 local falls on the next UTC day, and a day list that split it
+        in two would be unusable for "show me Thursday".
+        """
+        return self._q(
+            "SELECT to_char(to_timestamp(ts) AT TIME ZONE %s, 'YYYY-MM-DD') AS date, "
+            "count(*) AS points, min(ts) AS first_ts, max(ts) AS last_ts "
+            "FROM tracker_positions WHERE tracker_id=%s "
+            "GROUP BY 1 ORDER BY 1 DESC LIMIT %s",
+            (str(tz), str(tracker_id), int(limit)))
+
     # ---- outbound webhooks ------------------------------------------------
     _WH_COLS = ("webhook_id,name,url,secret,enabled,events,severities,rule_ids,"
                 "region_id,city_id,branch_id,headers,created_at,updated_at,"

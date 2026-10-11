@@ -1311,6 +1311,44 @@ class IngestService:
                       limit: int = 5000) -> List[dict]:
         return self.store.positions_range(tracker_id, t0, t1, limit=limit)
 
+    def tracker_days(self, tracker_id: str, tz: str = None,
+                     limit: int = 60) -> List[dict]:
+        """Days this tracker has a track for, newest first, with the local
+        clock times it ran between — enough for an operator to pick one."""
+        from finblade import window as _win
+        tz = tz or _win.DEFAULT_TZ
+        rows = self.store.position_days(tracker_id, tz=tz, limit=limit)
+        out = []
+        for r in rows:
+            out.append({"date": r["date"], "points": int(r["points"]),
+                        "first_ts": float(r["first_ts"]), "last_ts": float(r["last_ts"]),
+                        "distance_km": None})          # see track_distance_km: needs the points
+        return out
+
+    @staticmethod
+    def track_distance_km(positions: List[dict]) -> float:
+        """Great-circle distance along a track, kilometres.
+
+        Straight-line between consecutive fixes, so it UNDERSTATES a winding
+        road and overstates nothing; with a 10 s reporting interval it is
+        close. Fixes more than 1 km apart are still counted — a gap in
+        reporting is distance that was travelled, not distance to discard.
+        """
+        import math
+        total = 0.0
+        prev = None
+        for p in positions:
+            lat, lon = p.get("lat"), p.get("lon")
+            if lat is None or lon is None:
+                continue
+            if prev is not None:
+                la1, lo1, la2, lo2 = map(math.radians, (prev[0], prev[1], float(lat), float(lon)))
+                a = (math.sin((la2 - la1) / 2) ** 2
+                     + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2)
+                total += 6371.0 * 2 * math.asin(min(1.0, math.sqrt(a)))
+            prev = (float(lat), float(lon))
+        return round(total, 2)
+
     # R-12: a tracker that stops reporting. Same shape as R-07 for cameras
     # (raise once, auto-resolve on recovery) so the alert feed treats them
     # alike. Driven by a loop in app.py.

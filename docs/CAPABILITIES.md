@@ -188,7 +188,8 @@ is dropped on parse.
 | Branch geofence arrival / departure with hysteresis (exit at 1.5× radius) and a 2-report confirm | Built | `gps.GeofenceEngine`; events `TRACKER_ARRIVED` / `TRACKER_DEPARTED` with `dwell_s` |
 | Geofence state survives an API restart | Built | restored from `tracker_live` |
 | R-12: tracker silent > 5 min (`FINBLADE_TRACKER_SILENT_S`) raises AMBER, auto-resolves on the next report | Built | `service.check_silent_trackers`, `_tracker_monitor` in `app.py` |
-| Live vehicle markers over `/ws`, with heading arrow, last-hour trail, state MOVING / STOPPED / OFFLINE | Built | `/ws` frame carries `trackers`; `GET /api/v1/trackers/{id}/track` |
+| Live vehicle markers over `/ws`, with heading arrow, trail, state MOVING / STOPPED / OFFLINE | Built | `/ws` frame carries `trackers`; `GET /api/v1/trackers/{id}/track` |
+| Trail for **any day, not just the last hour**: `GET /api/v1/trackers/{id}/days` lists the site-local days that actually have fixes (date, count, first/last report); `…/track?date=YYYY-MM-DD` returns that whole day midnight-to-midnight with `distance_km`. Days are grouped in the SITE's timezone — a 22:30 Riyadh run is the next UTC day and would otherwise split in two. A past day is fixed history: live fixes are appended only to the live trail | Built | `window.calendar_day`, `store.position_days`, `service.track_distance_km`; day picker in `web/map.html`; MCP `vehicle_days` + `vehicle_track(date=…)` |
 | Register / list / delete trackers; unregistered reporters kept and labelled | Built | `web/trackers.html`, `POST/GET/DELETE /api/v1/trackers` |
 | Phone pairing instructions (Traccar Client) and a browser-based reporter | Built | `web/trackers.html`, `web/tracker.html` (needs HTTPS for geolocation) |
 | Region / City / Branch scope on trackers, by home branch | Built | `GET /api/v1/trackers?region_id=…`, `/summary` |
@@ -522,7 +523,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**98 routes** — 95 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**99 routes** — 96 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 
@@ -539,7 +540,7 @@ WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 | Reports | `generate`, `{id}`, `occupancy` as HTML / JSON / CSV |
 | Zones & areas | zone CRUD, area CRUD |
 | Organisation | `org` (tree + roll-ups), `org/index`, `org/import`, `org/meta`, `org/regions`, `org/cities`, `org/branches` (upsert + delete) |
-| Trackers | `trackers/ingest` (GET+POST, three dialects, `?key=`), `trackers` list/register/delete, `trackers/{id}/track` |
+| Trackers | `trackers/ingest` (GET+POST, three dialects, `?key=`), `trackers` list/register/delete, `trackers/{id}/track` (`date` / from-to / `minutes`), `trackers/{id}/days` |
 | Webhooks | `webhooks` list/create/update/delete, `webhooks/{id}/test`, `webhooks/deliveries`, `webhooks/deliveries/{id}`, `webhooks/deliveries/{id}/retry` |
 | Search | `search/people` (full key, audited), `search/people/{global_ref}`, `search/audit`, `search/vocabulary` |
 | Ops | `health`, `healthz`, `readyz`, `finblade/status`, `finblade/flush`, `frames/orphaned` |
@@ -620,7 +621,7 @@ where cumulative footfall has no liveness problem.
 | Operator actions taken in FinBlade applied to local alerts | Built | `_apply_finblade_ack` |
 | Chart tags on live-feed responses | Built | `services/api/charts.py` |
 | 8 chatbot tools: `cctv_live_state` `cctv_zone_history` `cctv_zone_at_time` `cctv_zone_duration` `cctv_alerts` `cctv_occupancy_report` `cctv_camera_snapshot` `cctv_incident_frame` | Built | `integrations/finblade_ai/tools.py` (SDK-native form; superseded by the MCP server below) |
-| **MCP server** — 38 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track + arrivals + at-branch; find_people + person_timeline + sighting_crop + sighting_crop_link + incident_frame_link (appearance search, crop as image or as a signed link); health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
+| **MCP server** — 39 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track (any day) + days + arrivals + at-branch; find_people + person_timeline + sighting_crop + sighting_crop_link + incident_frame_link (appearance search, crop as image or as a signed link); health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
 | MCP resources `finblade://data-notes` `finblade://rules` `finblade://capabilities` and the `cctv_analyst` prompt | Built | `services/mcp/server.py` |
 | Bearer-token gate on the MCP transport (`FINBLADE_MCP_TOKEN`); the server itself uses the integration key, so it is read-only except alert ack/resolve | Built | `make_app` in `server.py`; tested over the real transport in `tests/test_mcp_server.py` |
 | Appearance search from the chatbot needs the full key: optional `FINBLADE_MCP_SEARCH_KEY` is sent on `/api/v1/search/*` only, everything else keeps the integration scope; unset, the tools return the API's 403 | Built | `Backend.get` in `services/mcp/server.py`; `docs/MCP.md` §1 |

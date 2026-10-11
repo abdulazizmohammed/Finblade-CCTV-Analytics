@@ -103,6 +103,11 @@ body{background:var(--fb-void);min-height:100vh;}
 .chip[data-tone="compliance"]{color:var(--fb-compliance);border-color:var(--fb-compliance);background:var(--fb-compliance-ghost);}
 .doors{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0;}
 .doors .fb-btn{text-align:center;}
+/* Trail day picker. The dates come from the API — only days with fixes. */
+.trailpick{display:grid;grid-template-columns:auto 1fr;gap:6px 8px;align-items:center;margin-top:12px;}
+.trailpick select{width:100%;background:var(--fb-surface-2);color:var(--fb-text);border:1px solid var(--fb-line);border-radius:var(--fb-r);padding:5px 7px;font-family:var(--fb-font-data);font-size:11.5px;}
+.trailpick select:focus-visible{outline:2px solid var(--fb-teal);outline-offset:1px;}
+.trailmeta{grid-column:2;font-family:var(--fb-font-data);font-size:10.5px;color:var(--fb-text-muted);font-variant-numeric:tabular-nums;}
 .sec{margin-top:16px;padding-top:12px;border-top:1px solid var(--fb-line);}
 .cams,.vehs{display:flex;flex-wrap:wrap;gap:6px;}
 .cam,.vpill{display:inline-flex;align-items:center;gap:6px;font-family:var(--fb-font-data);font-size:10.5px;color:var(--fb-text-muted);border:1px solid var(--fb-line);border-radius:2px;padding:3px 7px;cursor:pointer;text-decoration:none;}
@@ -216,7 +221,13 @@ $('zFit').addEventListener('click',()=>map.fitBounds(KSA_BOUNDS,{padding:[10,10]
 // ---- state ------------------------------------------------------------------
 let ORG=null, BRANCHES={}, TRACKERS=[], REGION='';
 let SEL={kind:null,id:null};
-let TRAIL={id:null,points:[]};
+// `when` is 'live' (last hour), 'today', or a YYYY-MM-DD site-local date.
+// `live` says whether new fixes may be appended: a past day is fixed history.
+let TRAIL={id:null,points:[],when:'live',live:true,label:''};
+// The SITE's timezone, as the API reports it — "today" and the day list must
+// agree with the site, not with the browser's locale. Replaced on first load.
+let SITE_TZ='Asia/Riyadh';
+const siteToday=()=>new Date().toLocaleDateString('en-CA',{timeZone:SITE_TZ});
 let PICK=null;
 const layers={pins:L.layerGroup().addTo(map), fences:L.layerGroup().addTo(map), veh:L.layerGroup().addTo(map), trail:L.layerGroup().addTo(map)};
 
@@ -391,21 +402,64 @@ function panelVehicle(t){
       <span class="k">Home branch</span><span class="v">${home?esc(home.name):'—'}</span>
       <span class="k">Reports</span><span class="v">${p.positions??'—'}</span>
     </div>
+    <div class="trailpick">
+      <label class="k" for="v_when">Trail</label>
+      <select id="v_when"></select>
+      <span class="trailmeta" id="v_tmeta">${TRAIL.id===t.tracker_id?esc(TRAIL.label||''):''}</span>
+    </div>
     <div class="doors">
-      <button class="fb-btn fb-btn--primary" id="v_trail">${TRAIL.id===t.tracker_id?'Hide trail':'Show last hour'}</button>
+      <button class="fb-btn fb-btn--primary" id="v_trail">${TRAIL.id===t.tracker_id?'Hide trail':'Show trail'}</button>
       <button class="fb-btn" id="v_follow">Centre on it</button>
       <a class="fb-btn" href="trackers.html">Trackers</a>
       <a class="fb-btn" href="history.html?camera_id=${encodeURIComponent(t.tracker_id)}">Arrivals</a>
     </div>`;
   $('back').addEventListener('click',e=>{e.preventDefault();select(null);});
   $('v_follow').addEventListener('click',()=>{if(p.lat!=null)map.setView([p.lat,p.lon],Math.max(map.getZoom(),14));});
+  fillTrailDays(t);
+  $('v_when').addEventListener('change',()=>{ if(TRAIL.id===t.tracker_id) loadTrail(t); });
   $('v_trail').addEventListener('click',async()=>{
-    if(TRAIL.id===t.tracker_id){TRAIL={id:null,points:[]};renderTrail();panelVehicle(t);return;}
-    try{
-      const j=await fetch(`${API}/api/v1/trackers/${encodeURIComponent(t.tracker_id)}/track?minutes=60`).then(r=>r.json());
-      TRAIL={id:t.tracker_id,points:j.positions||[]}; renderTrail(); panelVehicle(t);
-    }catch(e){}
+    if(TRAIL.id===t.tracker_id){TRAIL={id:null,points:[],label:'',live:false};renderTrail();panelVehicle(t);return;}
+    await loadTrail(t);
   });
+}
+
+// The day list comes from the API because only it knows which days this
+// tracker actually reported — offering a calendar of empty days would make
+// an operator hunt for the one that has anything in it.
+async function fillTrailDays(t){
+  const sel=$('v_when'); if(!sel) return;
+  const opts=[['live','Last hour'],['today','Today, all day']];
+  sel.innerHTML=opts.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
+  try{
+    const j=await fetch(`${API}/api/v1/trackers/${encodeURIComponent(t.tracker_id)}/days?limit=60`).then(r=>r.json());
+    if(j.timezone) SITE_TZ=j.timezone;
+    const today=siteToday();
+    (j.days||[]).filter(d=>d.date!==today).forEach(d=>{
+      const span=`${fmtAt(d.first_ts)}–${fmtAt(d.last_ts)}`;
+      sel.insertAdjacentHTML('beforeend',
+        `<option value="${esc(d.date)}">${esc(d.date)} · ${d.points} fixes · ${span}</option>`);
+    });
+  }catch(e){ /* a day list that will not load must not disable the live trail */ }
+  if(TRAIL.id===t.tracker_id&&TRAIL.when) sel.value=TRAIL.when;
+}
+
+async function loadTrail(t){
+  const when=($('v_when')||{}).value||'live';
+  const base=`${API}/api/v1/trackers/${encodeURIComponent(t.tracker_id)}/track`;
+  const url=when==='live'?`${base}?minutes=60`
+          :`${base}?date=${encodeURIComponent(when==='today'?siteToday():when)}`;
+  try{
+    const j=await fetch(url).then(r=>r.json());
+    const pts=j.positions||[];
+    // `live` keeps growing as fixes arrive; a past day is fixed history and
+    // must not have today's positions appended to it.
+    TRAIL={id:t.tracker_id, points:pts, when, live:when==='live'||when==='today',
+           label:pts.length?`${pts.length} fixes · ${(j.distance_km??0).toFixed(1)} km`
+                           :'no fixes that day'};
+    renderTrail();
+    if(pts.length){ map.fitBounds(L.latLngBounds(pts.map(p=>[p.lat,p.lon])).pad(0.2)); }
+    panelVehicle(t);
+  }catch(e){}
 }
 // Never rebuild the panel under someone's fingers: an open Settings form is
 // left alone until it is closed or saved. And only rebuild when what it
@@ -459,7 +513,8 @@ function applyTrackers(list){
   TRACKERS=list||[];
   renderVehicles();
   if(SEL.kind==='vehicle'||SEL.kind===null) renderPanel();
-  if(TRAIL.id){const t=TRACKERS.find(x=>x.tracker_id===TRAIL.id); if(t&&t.position){const last=TRAIL.points[TRAIL.points.length-1]; if(!last||last.ts!==t.position.ts){TRAIL.points.push(t.position);renderTrail();}}}
+  // Live trails grow as fixes arrive; a past day is history and stays as read.
+  if(TRAIL.id&&TRAIL.live){const t=TRACKERS.find(x=>x.tracker_id===TRAIL.id); if(t&&t.position){const last=TRAIL.points[TRAIL.points.length-1]; if(!last||last.ts!==t.position.ts){TRAIL.points.push(t.position);renderTrail();}}}
 }
 const setConn=(t,off)=>{const c=$('conn');c.innerHTML=`<span class="dot"></span> ${t}`;c.classList.toggle('off',!!off);};
 let ws=null,pollTimer=null;

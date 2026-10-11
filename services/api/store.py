@@ -180,6 +180,12 @@ class Store:
     def positions_range(self, tracker_id: str, t0: float, t1: float,
                         limit: int = 5000) -> List[dict]: return []
 
+    def position_days(self, tracker_id: str, tz: str = "Asia/Riyadh",
+                      limit: int = 60) -> List[dict]:
+        """Site-local days this tracker has positions for, newest first:
+        {date, points, first_ts, last_ts}."""
+        return []
+
     # Outbound webhooks (finblade/webhooks.py). Deliveries are the durable
     # queue: enqueue on the alert path (a row, nothing else), send on a loop.
     def save_webhook(self, row: dict) -> None: pass
@@ -704,6 +710,24 @@ class InMemoryStore(Store):
                 if r.get("tracker_id") == tracker_id and t0 <= float(r["ts"]) <= t1]
         rows.sort(key=lambda r: float(r["ts"]))
         return rows[-limit:]
+
+    def position_days(self, tracker_id, tz="Asia/Riyadh", limit=60):
+        from finblade.window import local_date
+        days = {}
+        for r in self._positions:
+            if r.get("tracker_id") != tracker_id:
+                continue
+            ts = float(r["ts"])
+            d = days.setdefault(local_date(ts, tz),
+                                {"date": None, "points": 0, "first_ts": ts, "last_ts": ts})
+            d["points"] += 1
+            d["first_ts"] = min(d["first_ts"], ts)
+            d["last_ts"] = max(d["last_ts"], ts)
+        out = []
+        for date, d in days.items():
+            out.append(dict(d, date=date))
+        out.sort(key=lambda d: d["date"], reverse=True)
+        return out[:limit]
 
     # ---- outbound webhooks ------------------------------------------------
     def save_webhook(self, row):

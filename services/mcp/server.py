@@ -575,12 +575,23 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
 
     @s.tool(description=(
         "The path a tracker drove: positions (lat, lon, speed_kmh, heading, ts) "
-        "in a window, oldest first. Window by `minutes` back from now, or "
-        "from_ts/to_ts."))
-    def vehicle_track(tracker_id: str, minutes: float = 60.0, from_ts: Optional[float] = None,
-                      to_ts: Optional[float] = None, limit: int = 2000) -> dict:
-        p = {"minutes": minutes, "from": from_ts, "to": to_ts, "limit": limit}
+        "oldest first, with `distance_km` for the window. Window by `date` "
+        "(YYYY-MM-DD, that whole site-local day — use this for 'where did it go "
+        "on Thursday'), or from_ts/to_ts, or `minutes` back from now. Call "
+        "vehicle_days first if you need to know which days have a track."))
+    def vehicle_track(tracker_id: str, date: Optional[str] = None, minutes: float = 60.0,
+                      from_ts: Optional[float] = None, to_ts: Optional[float] = None,
+                      limit: int = 2000) -> dict:
+        p = {"minutes": minutes, "from": from_ts, "to": to_ts, "limit": limit, "date": date}
         return _ok(backend.get(f"/api/v1/trackers/{tracker_id}/track", p))
+
+    @s.tool(description=(
+        "Which days a tracker has a recorded track for, newest first, each with "
+        "the number of fixes and the first/last report of that day. Site-local "
+        "dates. Use it to answer 'which days did the van run' and to pick a "
+        "`date` for vehicle_track; a day that is absent has no positions at all."))
+    def vehicle_days(tracker_id: str, limit: int = 60) -> dict:
+        return _ok(backend.get(f"/api/v1/trackers/{tracker_id}/days", {"limit": limit}))
 
     @s.tool(description=(
         "Vehicle arrivals at and departures from branches (geofence crossings): "

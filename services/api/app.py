@@ -1582,17 +1582,48 @@ async def delete_tracker(tracker_id: str):
     return JSONResponse(status_code=code, content=body)
 
 
+@app.get("/api/v1/trackers/{tracker_id}/days")
+async def tracker_days(tracker_id: str, limit: int = Query(60),
+                       tz: str = Query(None)):
+    """Which days this tracker has a track for, newest first — the list an
+    operator picks a date from. Grouped in SITE-local time (Asia/Riyadh by
+    default), because an evening run after 21:00 local lands on the next UTC
+    day and would otherwise be split across two entries."""
+    days = svc.tracker_days(tracker_id, tz=tz or BUSINESS_TZ, limit=limit)
+    return {"tracker_id": tracker_id, "timezone": tz or BUSINESS_TZ,
+            "days": days, "count": len(days)}
+
+
 @app.get("/api/v1/trackers/{tracker_id}/track")
 async def tracker_track(tracker_id: str, frm: float = Query(None, alias="from"),
                         to: float = Query(None, alias="to"),
-                        minutes: float = Query(60.0), limit: int = Query(5000)):
+                        date: str = Query(None), minutes: float = Query(60.0),
+                        limit: int = Query(20000), tz: str = Query(None)):
     """The path a tracker took: positions in a window, oldest first.
-    `minutes` counts back from now unless from/to are given."""
+
+    One of, in order of precedence: `date=YYYY-MM-DD` (that whole site-local
+    day, midnight to midnight — a vehicle moves outside office hours, so this
+    is NOT the business window), explicit `from`/`to`, or `minutes` back from
+    now. Carries the distance travelled so a day can be read without
+    measuring the line.
+    """
     now = time.time()
-    t0 = frm if frm is not None else now - minutes * 60.0
-    t1 = to if to is not None else now
+    if date:
+        try:
+            win = _window.calendar_day(date, tz=tz or BUSINESS_TZ)
+        except ValueError as exc:
+            return JSONResponse(status_code=422, content={"error": str(exc)})
+        t0, t1 = win["from"], win["to"]
+    elif frm is not None or to is not None:
+        t0 = frm if frm is not None else 0.0
+        t1 = to if to is not None else now
+    else:
+        t0, t1 = now - minutes * 60.0, now
     rows = svc.tracker_track(tracker_id, t0, t1, limit=limit)
-    return {"tracker_id": tracker_id, "from": t0, "to": t1, "positions": rows}
+    return {"tracker_id": tracker_id, "from": t0, "to": t1, "date": date,
+            "timezone": tz or BUSINESS_TZ, "positions": rows,
+            "count": len(rows), "distance_km": svc.track_distance_km(rows),
+            "truncated": len(rows) >= limit}
 
 
 @app.post("/api/v1/cameras/health")

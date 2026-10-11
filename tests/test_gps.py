@@ -180,6 +180,28 @@ class GpsStoreContract:
         self.assertTrue(self.store.delete_tracker("V-1"))
         self.assertFalse(self.store.delete_tracker("V-1"))
 
+    def test_position_days_groups_in_the_site_timezone(self):
+        # Runs against BOTH stores: the Python grouping and the SQL
+        # `AT TIME ZONE` must agree, including across the UTC boundary —
+        # 22:30 and 23:55 Riyadh are the next UTC day but the same local one.
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        ksa = ZoneInfo("Asia/Riyadh")
+        def at(d, hh, mm):
+            return dt.datetime(2026, 10, d, hh, mm, tzinfo=ksa).timestamp()
+        for ts in (at(9, 8, 0), at(10, 1, 30), at(10, 22, 30), at(10, 23, 55)):
+            self.store.save_position(pos(ts=ts).to_dict())
+        days = self.store.position_days("V-1", tz="Asia/Riyadh")
+        self.assertEqual([("2026-10-10", 3), ("2026-10-09", 1)],
+                         [(d["date"], int(d["points"])) for d in days])
+        self.assertEqual(at(10, 1, 30), float(days[0]["first_ts"]))
+        self.assertEqual(at(10, 23, 55), float(days[0]["last_ts"]))
+        self.assertEqual([], self.store.position_days("V-OTHER"))
+        # a different zone regroups the same rows
+        utc = self.store.position_days("V-1", tz="UTC")
+        self.assertEqual(["2026-10-10", "2026-10-09"], [d["date"] for d in utc])
+        self.assertEqual([2, 2], [int(d["points"]) for d in utc], "22:30 KSA is 19:30 UTC same day")
+
     def test_positions_history_and_live_row(self):
         for i in range(5):
             self.store.save_position(pos(ts=T0 + i * 10, lat=RUH[0] + i * 0.001).to_dict(),
@@ -326,6 +348,44 @@ class TestService(unittest.TestCase):
         svc2.ingest_position(pos(ts=T0 + 1100))
         self.assertEqual([], [a for a in svc2.list_alerts() if a["rule_id"] == "R-12" and a["kind"] != "CLEAR"])
 
+    def test_days_are_grouped_in_site_local_time_not_utc(self):
+        # 2026-10-10 22:30 Riyadh is 19:30 UTC the same day; 2026-10-10 01:30
+        # Riyadh is 22:30 UTC on the 9th. Grouping by UTC would split one
+        # evening's run across two entries and put the early run on the wrong
+        # day — which is the whole reason the site timezone is used.
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        ksa = ZoneInfo("Asia/Riyadh")
+        def at(y, m, d, hh, mm):
+            return dt.datetime(y, m, d, hh, mm, tzinfo=ksa).timestamp()
+        self.svc.register_tracker({"tracker_id": "V-1"})
+        for ts in (at(2026, 10, 10, 1, 30), at(2026, 10, 10, 22, 30),
+                   at(2026, 10, 10, 23, 55), at(2026, 10, 9, 8, 0)):
+            self.svc.ingest_position(pos(ts=ts))
+        days = self.svc.tracker_days("V-1")
+        self.assertEqual(["2026-10-10", "2026-10-09"], [d["date"] for d in days], "newest first")
+        self.assertEqual([3, 1], [d["points"] for d in days])
+        self.assertEqual(at(2026, 10, 10, 1, 30), days[0]["first_ts"])
+        self.assertEqual(at(2026, 10, 10, 23, 55), days[0]["last_ts"])
+        self.assertEqual([], self.svc.tracker_days("V-NONE"))
+
+    def test_a_named_day_is_midnight_to_midnight_local(self):
+        from finblade.window import calendar_day
+        w = calendar_day("2026-10-10", tz="Asia/Riyadh")
+        self.assertEqual(86400.0, w["to"] - w["from"], "a whole day, not the business window")
+        # 00:00 Riyadh = 21:00 UTC the previous day
+        import time as _t
+        self.assertEqual("2026-10-09 21:00", _t.strftime("%Y-%m-%d %H:%M", _t.gmtime(w["from"])))
+        with self.assertRaises(ValueError):
+            calendar_day("10/10/2026")
+
+    def test_distance_along_a_track(self):
+        from services.api.service import IngestService
+        pts = [{"lat": RUH[0], "lon": RUH[1]}, {"lat": RUH[0] + 0.009, "lon": RUH[1]}]
+        self.assertAlmostEqual(1.0, IngestService.track_distance_km(pts), delta=0.05)
+        self.assertEqual(0.0, IngestService.track_distance_km([]))
+        self.assertEqual(0.0, IngestService.track_distance_km([{"lat": None, "lon": None}]))
+
     def test_never_seen_and_disabled_trackers_never_alert(self):
         self.svc.register_tracker({"tracker_id": "V-NEW"})
         self.svc.register_tracker({"tracker_id": "V-OFF", "enabled": False})
@@ -367,6 +427,33 @@ class TestRoutes(unittest.TestCase):
         t = r.json()["trackers"][0]
         self.assertEqual(24.7136, t["position"]["lat"])
         self.assertEqual(90.0, t["position"]["battery_pct"])
+
+    def test_day_list_and_a_named_day_track(self):
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        ksa = ZoneInfo("Asia/Riyadh")
+        def at(d, hh, mm):
+            return dt.datetime(2026, 10, d, hh, mm, tzinfo=ksa).timestamp()
+        # two days, one of them straddling the UTC boundary at 22:00 local
+        for ts, lon in ((at(9, 8, 0), 46.6753), (at(10, 7, 0), 46.6753),
+                        (at(10, 22, 30), 46.7653)):
+            self.c.post("/api/v1/trackers/ingest",
+                        json={"id": "V-DAY", "timestamp": int(ts), "lat": 24.7136, "lon": lon})
+        d = self.c.get("/api/v1/trackers/V-DAY/days").json()
+        self.assertEqual("Asia/Riyadh", d["timezone"])
+        self.assertEqual([("2026-10-10", 2), ("2026-10-09", 1)],
+                         [(x["date"], x["points"]) for x in d["days"]])
+        t = self.c.get("/api/v1/trackers/V-DAY/track?date=2026-10-10").json()
+        self.assertEqual(2, t["count"])
+        self.assertEqual("2026-10-10", t["date"])
+        self.assertEqual(86400.0, t["to"] - t["from"], "the whole local day")
+        self.assertGreater(t["distance_km"], 8)          # ~9 km of longitude at this latitude
+        self.assertEqual(0, self.c.get("/api/v1/trackers/V-DAY/track?date=2026-10-08").json()["count"])
+        self.assertEqual(422, self.c.get("/api/v1/trackers/V-DAY/track?date=last-tuesday").status_code)
+        # the old contract still holds
+        self.assertIn("positions", self.c.get("/api/v1/trackers/V-DAY/track?minutes=60").json())
+        self.assertEqual({"days": [], "count": 0}, {k: self.c.get("/api/v1/trackers/NOPE/days").json()[k]
+                                                    for k in ("days", "count")})
 
     def test_gprmc_and_json_and_form_bodies(self):
         s = "$GPRMC,120000.00,A,2442.816,N,04640.518,E,0.0,0.0,150926,,,A*6A"

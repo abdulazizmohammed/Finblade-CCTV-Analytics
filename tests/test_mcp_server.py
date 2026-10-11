@@ -124,7 +124,7 @@ class TestSurface(Base):
         "areas_live", "facility_occupancy", "people_counts",
         "alerts_active", "alerts_history", "alert", "incident_frame", "acknowledge_alert", "resolve_alert",
         "events_history", "occupancy_report", "reports_list",
-        "vehicles", "vehicle", "vehicle_track", "vehicle_arrivals", "vehicles_at_branch",
+        "vehicles", "vehicle", "vehicle_track", "vehicle_days", "vehicle_arrivals", "vehicles_at_branch",
         "find_people", "person_timeline", "sighting_crop", "sighting_crop_link", "incident_frame_link",
         "system_health", "rules_reference",
     }

@@ -109,7 +109,7 @@ the AWS deployment, not the on-prem host.
 | Occupancy | `areas_live` (distinct people per room), `facility_occupancy` (door-counted), `people_counts` |
 | Alerts | `alerts_active`, `alerts_history`, `alert`, `incident_frame` (image), `acknowledge_alert`, `resolve_alert` |
 | Events / reports | `events_history`, `occupancy_report`, `reports_list` |
-| Vehicles | `vehicles`, `vehicle`, `vehicle_track`, `vehicle_arrivals`, `vehicles_at_branch` |
+| Vehicles | `vehicles`, `vehicle`, `vehicle_track` (`date=YYYY-MM-DD` for a whole site-local day, with `distance_km`), `vehicle_days` (which days have a track), `vehicle_arrivals`, `vehicles_at_branch` |
 | Appearance | `find_people` (description → candidates grouped by person, each sighting with a clickable `crop_url`; audited), `person_timeline`, `sighting_crop` (image block), `sighting_crop_link` (URL) |
 | Images as links | `sighting_crop_link`, `incident_frame_link` — signed, expiring (default 60 min), key-free URLs to one image, for a chat that cannot render image blocks. Set `FINBLADE_PUBLIC_URL` on the CCTV host to the address users' browsers can reach |
 | System | `system_health`, `rules_reference` |

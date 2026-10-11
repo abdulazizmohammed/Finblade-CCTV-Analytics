@@ -99,6 +99,32 @@ def business_window(now: float, tz: str = DEFAULT_TZ,
     }
 
 
+def calendar_day(date: str, tz: str = DEFAULT_TZ) -> dict:
+    """Midnight-to-midnight for one site-local date, as epoch seconds.
+
+    Distinct from business_window on purpose. That one answers "the figures
+    for today", so it is clipped to opening hours and to now. This one
+    answers "where did the van go on the 9th" — a vehicle moves outside
+    office hours and a trail that stopped at 18:00 would hide the evening
+    run. Takes an ISO date (YYYY-MM-DD) and returns the whole day, even a
+    future one, which simply has nothing in it.
+    """
+    zone = _zone(tz)
+    try:
+        day = _dt.date.fromisoformat(str(date))
+    except ValueError:
+        raise ValueError(f"date must be YYYY-MM-DD, got {date!r}")
+    start = _dt.datetime.combine(day, _dt.time(0), tzinfo=zone)
+    end = _dt.datetime.combine(day + _dt.timedelta(days=1), _dt.time(0), tzinfo=zone)
+    return {"from": start.timestamp(), "to": end.timestamp(),
+            "date": day.isoformat(), "tz": tz}
+
+
+def local_date(ts: float, tz: str = DEFAULT_TZ) -> str:
+    """The site-local calendar date an instant falls on, ISO format."""
+    return _dt.datetime.fromtimestamp(float(ts), _zone(tz)).date().isoformat()
+
+
 def resolve_window(now: float, frm: Optional[float] = None,
                    to: Optional[float] = None, tz: str = DEFAULT_TZ,
                    start_hour: int = DEFAULT_START_HOUR,

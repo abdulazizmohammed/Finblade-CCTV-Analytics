@@ -525,7 +525,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**99 routes** — 96 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**101 routes** — 98 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 
@@ -625,6 +625,7 @@ where cumulative footfall has no liveness problem.
 | 8 chatbot tools: `cctv_live_state` `cctv_zone_history` `cctv_zone_at_time` `cctv_zone_duration` `cctv_alerts` `cctv_occupancy_report` `cctv_camera_snapshot` `cctv_incident_frame` | Built | `integrations/finblade_ai/tools.py` (SDK-native form; superseded by the MCP server below) |
 | **MCP server** — 39 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track (any day) + days + arrivals + at-branch; find_people + person_timeline + sighting_crop + sighting_crop_link + incident_frame_link (appearance search, crop as image or as a signed link); health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
 | MCP resources `finblade://data-notes` `finblade://rules` `finblade://capabilities` and the `cctv_analyst` prompt | Built | `services/mcp/server.py` |
+| **Operator chat in the UI** — "Ask AI" on the ops console: the browser posts to this API, which signs in to FinBlade as a service account and forwards; FinBlade's agent calls back into our MCP for the figures. The FinBlade password stays in `.env`, never in a page. Off unless `FINBLADE_CHAT_URL` / `_USER` / `_PASSWORD` are set — the button is not drawn at all. Full key only (it reaches everything the MCP does). Scope and selected camera travel as context so "this camera" resolves | Built | `services/api/finblade_chat.py`, `POST /api/v1/chat/ask`, `GET /api/v1/chat/status`; `web/finblade-chat.js` + `.css`; `tests/test_finblade_chat.py` |
 | Bearer-token gate on the MCP transport (`FINBLADE_MCP_TOKEN`); the server itself uses the integration key, so it is read-only except alert ack/resolve | Built | `make_app` in `server.py`; tested over the real transport in `tests/test_mcp_server.py` |
 | Appearance search from the chatbot needs the full key: optional `FINBLADE_MCP_SEARCH_KEY` is sent on `/api/v1/search/*` only, everything else keeps the integration scope; unset, the tools return the API's 403 | Built | `Backend.get` in `services/mcp/server.py`; `docs/MCP.md` §1 |
 | **Outbound webhooks** — subscriptions (URL, secret, events, severities, rules, Region/City/Branch scope, extra headers) that receive a signed JSON POST on `alert.raised` / `cleared` / `acknowledged` / `resolved` and `tracker.arrived` / `departed`, with branch/camera/zone context and action links | Built | `finblade/webhooks.py`, `services/api/webhooks.py`, `docs/WEBHOOKS.md` |

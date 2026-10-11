@@ -40,6 +40,7 @@ BUSINESS_END_HOUR = int(os.environ.get("FINBLADE_BUSINESS_END_HOUR",
 from . import charts as _charts
 from . import redact as _redact
 from . import service as _svc_mod
+from .finblade_chat import FinBladeChat
 from .service import IngestService
 from finblade import links as _links
 from .store import InMemoryStore
@@ -328,6 +329,13 @@ def _fetch_camera_snapshot(camera_id: str):
     r = requests.get(f"http://127.0.0.1:{port}/snapshot", timeout=4.0)
     return r.content if r.status_code == 200 else None
 
+
+# The operator-facing chat. A THIRD FinBlade credential, and a different one
+# again: the forwarder below pushes telemetry TO FinBlade with an API key,
+# while this signs in as a named user so their agent can answer questions by
+# calling back into our MCP server. Off unless .env carries all three of
+# FINBLADE_CHAT_URL / _USER / _PASSWORD.
+chat = FinBladeChat()
 
 forwarder = FinBladeForwarder(
     store, identity_service=id_svc,
@@ -1354,6 +1362,55 @@ async def sighting_correct(request: Request, sighting_id: str):
         return JSONResponse(status_code=422, content={"error": "attribute required"})
     code, out = svc.correct_sighting(sighting_id, body["attribute"], body.get("value", "unknown"),
                                      actor=str(body.get("by") or _search_actor(request)))
+    return JSONResponse(status_code=code, content=out)
+
+
+@app.get("/api/v1/chat/status")
+async def chat_status(request: Request):
+    """Is the FinBlade chat configured, and does the sign-in actually work?
+
+    Performs a real login so an operator can tell "wrong password" from
+    "wrong path" from "cannot reach it". Never returns the password or the
+    token. Full key only — it names the service account."""
+    if _auth.enabled() and _search_actor(request) != _auth.ROLE_FULL:
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    return chat.status()
+
+
+@app.post("/api/v1/chat/ask")
+async def chat_ask(request: Request):
+    """Put one question to FinBlade. Body: {"question": "...", "session_id": ...}.
+
+    The browser never holds FinBlade's credentials: this server signs in as the
+    service account and forwards. FinBlade's agent then calls back into our MCP
+    server for the actual figures, so what the chat can see is what
+    docs/MCP.md exposes — and the answers inherit its caveats.
+
+    Full key only. The chat reaches everything the MCP does, including
+    appearance search, so it is not an integration-key capability.
+    """
+    if _auth.enabled() and _search_actor(request) != _auth.ROLE_FULL:
+        return JSONResponse(status_code=403, content={"error": "forbidden",
+                                                      "detail": "the chat needs the full key"})
+    if not chat.enabled():
+        return JSONResponse(status_code=404, content={
+            "error": "FinBlade chat is not configured on this server",
+            "detail": chat.status().get("detail")})
+    try:
+        body = await request.json()
+    except Exception:                                   # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # `context` is what the operator is looking at (scope, selected camera), so
+    # "this camera" and "here" mean something. The UI composes it; it carries
+    # no person identifiers, and it is capped so it cannot become a payload.
+    ctx = str(body.get("context") or "")[:500] or None
+    code, out = await asyncio.to_thread(
+        chat.ask, str(body.get("question") or ""), body.get("session_id"), ctx)
+    if code == 200:
+        log.info("FinBlade chat: answered (%d chars) for %s",
+                 len(out.get("answer") or ""), _search_actor(request))
     return JSONResponse(status_code=code, content=out)
 
 

@@ -1,0 +1,71 @@
+/* FinBlade AI chat panel. Theme variables only — no hard-coded colours.
+   Teal is chrome here (the button, the focus ring), never status. */
+
+.fbc-open{
+  position:fixed; right:18px; bottom:18px; z-index:900;
+  font-family:var(--fb-font-data); font-size:11px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--fb-void); background:var(--fb-teal);
+  border:none; border-radius:var(--fb-r-lg); padding:10px 16px; cursor:pointer;
+  box-shadow:0 2px 14px rgba(0,0,0,.45);
+}
+.fbc-open:hover{filter:brightness(1.08);}
+.fbc-open:focus-visible{outline:2px solid var(--fb-text); outline-offset:2px;}
+
+.fbc-panel{
+  position:fixed; right:18px; bottom:64px; z-index:901;
+  width:min(400px, calc(100vw - 36px)); max-height:min(620px, calc(100vh - 100px));
+  display:flex; flex-direction:column;
+  background:var(--fb-surface); border:1px solid var(--fb-line);
+  border-radius:var(--fb-r-lg); box-shadow:0 10px 40px rgba(0,0,0,.55);
+}
+.fbc-head{display:flex; align-items:center; gap:8px; padding:10px 12px;
+  border-bottom:1px solid var(--fb-line);}
+.fbc-head .eyebrow{margin:0; flex:1;}
+.fbc-state{font-family:var(--fb-font-data); font-size:9.5px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--fb-text-muted);
+  border:1px solid var(--fb-line); border-radius:3px; padding:2px 6px;}
+.fbc-state.bad{color:var(--fb-warning); border-color:var(--fb-warning);}
+.fbc-x{background:none; border:none; color:var(--fb-text-muted); cursor:pointer;
+  font-size:13px; line-height:1; padding:4px;}
+.fbc-x:hover{color:var(--fb-text);}
+
+.fbc-log{flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px;}
+.fbc-msg{max-width:92%; border-radius:var(--fb-r); padding:8px 10px; font-size:12.5px;
+  line-height:1.5;}
+.fbc-msg p{margin:0 0 6px;}
+.fbc-msg p:last-child{margin:0;}
+/* Numbers appear in nearly every answer; tabular keeps them legible. */
+.fbc-ai{background:var(--fb-surface-2); border:1px solid var(--fb-line);
+  color:var(--fb-text); align-self:flex-start; font-variant-numeric:tabular-nums;}
+.fbc-me{background:var(--fb-teal-ghost); border:1px solid var(--fb-teal-dim);
+  color:var(--fb-text); align-self:flex-end;}
+/* An error is the server telling the operator what to fix, not an incident on
+   the floor — amber, not the critical red used for alerts. */
+.fbc-err{background:var(--fb-warning-ghost); border:1px solid var(--fb-warning);
+  color:var(--fb-text); align-self:flex-start; white-space:pre-wrap;}
+.fbc-pending{color:var(--fb-text-muted); font-style:italic;}
+
+.fbc-ex{display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 10px;}
+.fbc-eg{font-family:var(--fb-font-data); font-size:10px; color:var(--fb-text-muted);
+  background:transparent; border:1px solid var(--fb-line); border-radius:999px;
+  padding:4px 9px; cursor:pointer;}
+.fbc-eg:hover{color:var(--fb-text); border-color:var(--fb-teal);}
+
+.fbc-in{display:grid; grid-template-columns:1fr auto; gap:8px; padding:10px 12px;
+  border-top:1px solid var(--fb-line);}
+.fbc-in textarea{resize:none; background:var(--fb-void); color:var(--fb-text);
+  border:1px solid var(--fb-line); border-radius:var(--fb-r); padding:7px 9px;
+  font-family:inherit; font-size:12.5px;}
+.fbc-in textarea:focus-visible{outline:2px solid var(--fb-teal); outline-offset:1px;}
+.fbc-panel.busy .fbc-in textarea{opacity:.6;}
+.fbc-foot{margin:0; padding:0 12px 10px; font-family:var(--fb-font-data);
+  font-size:9.5px; line-height:1.5; color:var(--fb-text-faint);}
+
+@media (max-width:520px){
+  .fbc-panel{right:10px; left:10px; width:auto; bottom:60px;}
+  .fbc-open{right:10px; bottom:10px;}
+}
+@media (prefers-reduced-motion:no-preference){
+  .fbc-panel{animation:fbcIn .12s ease-out;}
+  @keyframes fbcIn{from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;}}
+}

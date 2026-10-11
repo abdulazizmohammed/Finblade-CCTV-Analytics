@@ -6,6 +6,7 @@
 <title>FinBlade — Operations</title>
 <!-- Brand tokens first; every colour below comes from these variables. -->
 <link rel="stylesheet" href="finblade-theme.css">
+<link rel="stylesheet" href="finblade-chat.css">
 <style>
 /* The operator console. Exception-first, one camera in focus.
 
@@ -332,6 +333,7 @@ table.zt td.muted{color:var(--fb-text-faint);}
 <script src="apikey.js"></script>
 <script src="sitetime.js"></script>
 <script src="facility-tile.js"></script>
+<script src="finblade-chat.js"></script>
 <script>
 const API=location.origin;
 const WS=`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
@@ -809,6 +811,17 @@ async function loadOrg(){
   }
   connect(); startPoll();
   setInterval(loadOrg,30000);
+  // FinBlade AI. Draws nothing unless the server is configured for it. The
+  // context tells the agent what the operator is looking at, so "this camera"
+  // and "here" resolve — scope and selection only, no identifiers.
+  if(window.fbChatInit) fbChatInit({api:API, context:()=>{
+    const bits=[];
+    if(SCOPE.branch) bits.push(`branch ${SCOPE.branch}`);
+    else if(SCOPE.city) bits.push(`city ${SCOPE.city}`);
+    else if(SCOPE.region) bits.push(`region ${SCOPE.region}`);
+    if(SEL) bits.push(`the operator is watching camera ${SEL}`);
+    return bits.join('; ');
+  }});
 })();
 </script>
 <footer class="fb-footer">

@@ -337,6 +337,13 @@ above 0 means this file does not cover the cameras actually running.
 | `FINBLADE_PUBLIC_URL` | `FINBLADE_SELF_URL` | the address a user's browser reaches this API on; the base of signed image links and webhook action links |
 | `FINBLADE_LINK_TTL_MINUTES` | `60` | how long a signed image link stays valid |
 | `FINBLADE_LINK_SECRET` | derived from the full key | dedicated signing secret for image links, if you want key rotation not to void them |
+| `FINBLADE_CHAT_URL` | unset | FinBlade backend for the operator chat, **host only, no path** (e.g. `https://be.icsfinblade.com`). All three of URL/USER/PASSWORD must be set or the chat stays off and the button is not drawn |
+| `FINBLADE_CHAT_USER` / `FINBLADE_CHAT_PASSWORD` | unset | the FinBlade **service account** the server signs in as — a dedicated account, not a person's login, with long-term memory off |
+| `FINBLADE_CHAT_MCP_KEY` | unset | the key FinBlade shows against our CCTV MCP service. Without it the agent answers from general knowledge and can see nothing |
+| `FINBLADE_CHAT_ENABLED` | on when configured | kill switch: `false` removes the chat without touching the credentials |
+| `FINBLADE_CHAT_EFFORT` | `minimal` | reasoning effort: `none`…`xhigh`. Raise if answers are shallow |
+| `FINBLADE_CHAT_TIMEOUT` | `45` | seconds to hold a question before telling the operator it is still working |
+| `FINBLADE_CHAT_PATH` / `_LOGIN_PATH` / `_AUTH_SCHEME` | `/microservices/agent/chat/`, `/api/v1/token/login/`, `Token` | only if FinBlade's API differs from the shipped integrations |
 | `FB_LOG_LEVEL` | `INFO` | |
 
 ---

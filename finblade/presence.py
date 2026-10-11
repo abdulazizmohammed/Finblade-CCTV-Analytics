@@ -105,10 +105,38 @@ class DoorPolicy:
     ``outside`` argument is an override for callers that cannot retype a zone.
     """
 
-    def __init__(self, zone_types=None, outside=()):
+    def __init__(self, zone_types=None, outside=(), zone_cameras=None):
         self.zone_types = {str(k): str(v).upper()
                            for k, v in (zone_types or {}).items()}
         self.outside = {str(z) for z in (outside or ())}
+        # zone_id -> camera_id, when the caller knows it. Used only to answer
+        # "can this door's camera see the street?" — see observable_outside.
+        self.zone_cameras = {str(k): str(v) for k, v in (zone_cameras or {}).items()}
+        self._outside_cameras = {self.zone_cameras[z] for z in self._outside_zones()
+                                 if z in self.zone_cameras}
+
+    def _outside_zones(self):
+        return ({z for z, t in self.zone_types.items() if t == OUTSIDE} | self.outside)
+
+    def observable_outside(self, door_zone) -> bool:
+        """Would a real departure through this door have been SEEN?
+
+        True when the door's own camera also watches a zone typed OUTSIDE —
+        the pavement through the glass, a forecourt. It changes what silence
+        means: if the far side is covered and nothing appeared there, the
+        person did not go out, so a track that simply vanished in the doorway
+        must not be counted as a departure. Without such a zone there is no
+        better evidence than the vanishing itself, and the old reading stands.
+        """
+        outside = self._outside_zones()
+        if not outside:
+            return False
+        cam = self.zone_cameras.get(str(door_zone))
+        if cam is None or not self._outside_cameras:
+            # No camera map (a plain dict policy, as the unit tests build):
+            # fall back to whether the deployment declares any outside at all.
+            return True
+        return cam in self._outside_cameras
 
     @classmethod
     def from_zones(cls, zones, cameras=None) -> "DoorPolicy":
@@ -126,6 +154,7 @@ class DoorPolicy:
         """
         keep = None if cameras is None else {str(c) for c in cameras}
         types = {}
+        zone_cameras = {}
         for z in zones or []:
             zid = z.get("zone_id") if isinstance(z, dict) else getattr(z, "zone_id", None)
             if not zid:
@@ -141,7 +170,9 @@ class DoorPolicy:
             ztype = (z.get("zone_type") if isinstance(z, dict)
                      else getattr(z, "zone_type", None))
             types[str(zid)] = str(ztype or "MONITORED").upper()
-        return cls(types)
+            if cam:
+                zone_cameras[str(zid)] = str(cam)
+        return cls(types, zone_cameras=zone_cameras)
 
     def kind(self, zone_id) -> str:
         """Classify a zone id, including the absence of one."""
@@ -343,6 +374,9 @@ class FacilityRoster:
             "ambiguous_crossings": 0,
             # Reached a bidirectional door and went back the way they came.
             "turned_back": 0,
+            # Crossings opened at a door and never resolved, then dropped as
+            # too old to mean anything. They used to accumulate for ever.
+            "crossings_expired": 0,
             # Roster entries moved from a tracker-scoped ref to the
             # cross-camera identity once ReID resolved it. See rekey().
             "rekeyed": 0,
@@ -543,16 +577,36 @@ class FacilityRoster:
     # ---- bidirectional crossings -----------------------------------------
     # A crossing of a two-way door is only half-observed when the person
     # arrives in it. These hold the half until the other side is seen.
+    # A crossing that never resolves is dropped after this long. A person is
+    # in a doorway for seconds; anything still open after ten minutes is a
+    # track that died there, and keeping it serves nothing. Unbounded before:
+    # the Wareed door held 274 of them.
+    CROSSING_TTL_S = 600.0
+
     def begin_crossing(self, ref: str, door_zone: str,
-                       from_zone: Optional[str]) -> None:
-        self._crossing[ref] = (door_zone, from_zone)
+                       from_zone: Optional[str], now: Optional[float] = None) -> None:
+        self._crossing[ref] = (door_zone, from_zone, float(now or 0.0))
 
     def pop_crossing(self, ref: str) -> Optional[tuple]:
-        return self._crossing.pop(ref, None)
+        c = self._crossing.pop(ref, None)
+        return None if c is None else (c[0], c[1])
 
     def crossing_zone(self, ref: str) -> Optional[str]:
         c = self._crossing.get(ref)
         return c[0] if c else None
+
+    def prune_crossings(self, now: float, max_age_s: Optional[float] = None) -> int:
+        """Drop crossings opened too long ago to still be one. Returns how many.
+
+        Entries whose opening time is unknown (0.0, from a caller that did not
+        pass one) are left alone rather than guessed at."""
+        ttl = self.CROSSING_TTL_S if max_age_s is None else float(max_age_s)
+        stale = [r for r, c in self._crossing.items()
+                 if c[2] and (now - c[2]) > ttl]
+        for r in stale:
+            del self._crossing[r]
+        self.stats["crossings_expired"] = self.stats.get("crossings_expired", 0) + len(stale)
+        return len(stale)
 
     def pending_crossings(self) -> int:
         return len(self._crossing)
@@ -700,6 +754,16 @@ def _resolve_crossing(roster: FacilityRoster, policy: DoorPolicy, ref: str,
     door: a visitor's track was acquired inside the door strip itself and
     stepped out onto the OUTSIDE zone; the old rule counted it ambiguous and
     the roster kept them for ever.
+
+    UNDER REVIEW (2026-10-11): whether `inside -> door -> track vanished`
+    should still read as a departure when the door's camera also watches a
+    typed OUTSIDE zone — because then a real departure WOULD have been seen
+    there, and silence is evidence against one. The Wareed door's lifetime
+    counters show 2,388 exits against 1,592 entries, which cannot happen; but
+    those counters span the weeks before its geometry was fixed, and the
+    last ten hours read the other way. Not changed on contaminated evidence.
+    `DoorPolicy.observable_outside` exists for it; decide from a rebuild over
+    a clean window.
     """
     came_from_inside = policy.is_interior(from_zone)
     went_beyond = policy.is_beyond(to_zone)
@@ -777,7 +841,7 @@ def apply_event(roster: FacilityRoster, event: dict, zone_types) -> Optional[str
             # the crossing simply moves to the newer door. Keep the ORIGINAL
             # origin zone, which is the half that carries the direction.
             origin = pending[1] if pending else event.get("zone_from")
-            roster.begin_crossing(ref, arrival, origin)
+            roster.begin_crossing(ref, arrival, origin, now)
             return AT_DOOR
         if pending:
             # They have come out of a two-way door into somewhere we can see.
@@ -806,8 +870,11 @@ def apply_event(roster: FacilityRoster, event: dict, zone_types) -> Optional[str
                                  to_zone=None)
     if pending:
         # Some other event while mid-crossing (loitering in the doorway). The
-        # crossing is still open, so put it back rather than dropping it.
-        roster.begin_crossing(ref, pending[0], pending[1])
+        # crossing is still open, so put it back rather than dropping it, with
+        # the clock restarted: this track is still being seen, and the TTL is
+        # there for tracks that stop reporting altogether, not for someone who
+        # genuinely stands in a doorway for a while.
+        roster.begin_crossing(ref, pending[0], pending[1], now)
     if roster.note_seen(ref, now, where):
         return SEEN
     return None

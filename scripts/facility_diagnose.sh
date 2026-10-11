@@ -7,8 +7,14 @@
 # Prints: door zones with their polygons and types, every camera, the
 # ReID/topology settings that decide whether a person keeps one global ref
 # across a visit, the roster stats, how old the "inside" entries are, and the
-# raw crossing events at each door (what the roster actually saw). Paste the
-# whole output for review; nothing here writes anything.
+# raw crossing events at each door (what the roster actually saw).
+#
+# It ends by REBUILDING the roster over the window. That is a write — it
+# replaces the live roster with the one the stored events imply under today's
+# zones and rules — and it is the only honest way to read the counters: the
+# lifetime ones span every geometry the door has ever had, so they say nothing
+# about whether it counts correctly now. Everything before that point is
+# read-only.
 set -u
 cd "$(dirname "$0")/.."
 if [ -f .env ]; then set -a; . ./.env; set +a; fi
@@ -95,6 +101,40 @@ raw = [e for e in evs if not e.get('derived')]
 refs = {e.get('global_ref') or e.get('person_ref') for e in raw}
 print('  $T on ZONE-01: %d events (%d non-derived), %d distinct refs' % (len(evs), len(raw), len(refs)))"
 done
+echo
+echo "=== THE CLEAN READING: replay the window under the CURRENT zones and rules"
+# The lifetime counters above span every geometry this door has ever had, so
+# they cannot answer "is it counting correctly NOW". A rebuild re-derives the
+# roster from the stored events as they would be judged today and reports what
+# each crossing resolved to — which is the number to read.
+NOW2=$($PY -c 'import time;print(time.time())')
+SINCE=$($PY -c "print($NOW2 - $HOURS*3600)")
+curl -s -m 60 ${K:+-H "Authorization: Bearer $K"} -X POST "$API/api/v1/facility/rebuild" \
+  -H 'Content-Type: application/json' -d "{\"since\": $SINCE}" | $PY -c '
+import sys, json
+raw = sys.stdin.read().strip()
+if not raw:
+    print("   no response — is the API running? (systemctl status finblade-api)"); raise SystemExit
+try:
+    d = json.loads(raw)
+except ValueError:
+    print("   not JSON:", raw[:200])
+    print("   a 404 here means the API predates POST /api/v1/facility/rebuild — git pull and restart")
+    raise SystemExit
+if d.get("error") or d.get("detail"): print("  ", d); raise SystemExit
+print("  events replayed:", d.get("events_replayed"), " actions:", json.dumps(d.get("actions")))
+print("  occupancy %s -> %s" % (d.get("occupancy_before"), d.get("occupancy")))
+s = d.get("stats") or {}
+keep = ("admitted","discharged","discharged_matched","discharged_unmatched",
+        "discharge_on_empty","ambiguous_crossings","turned_back","expired","rekeyed")
+print("  stats (THIS window only):", json.dumps({k: s.get(k) for k in keep}))
+print()
+print("  READ IT LIKE THIS:")
+print("   admitted ~ the people who really came in      -> entries are resolving")
+print("   discharged > admitted                         -> exits are being invented")
+print("   ambiguous_crossings high                      -> a gap between the door strip and the lobby zone")
+print("   turned_back high                              -> the door strip covers floor people walk along")
+print("   discharge_on_empty > 0                        -> exits arriving with nobody on the roster")'
 echo
 echo "=== snapshot of the door camera -> /tmp/door_cam.jpg (paste it into the review)"
 get /api/v1/cameras/CAM-01/snapshot > /tmp/door_cam.jpg && ls -la /tmp/door_cam.jpg

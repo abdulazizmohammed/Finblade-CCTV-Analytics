@@ -361,9 +361,13 @@ class IngestService:
         """Retire roster entries older than FINBLADE_PRESENCE_EXPIRE_HOURS.
         A no-op when unset. Called from the facility tick and before a
         snapshot, so the horizon holds without a dedicated timer."""
+        now = time.time() if now is None else now
+        # Crossings opened at a door and never resolved. Independent of the
+        # expiry horizon — a leak, not a policy — so it runs even when no
+        # horizon is configured.
+        self.roster.prune_crossings(now)
         if not self.presence_expire_s:
             return 0
-        now = time.time() if now is None else now
         gone = self.roster.expire(self.presence_expire_s, now)
         if gone:
             log.info("facility: expired %d roster entr%s older than %.1f h",

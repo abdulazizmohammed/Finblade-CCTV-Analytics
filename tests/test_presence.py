@@ -326,6 +326,34 @@ class TestBidirectionalDoor(unittest.TestCase):
         self.assertEqual(act, ADMIT)
         self.assertEqual(self.r.occupancy(), 1)
 
+    def test_a_crossing_that_never_resolves_is_dropped_not_held_for_ever(self):
+        # A track that dies in the doorway leaves its crossing open. The
+        # Wareed door was holding 274 of them — a slow leak, and every one
+        # an entry that could still be resolved hours later from stale
+        # information. A person is in a doorway for seconds.
+        apply_event(self.r, ev("ZONE_ENTRY", "p1", 100.0, zone_to="MAIN-DOOR"), TWO_WAY)
+        apply_event(self.r, ev("ZONE_ENTRY", "p2", 110.0, zone_to="MAIN-DOOR"), TWO_WAY)
+        self.assertEqual(2, self.r.pending_crossings())
+        self.assertEqual(0, self.r.prune_crossings(now=400.0), "still plausibly mid-crossing")
+        self.assertEqual(1, self.r.prune_crossings(now=100.0 + 601),
+                         "the older one only — p2 opened ten seconds later")
+        self.assertEqual(1, self.r.prune_crossings(now=110.0 + 601))
+        self.assertEqual(0, self.r.pending_crossings())
+        self.assertEqual(2, self.r.stats["crossings_expired"])
+        # ...and a dropped crossing cannot later resolve into a phantom exit
+        self.assertIsNone(apply_event(self.r, ev("ZONE_EXIT", "p1", 800.0,
+                                                 zone_from="MAIN-DOOR"), TWO_WAY))
+        self.assertEqual(0, self.r.stats["discharged"])
+
+    def test_loitering_in_a_doorway_does_not_expire_the_crossing(self):
+        # The TTL is for tracks that stop reporting, not for someone who
+        # genuinely stands in a doorway: each event restarts their clock.
+        apply_event(self.r, ev("ZONE_ENTRY", "p1", 100.0, zone_to="MAIN-DOOR"), TWO_WAY)
+        for t in range(200, 1400, 100):
+            apply_event(self.r, ev("LOITERING_START", "p1", float(t), zone_id="MAIN-DOOR"), TWO_WAY)
+            self.assertEqual(0, self.r.prune_crossings(now=float(t)))
+        self.assertEqual(1, self.r.pending_crossings(), "still at the door, still counted")
+
     def test_a_typed_outside_zone_settles_a_crossing_whose_other_side_was_unseen(self):
         # Wareed door, 2026-09-18 11:07 KSA: a visitor's track was acquired
         # INSIDE the door strip (no lobby zone before it) and stepped onto the

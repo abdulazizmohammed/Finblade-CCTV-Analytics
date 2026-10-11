@@ -408,6 +408,28 @@ class ServiceIntegrationTest(unittest.TestCase):
         self.assertEqual(0, self.svc.roster.occupancy())
         self.assertEqual(422, self.svc.rebuild_facility(T + 9999, now=T + 600)[0])
 
+    def test_facility_day_counts_crossings_not_identities(self):
+        # A chatbot asked "how many people entered today" answered 1,099 for a
+        # building holding thirty, because it reached for the identity gallery's
+        # session total. facility_day is the door-crossing answer.
+        T = 1_000_000.0
+        for i in range(4):
+            self._post(10 + i, "ZONE_ENTRY", T + i * 10, zone_to="IN",
+                       person_ref="pr_" + chr(97 + i) * 16, global_ref=f"gp_{i}", confidence=0.9)
+        self._post(20, "ZONE_TRANSITION", T + 100, zone_from="LOBBY", zone_to="OUT",
+                   person_ref="pr_" + "a" * 16, global_ref="gp_0")
+        d = self.svc.facility_day(T - 1, T + 200)
+        self.assertEqual((4, 1, 3), (d["entries"], d["exits"], d["net"]))
+        self.assertEqual(4, d["distinct_refs_in"])
+        self.assertEqual(4, d["peak_occupancy"], "the roster's high-water mark")
+        self.assertEqual(T + 30, d["peak_at"])
+        self.assertIn("door crossings", d["counted_from"])
+        self.assertEqual([{"door_zone_id": "IN", "entries": 4, "exits": 0},
+                          {"door_zone_id": "OUT", "entries": 0, "exits": 1}], d["doors"])
+        # a window with nothing in it is zero, not an error
+        empty = self.svc.facility_day(T + 5000, T + 6000)
+        self.assertEqual((0, 0, 0), (empty["entries"], empty["exits"], empty["peak_occupancy"]))
+
     def test_env_selects_the_discharge_policy_and_expiry(self):
         # D-42 knobs: the default evicts on an unmatched exit and never
         # expires; a site may opt back into strict, and set a horizon.

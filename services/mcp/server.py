@@ -214,6 +214,11 @@ DATA_NOTES = """# Reading FinBlade CCTV numbers correctly
 * Zone occupancy = people standing inside a drawn polygon this instant.
   Facility occupancy = people admitted through a door and not yet seen to
   leave (survives walking out of camera view). They are different measures.
+* Footfall ("how many came in") comes from DOOR CROSSINGS — facility_day.
+  The identity gallery's `unique_total` is a session counter: it mints a new
+  identity for anyone re-acquired after eviction, so it climbs past the real
+  number of people and resets on restart. It is not footfall and must never
+  be reported as visitors.
 * History is written on change. A zone with four rows in a day is not a zone
   with four minutes of data. Every history tool holds readings forward and
   reports `coverage`; below 0.95, say so.
@@ -237,6 +242,10 @@ Rules:
    0.95, qualify the answer with how much of the window was observed.
 2. Say what a figure IS: zone occupancy (inside polygons), facility
    occupancy (door-counted), or people in view (detections, may double count).
+   "How many are in the building" is facility_occupancy. "How many came in
+   today" is facility_day. NEVER answer either from people_counts' identity
+   totals: they are session counters and reporting one as visitors put 1,099
+   people in a building holding thirty.
 3. Never present a person_ref, global_ref or track id as an identity, and
    never speculate about who somebody is. A tracker is a vehicle, not a driver.
 4. Fire/smoke (R-10) and PPE (R-11) alerts come from evaluation models:
@@ -426,10 +435,13 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
         return _ok(backend.get("/api/v1/areas/state"))
 
     @s.tool(description=(
-        "Facility (building) occupancy: people admitted through DOOR zones and "
-        "not yet seen to leave, door entry/exit rates, declared baseline and "
-        "stale entries. Different from zone occupancy — it survives a person "
-        "walking into a corridor no camera watches. If no door zones are "
+        "HOW MANY PEOPLE ARE IN THE BUILDING RIGHT NOW. The answer to "
+        "'how many people are inside', 'is anyone still here', 'current "
+        "occupancy' — always call this rather than saying occupancy is "
+        "unavailable. People admitted through DOOR zones and not yet seen to "
+        "leave, with door entry/exit rates, declared baseline and stale "
+        "entries. Different from zone occupancy — it survives a person walking "
+        "into a corridor no camera watches. If no door zones are "
         "configured the roster cannot move; say so rather than reporting 0. "
         "Trust check: `doors[].net` (entries minus exits) should track "
         "`occupancy`; when `stale` is most of `occupancy` the figure is drift, "
@@ -441,11 +453,36 @@ def build_server(backend: Backend, name: str = "finblade-cctv") -> MCPServer:
         return _ok(backend.get("/api/v1/facility/occupancy"))
 
     @s.tool(description=(
-        "Distinct-people counts from cross-camera identity: live bindings and "
-        "cumulative unique people per camera, optionally within a window "
-        "(hours or from_ts/to_ts). Cumulative counts are footfall; `live` can "
-        "drift above the true headcount after a worker restart — prefer "
-        "people_in_view from cameras() for 'right now'."))
+        "HOW MANY PEOPLE CAME IN AND WENT OUT over a day or a window, and the "
+        "busiest moment. The answer to 'how many people entered today', 'how "
+        "many visitors', 'how busy was it' — counted from DOOR CROSSINGS, which "
+        "is the only trustworthy source for it. Do NOT answer those questions "
+        "from people_counts: its identity totals are session counters that "
+        "climb past the number of real people. `date=YYYY-MM-DD` is a whole "
+        "site-local day, `hours` counts back from now, neither means the site's "
+        "business day. `entries`/`exits` are crossings; `distinct_refs_in` "
+        "counts refs, which last one visit at best, so treat it as a floor on "
+        "arrivals and never as a headcount. If entries and exits are wildly "
+        "unequal, say so — it means a door zone needs attention." + _SCOPE_DOC))
+    def facility_day(date: Optional[str] = None, hours: Optional[float] = None,
+                     from_ts: Optional[float] = None, to_ts: Optional[float] = None,
+                     region_id: Optional[str] = None, city_id: Optional[str] = None,
+                     branch_id: Optional[str] = None) -> dict:
+        p = dict(_scope(region_id, city_id, branch_id), date=date, hours=hours)
+        if from_ts is not None or to_ts is not None:
+            p.update({"from": from_ts, "to": to_ts})
+        return _ok(backend.get("/api/v1/facility/day", p))
+
+    @s.tool(description=(
+        "Cross-camera IDENTITY counts. NOT a count of people who came in — use "
+        "facility_day for that. The top-level `unique_total` and `cross_camera` "
+        "are session counters: the gallery mints a new identity whenever someone "
+        "is re-acquired after eviction, so they climb far above the number of "
+        "real people the longer a worker runs and reset on restart. Reporting "
+        "`unique_total` as visitors put 1,099 people in a building holding "
+        "thirty. Only `window.unique` is a defensible distinct-person figure, "
+        "and only for its window. `live` drifts high after a worker restart — "
+        "prefer people_in_view from cameras() for 'right now'."))
     def people_counts(hours: Optional[float] = None, from_ts: Optional[float] = None,
                       to_ts: Optional[float] = None) -> dict:
         p = {"charts": 0}

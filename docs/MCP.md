@@ -106,7 +106,7 @@ the AWS deployment, not the on-prem host.
 | Network | `network_overview` (tree + roll-ups), `org_index`, `branch`, `summary` |
 | Cameras | `cameras`, `camera`, `camera_snapshot` (image) |
 | Zones | `zones_live`, `zone_config`, `restricted_zones` (intrusions now), `zone_history`, `zone_at_time`, `zone_duration`, `zone_movement` |
-| Occupancy | `areas_live` (distinct people per room), `facility_occupancy` (door-counted), `people_counts` |
+| Occupancy | `areas_live` (distinct people per room), `facility_occupancy` (how many are inside **now**), `facility_day` (how many came in / went out, from door crossings), `people_counts` (cross-camera identity — **not** footfall) |
 | Alerts | `alerts_active`, `alerts_history`, `alert`, `incident_frame` (image), `acknowledge_alert`, `resolve_alert` |
 | Events / reports | `events_history`, `occupancy_report`, `reports_list` |
 | Vehicles | `vehicles`, `vehicle`, `vehicle_track` (`date=YYYY-MM-DD` for a whole site-local day, with `distance_km`), `vehicle_days` (which days have a track), `vehicle_arrivals`, `vehicles_at_branch` |
@@ -128,6 +128,7 @@ Time windows: `hours` back from now, or `from_ts` / `to_ts` epoch seconds UTC.
 | A `null` bucket is an empty room | it means "camera not watching"; the description says so |
 | `zone_id` identifies a zone | unique only within a camera; the API returns 409 with candidates, surfaced verbatim as the tool error |
 | Summing camera counts = people | `areas_live` and `summary.people_in_zones` are distinct-person; `people_in_view` says "may double count" |
+| Unique identities = visitors | `people_counts.unique_total` is a session counter — the gallery re-mints anyone re-acquired after eviction, so it climbs past the real number and resets on restart. A chatbot reported it as 1,099 visitors to a building holding thirty. Footfall is `facility_day`, counted at the doors; the description says so and disclaims itself |
 | A tracker is a driver | it is a vehicle or asset; no driver field exists anywhere |
 | An appearance match identifies someone | `find_people` returns candidates matching a clothing description, never an identity; the tool description forbids gender/age/ethnicity and tells the model to say "matches the description" |
 | A colour tag is the colour | it is what CLIP read off a CCTV crop (a white shirt was stored as grey); `find_people` also returns look-alike colours as `match: near`, and the description tells the model to report those as "possibly, tagged as grey" |

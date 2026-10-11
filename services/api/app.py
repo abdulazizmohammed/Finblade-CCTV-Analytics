@@ -712,6 +712,40 @@ async def facility_clear():
     return JSONResponse(status_code=code, content=body)
 
 
+@app.get("/api/v1/facility/day")
+async def facility_day(date: str = Query(None), hours: float = Query(None),
+                       frm: float = Query(None, alias="from"), to: float = Query(None, alias="to"),
+                       region_id: str = Query(None), city_id: str = Query(None),
+                       branch_id: str = Query(None), tz: str = Query(None)):
+    """How many people came in and went out, and the busiest moment.
+
+    Counted from door crossings. `date=YYYY-MM-DD` is that whole site-local
+    day; `hours` counts back from now; from/to is an explicit window; with
+    none of them it is the site's business day.
+    """
+    now = time.time()
+    if date:
+        try:
+            win = _window.calendar_day(date, tz=tz or BUSINESS_TZ)
+        except ValueError as exc:
+            return JSONResponse(status_code=422, content={"error": str(exc)})
+        t0, t1, label = win["from"], win["to"], win["date"]
+    elif hours is not None:
+        t0, t1, label = now - hours * 3600.0, now, None
+    elif frm is not None or to is not None:
+        t0 = frm if frm is not None else 0.0
+        t1 = to if to is not None else now
+        label = None
+    else:
+        win = _window.business_window(now, tz=BUSINESS_TZ, start_hour=BUSINESS_START_HOUR,
+                                      end_hour=BUSINESS_END_HOUR)
+        t0, t1, label = win["from"], win["to"], win["date"]
+    body = svc.facility_day(t0, t1, site_ids=_scope(region_id, city_id, branch_id))
+    body["date"] = label
+    body["timezone"] = tz or BUSINESS_TZ
+    return body
+
+
 @app.post("/api/v1/facility/rebuild")
 async def facility_rebuild(request: Request):
     """Replay the stored zone events through the roster under the CURRENT

@@ -390,6 +390,53 @@ class IngestService:
         }
         return body
 
+    def facility_day(self, t0: float, t1: float, site_ids=None) -> dict:
+        """Arrivals, departures and the busiest moment between t0 and t1.
+
+        The honest answer to "how many people came in today". Counted from
+        FACILITY_ENTRY / FACILITY_EXIT — door crossings — and NOT from
+        cross-camera identity, whose session totals climb past the number of
+        real people the longer a worker runs. A chatbot asked this question
+        reached for the identity figure and reported 1,099 visitors to a
+        building holding thirty, which is why this exists as its own answer.
+
+        `peak_occupancy` is the highest the roster stood during the window, as
+        recorded on each crossing, so it inherits whatever the roster believed
+        at the time rather than being reconstructed from zero.
+
+        `distinct_refs` counts refs, not people: a ref lasts one visit at best
+        and changes when tracking breaks, so it is a FLOOR on arrivals and an
+        over-count of individuals. Crossings are the trustworthy figure.
+        """
+        evs = self.store.list_events(t0, t1, limit=200_000)
+        if site_ids is not None:
+            evs = [e for e in evs if e.get("site_id") in site_ids]
+        entries = [e for e in evs if e.get("event_type") == FACILITY_ENTRY]
+        exits = [e for e in evs if e.get("event_type") == FACILITY_EXIT]
+        peak, peak_at = 0, None
+        for e in sorted(entries + exits, key=lambda x: float(x.get("timestamp") or 0)):
+            occ = e.get("occupancy")
+            if isinstance(occ, (int, float)) and occ > peak:
+                peak, peak_at = int(occ), float(e.get("timestamp") or 0)
+        ref = lambda e: e.get("global_ref") or e.get("person_ref")        # noqa: E731
+        by_door: Dict[str, dict] = {}
+        for e, kind in [(e, "entries") for e in entries] + [(e, "exits") for e in exits]:
+            d = by_door.setdefault(str(e.get("door_zone_id") or "—"),
+                                   {"door_zone_id": str(e.get("door_zone_id") or "—"),
+                                    "entries": 0, "exits": 0})
+            d[kind] += 1
+        return {
+            "from": t0, "to": t1,
+            "entries": len(entries), "exits": len(exits),
+            "net": len(entries) - len(exits),
+            "distinct_refs_in": len({ref(e) for e in entries if ref(e)}),
+            "distinct_refs_out": len({ref(e) for e in exits if ref(e)}),
+            "peak_occupancy": peak, "peak_at": peak_at,
+            "occupancy_now": self.roster.occupancy(),
+            "doors": sorted(by_door.values(), key=lambda d: d["door_zone_id"]),
+            "counted_from": "door crossings (FACILITY_ENTRY / FACILITY_EXIT)",
+        }
+
     def rebuild_facility(self, since: float, now: float = None) -> Tuple[int, dict]:
         """Replay the zone events since `since` through a fresh roster under
         the CURRENT door policy and discharge rule, and replace the roster.

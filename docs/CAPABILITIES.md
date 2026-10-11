@@ -475,6 +475,7 @@ whether the count moves (D-42).
 | Expiry backstop, off by default: `FINBLADE_PRESENCE_EXPIRE_HOURS=16` retires anyone "inside" longer than a plausible visit, counted as `expired`, run on the counts tick and before a snapshot | Built | `FacilityRoster.expire`, `service.expire_presence` |
 | Declared opening baseline that drains as people leave (before any eviction) | Built | `POST /api/v1/facility/baseline` |
 | Per-door entry/exit totals and rates | Built | `presence.py` `DoorCounters` |
+| `GET /api/v1/facility/day` — arrivals, departures, net and the day's peak occupancy, from door crossings, for a site-local date / `hours` / explicit window / the business day. The answer to "how many people came in today"; exists because a chatbot answered it from the identity gallery's session total and reported 1,099 visitors to a building holding thirty | Built | `service.facility_day`; MCP tool `facility_day` |
 | Drift report — roster entries nobody has seen | Built | `GET /api/v1/facility/stale` |
 | Identity rekey when two refs merge | Built | `presence.py` `rekey` |
 | Read-only diagnostic of everything the count depends on; door redraw helper | Built | `scripts/facility_diagnose.sh`, `scripts/redraw_door_zones.py` |
@@ -525,7 +526,7 @@ store for tests; it is explicitly opt-in and never a fallback.
 
 ## 11. HTTP API
 
-**101 routes** — 98 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
+**102 routes** — 99 under `/api/v1`, plus `/healthz`, `/readyz` and the `/ws`
 WebSocket. `services/api/app.py` is a thin adapter; logic lives in
 `service.py`, `identity.py` and `fusion.py`, all testable without FastAPI.
 
@@ -623,7 +624,7 @@ where cumulative footfall has no liveness problem.
 | Operator actions taken in FinBlade applied to local alerts | Built | `_apply_finblade_ack` |
 | Chart tags on live-feed responses | Built | `services/api/charts.py` |
 | 8 chatbot tools: `cctv_live_state` `cctv_zone_history` `cctv_zone_at_time` `cctv_zone_duration` `cctv_alerts` `cctv_occupancy_report` `cctv_camera_snapshot` `cctv_incident_frame` | Built | `integrations/finblade_ai/tools.py` (SDK-native form; superseded by the MCP server below) |
-| **MCP server** — 39 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility, people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track (any day) + days + arrivals + at-branch; find_people + person_timeline + sighting_crop + sighting_crop_link + incident_frame_link (appearance search, crop as image or as a signed link); health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
+| **MCP server** — 40 tools over streamable HTTP (`/mcp` on :8010) or stdio: network tree + roll-ups, branch, summary; cameras + snapshot; zones live / config / restricted / history / at-time / duration / movement; areas, facility occupancy + facility day (door-counted footfall), people counts; alerts active / history / one / frame / ack / resolve; events; reports; vehicles + track (any day) + days + arrivals + at-branch; find_people + person_timeline + sighting_crop + sighting_crop_link + incident_frame_link (appearance search, crop as image or as a signed link); health; rules | Built | `services/mcp/server.py`, `docs/MCP.md`, `scripts/start_mcp.sh` |
 | MCP resources `finblade://data-notes` `finblade://rules` `finblade://capabilities` and the `cctv_analyst` prompt | Built | `services/mcp/server.py` |
 | **Operator chat in the UI** — "Ask AI" on the ops console: the browser posts to this API, which signs in to FinBlade as a service account and forwards; FinBlade's agent calls back into our MCP for the figures. The FinBlade password stays in `.env`, never in a page. Off unless `FINBLADE_CHAT_URL` / `_USER` / `_PASSWORD` are set — the button is not drawn at all. Full key only (it reaches everything the MCP does). Scope and selected camera travel as context so "this camera" resolves | Built | `services/api/finblade_chat.py`, `POST /api/v1/chat/ask`, `GET /api/v1/chat/status`; `web/finblade-chat.js` + `.css`; `tests/test_finblade_chat.py` |
 | Bearer-token gate on the MCP transport (`FINBLADE_MCP_TOKEN`); the server itself uses the integration key, so it is read-only except alert ack/resolve | Built | `make_app` in `server.py`; tested over the real transport in `tests/test_mcp_server.py` |

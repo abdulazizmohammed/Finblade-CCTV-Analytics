@@ -121,7 +121,7 @@ class TestSurface(Base):
         "network_overview", "org_index", "branch", "summary",
         "cameras", "camera", "camera_snapshot",
         "zones_live", "zone_config", "restricted_zones", "zone_history", "zone_at_time", "zone_duration", "zone_movement",
-        "areas_live", "facility_occupancy", "people_counts",
+        "areas_live", "facility_occupancy", "facility_day", "people_counts",
         "alerts_active", "alerts_history", "alert", "incident_frame", "acknowledge_alert", "resolve_alert",
         "events_history", "occupancy_report", "reports_list",
         "vehicles", "vehicle", "vehicle_track", "vehicle_days", "vehicle_arrivals", "vehicles_at_branch",
@@ -143,6 +143,15 @@ class TestSurface(Base):
         self.assertIn("unique only WITHIN a camera", desc["zone_history"])
         self.assertIn("never a person", desc["vehicles"])
         self.assertIn("double count", desc["cameras"])
+        # The two measures a chatbot got wrong in front of a customer: it
+        # answered "how many entered today" from the identity gallery's session
+        # total (1,099 for a building holding thirty) and said occupancy was
+        # unavailable while facility_occupancy sat there. Both descriptions
+        # now name the question they answer, and people_counts disclaims it.
+        self.assertIn("NOT a count of people who came in", desc["people_counts"])
+        self.assertIn("facility_day", desc["people_counts"])
+        self.assertIn("HOW MANY PEOPLE ARE IN THE BUILDING", desc["facility_occupancy"])
+        self.assertIn("DOOR CROSSINGS", desc["facility_day"])
         self.assertIn("cannot identify anyone", desc["find_people"])
         self.assertIn("gender, age or ethnicity", desc["find_people"])
         # The Wareed chatbot declined "the woman in the red abaya" outright.
@@ -196,6 +205,21 @@ class TestSurface(Base):
             os.unlink(p)
         with self.assertRaises(ToolError):
             run(self.server.call_tool("sighting_crop", {"sighting_id": "ev-nope"}))
+
+    def test_facility_day_answers_how_many_came_in(self):
+        from finblade.events import new_event
+        t = time.time() - 600
+        for i in range(3):
+            e = new_event("FACILITY_ENTRY", "CAM-R1", "RUH-01", t + i,
+                          door_zone_id="DOOR-1", person_ref="pr_" + chr(97 + i) * 16,
+                          occupancy=i + 1)
+            self.assertEqual(202, self.c.post("/api/v1/events/ingest", json=e).status_code, e)
+        d = self.call("facility_day", hours=1)
+        self.assertEqual(3, d["entries"])
+        self.assertEqual(3, d["peak_occupancy"])
+        self.assertIn("door crossings", d["counted_from"])
+        self.assertEqual(0, self.call("facility_day", hours=1, region_id="WESTERN")["entries"],
+                         "scoped away")
 
     def test_resources_and_prompt(self):
         res = run(self.server.list_resources())

@@ -95,6 +95,8 @@
       + '<section id="fbcPanel" class="fbc-panel" hidden aria-label="FinBlade AI chat">'
       + '  <header class="fbc-head"><p class="eyebrow">FinBlade AI</p>'
       + '    <span class="fbc-state" id="fbcState">Online</span>'
+      + '    <button class="fbc-x" id="fbcNew" title="New chat — forget this thread"'
+      + '      aria-label="New chat">⟳</button>'
       + '    <button class="fbc-x" id="fbcClose" aria-label="Close">✕</button></header>'
       + '  <div class="fbc-log" id="fbcLog"></div>'
       + '  <div class="fbc-ex" id="fbcEx"></div>'
@@ -114,6 +116,15 @@
       if (!p.hidden) { el('fbcAsk').focus(); }
     });
     el('fbcClose').addEventListener('click', function () { el('fbcPanel').hidden = true; });
+    // A conversation accumulates context, which is what makes "and yesterday?"
+    // work and also what makes a long thread drift. Dropping the id starts a
+    // fresh one on the next question.
+    el('fbcNew').addEventListener('click', function () {
+      SESSION = null;
+      el('fbcLog').innerHTML = '';
+      bubble('ai', 'New chat. Previous questions are forgotten.');
+      el('fbcAsk').focus();
+    });
     el('fbcForm').addEventListener('submit', function (e) {
       e.preventDefault(); ask(el('fbcAsk').value);
     });

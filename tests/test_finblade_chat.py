@@ -54,7 +54,9 @@ class Transport:
 
 
 def client(transport=None, **over):
+    # login, open a conversation, then the answer — the real order of calls.
     t = transport or Transport(Resp(200, {"auth_token": "tok-1"}),
+                               Resp(200, {"id": "conv-1"}),
                                Resp(200, {"answer": "Four people are in the building."}))
     kw = dict(base_url="https://finblade.test", username="svc@wareed", password=PASSWORD,
               mcp_key="wareed-cctv", enabled=True, post=t.post, get=lambda *a, **k: None)
@@ -107,20 +109,21 @@ class TestConfiguration(unittest.TestCase):
 
 class TestAuth(unittest.TestCase):
     def test_the_token_is_fetched_once_and_reused(self):
-        t = Transport(Resp(200, {"auth_token": "tok-1"}),
+        t = Transport(Resp(200, {"auth_token": "tok-1"}), Resp(200, {"id": "c1"}),
                       Resp(200, {"answer": "a"}), Resp(200, {"answer": "b"}))
         c = client(t)
-        self.assertEqual(200, c.ask("one")[0])
-        self.assertEqual(200, c.ask("two")[0])
+        code, body = c.ask("one")
+        self.assertEqual(200, code)
+        self.assertEqual(200, c.ask("two", session_id=body["session_id"])[0])
         logins = [u for u, _ in t.calls if u.endswith("/token/login/")]
         self.assertEqual(1, len(logins), "signed in once for two questions")
-        asked = [kw for u, kw in t.calls if not u.endswith("/token/login/")]
+        asked = [kw for u, kw in t.calls if u.endswith("/chat/")]
         self.assertEqual("Token tok-1", asked[0]["headers"]["Authorization"])
 
     def test_a_rejected_token_is_refreshed_once_then_given_up_on(self):
         # The service account's token can be revoked mid-session; one silent
         # retry is right, a loop is not.
-        t = Transport(Resp(200, {"auth_token": "old"}),
+        t = Transport(Resp(200, {"auth_token": "old"}), Resp(200, {"id": "c1"}),
                       Resp(401), Resp(200, {"auth_token": "new"}),
                       Resp(200, {"answer": "fresh"}))
         c = client(t)
@@ -129,7 +132,8 @@ class TestAuth(unittest.TestCase):
         self.assertEqual("fresh", body["answer"])
         self.assertEqual(2, len([u for u, _ in t.calls if u.endswith("/token/login/")]))
 
-        t2 = Transport(Resp(200, {"auth_token": "old"}), Resp(401), Resp(401))
+        t2 = Transport(Resp(200, {"auth_token": "old"}), Resp(200, {"id": "c1"}),
+                       Resp(401), Resp(401))
         c2 = client(t2)
         code, body = c2.ask("still there?")
         self.assertEqual(502, code)
@@ -137,12 +141,65 @@ class TestAuth(unittest.TestCase):
 
     def test_whatever_the_token_field_is_called(self):
         for field in ("auth_token", "token", "access", "key", "access_token"):
-            t = Transport(Resp(200, {field: "T"}), Resp(200, {"answer": "y"}))
+            t = Transport(Resp(200, {field: "T"}), Resp(200, {"id": "c"}),
+                          Resp(200, {"answer": "y"}))
             self.assertEqual(200, client(t).ask("q")[0], field)
         t = Transport(Resp(200, {"detail": "ok"}))
         code, body = client(t).ask("q")
         self.assertEqual(502, code)
         self.assertIn("no token", body["error"])
+
+
+class TestConversations(unittest.TestCase):
+    """FinBlade answered the very first real question with HTTP 400
+    "conversation_id is required". A question belongs to a conversation, and
+    which path opens one differs between deployments."""
+
+    def test_a_conversation_is_opened_and_its_id_sent_with_the_question(self):
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "conv-7"}),
+                      Resp(200, {"answer": "a"}))
+        code, body = client(t).ask("how many people are inside?")
+        self.assertEqual(200, code)
+        self.assertEqual("https://finblade.test/sessions/", t.calls[1][0])
+        self.assertEqual("conv-7", t.calls[2][1]["json"]["conversation_id"])
+        self.assertEqual("conv-7", body["session_id"], "handed back so follow-ups keep the thread")
+
+    def test_the_second_question_reuses_the_conversation(self):
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "conv-7"}),
+                      Resp(200, {"answer": "a"}), Resp(200, {"answer": "b"}))
+        c = client(t)
+        c.ask("first")
+        c.ask("and yesterday?", session_id="conv-7")
+        opened = [u for u, _ in t.calls if u.endswith("/sessions/")]
+        self.assertEqual(1, len(opened), "one conversation for the thread")
+
+    def test_the_sessions_path_is_discovered_and_remembered(self):
+        # /sessions/ is absent on this deployment; /api/v1/sessions/ works.
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(404),
+                      Resp(200, {"conversation_id": "c9"}), Resp(200, {"answer": "a"}),
+                      Resp(200, {"conversation_id": "c10"}), Resp(200, {"answer": "b"}))
+        c = client(t)
+        self.assertEqual(200, c.ask("one")[0])
+        self.assertEqual("/api/v1/sessions/", c.sessions_path)
+        c.ask("two")
+        tried = [u for u, _ in t.calls if "sessions" in u]
+        self.assertEqual(["https://finblade.test/sessions/",
+                          "https://finblade.test/api/v1/sessions/",
+                          "https://finblade.test/api/v1/sessions/"], tried,
+                         "the dead path is not tried again")
+
+    def test_a_strict_serialiser_that_wants_a_title(self):
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(400, text="title required"),
+                      Resp(200, {"id": "c1"}), Resp(200, {"answer": "a"}))
+        self.assertEqual(200, client(t).ask("q")[0])
+        self.assertEqual({"title": "FinBlade CCTV"}, t.calls[2][1]["json"])
+
+    def test_when_no_conversation_can_be_opened_it_says_why(self):
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(404), Resp(404))
+        code, body = client(t).ask("q")
+        self.assertEqual(502, code)
+        self.assertIn("could not open a FinBlade conversation", body["error"])
+        self.assertIn("not there", body["detail"])
 
 
 class TestTheFourThingsThatGoWrong(unittest.TestCase):
@@ -167,7 +224,7 @@ class TestTheFourThingsThatGoWrong(unittest.TestCase):
         self.assertIn("cannot reach FinBlade", body["error"])
 
     def test_the_chat_path_is_wrong(self):
-        t = Transport(Resp(200, {"auth_token": "T"}), Resp(404))
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}), Resp(404))
         code, body = client(t).ask("q")
         self.assertEqual(502, code)
         self.assertIn("chat endpoint not found", body["error"])
@@ -201,16 +258,17 @@ class TestTheQuestion(unittest.TestCase):
         self.assertEqual("who is in the lab?", sent["message"])
         self.assertEqual("wareed-cctv", sent["mcp_key"], "names OUR MCP service")
         self.assertEqual("low", sent["reasoning_effort"])
-        self.assertEqual("s-1", sent["session_id"])
+        self.assertEqual("s-1", sent["conversation_id"], "the field FinBlade asked for by name")
         self.assertEqual("branch RUH-HQ, camera CAM-01", sent["context"])
         self.assertNotIn(PASSWORD, repr(sent))
 
     def test_counters_move(self):
-        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"answer": "a"}), Resp(500, text="boom"))
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}),
+                      Resp(200, {"answer": "a"}), Resp(500, text="boom"))
         c = client(t)
         c.ask("one")
         self.assertEqual((1, 0), (c.asked, c.errors))
-        code, body = c.ask("two")
+        code, body = c.ask("two", session_id="c1")
         self.assertEqual(502, code)
         self.assertEqual((1, 1), (c.asked, c.errors))
         self.assertIn("boom", body["detail"])
@@ -234,7 +292,8 @@ class TestFindingTheAnswer(unittest.TestCase):
 
     def test_an_unrecognised_shape_is_pending_with_its_keys_shown(self):
         """Rather than a blank bubble: the keys say what to map."""
-        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"surprise": {"nested": 1}}))
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}),
+                      Resp(200, {"surprise": {"nested": 1}}))
         code, body = client(t).ask("q")
         self.assertEqual(200, code)
         self.assertTrue(body["pending"])
@@ -278,7 +337,8 @@ class TestRoutes(unittest.TestCase):
         self.assertEqual(422, self.c.post("/api/v1/chat/ask", json={}).status_code)
 
     def test_the_context_is_capped_so_it_cannot_become_a_payload(self):
-        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"answer": "a"}))
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}),
+                      Resp(200, {"answer": "a"}))
         appmod.chat = client(t)
         self.c.post("/api/v1/chat/ask", json={"question": "q", "context": "x" * 5000})
         self.assertEqual(500, len(t.calls[-1][1]["json"]["context"]))

@@ -344,6 +344,8 @@ above 0 means this file does not cover the cameras actually running.
 | `FINBLADE_CHAT_EFFORT` | `minimal` | reasoning effort: `none`…`xhigh`. Raise if answers are shallow |
 | `FINBLADE_CHAT_TIMEOUT` | `45` | seconds to hold a question before telling the operator it is still working |
 | `FINBLADE_CHAT_PATH` / `_LOGIN_PATH` / `_AUTH_SCHEME` | `/microservices/agent/chat/`, `/api/v1/token/login/`, `Token` | only if FinBlade's API differs from the shipped integrations |
+| `FINBLADE_CHAT_SESSIONS_PATH` | tries `/sessions/` then `/api/v1/sessions/` | where a conversation is opened. Every question needs one ("conversation_id is required"); the working path is discovered and remembered, so set this only to skip the discovery |
+| `FINBLADE_CHAT_CONVERSATION_FIELD` | `conversation_id` | what the chat endpoint calls that id in its request body |
 | `FB_LOG_LEVEL` | `INFO` | |
 
 ---

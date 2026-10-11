@@ -48,6 +48,17 @@ MAX_QUESTION = 2000
 # races the expiry.
 TOKEN_SKEW_S = 300.0
 
+# A question belongs to a conversation, and FinBlade will not take one without
+# it ("conversation_id is required", HTTP 400 — the first thing the Wareed
+# deployment said). Which path creates one differs between deployments, so
+# these are tried in order and the one that works is remembered.
+SESSION_PATHS = ("/sessions/", "/api/v1/sessions/")
+
+# Bodies to try when creating it. Empty first: most of these APIs name the
+# conversation themselves, and an unexpected field is what a strict serialiser
+# rejects.
+SESSION_BODIES = ({}, {"title": "FinBlade CCTV"}, {"name": "FinBlade CCTV"})
+
 
 class FinBladeChat:
     """Signed-in client for FinBlade's agent chat. Thread-safe, lazy login."""
@@ -70,6 +81,8 @@ class FinBladeChat:
         # integrations disagree about which one this deployment has.
         self.sessions_path = sessions_path or env("FINBLADE_CHAT_SESSIONS_PATH", "")
         self.auth_scheme = auth_scheme or env("FINBLADE_CHAT_AUTH_SCHEME", "Token")
+        # What the chat endpoint calls the conversation it wants.
+        self.conversation_field = env("FINBLADE_CHAT_CONVERSATION_FIELD", "conversation_id")
         self.reasoning_effort = reasoning_effort or env("FINBLADE_CHAT_EFFORT", "minimal")
         try:
             self.timeout_s = float(timeout_s if timeout_s is not None
@@ -166,6 +179,53 @@ class FinBladeChat:
                      self.username, (self._token_expires_at - time.time()) / 3600.0)
             return True, "ok"
 
+    # ---- conversations -----------------------------------------------------
+    def _new_conversation(self) -> Tuple[Optional[str], str]:
+        """Open a conversation and return its id, or (None, why not).
+
+        Path and body are discovered rather than assumed: the two shipped
+        FinBlade integrations disagree about the path, and this deployment
+        answers "conversation_id is required" to a chat sent without one. The
+        working path is remembered for the life of the process.
+        """
+        post, _ = self._session()
+        paths = [self.sessions_path] if self.sessions_path else list(SESSION_PATHS)
+        why = ""
+        for path in paths:
+            url = self.base_url + path
+            for body in SESSION_BODIES:
+                try:
+                    r = post(url, json=body, headers=self._headers(),
+                             timeout=min(self.timeout_s, 30))
+                except Exception as exc:                    # noqa: BLE001
+                    why = f"cannot reach {path} ({exc.__class__.__name__})"
+                    break                                   # next path, not next body
+                code = getattr(r, "status_code", 0)
+                if code == 404:
+                    why = f"{path} is not there"
+                    break
+                if code in (401, 403):
+                    return None, "FinBlade rejected the token when opening a conversation"
+                if code >= 300:
+                    try:
+                        why = f"{path} returned HTTP {code}: {(r.text or '')[:160]}"
+                    except Exception:                       # noqa: BLE001
+                        why = f"{path} returned HTTP {code}"
+                    continue                                # a different body may suit
+                try:
+                    data = r.json()
+                except Exception:                           # noqa: BLE001
+                    data = {}
+                cid = _first(data, ("conversation_id", "id", "session_id", "uuid",
+                                    "pk", "sessionId", "conversationId"))
+                if cid:
+                    self.sessions_path = path               # remember what worked
+                    log.info("FinBlade chat: conversation opened via %s", path)
+                    return str(cid), "ok"
+                why = (f"{path} accepted the request but returned no id "
+                       f"(keys: {sorted(data)[:6]})")
+        return None, why or "could not open a conversation"
+
     # ---- public ------------------------------------------------------------
     def status(self) -> dict:
         """Enough to tell a misconfiguration from an outage, without a log."""
@@ -211,11 +271,21 @@ class FinBladeChat:
             self.last_error = msg
             return 502, {"error": msg}
 
-        payload = {"message": question, "reasoning_effort": self.reasoning_effort}
+        # Every question belongs to a conversation; open one for the first
+        # question of a thread and let the UI hand it back for the rest, so
+        # follow-ups ("and yesterday?") keep their context.
+        if not session_id:
+            session_id, why = self._new_conversation()
+            if not session_id:
+                self.errors += 1
+                self.last_error = why
+                return 502, {"error": "could not open a FinBlade conversation",
+                             "detail": why}
+
+        payload = {"message": question, "reasoning_effort": self.reasoning_effort,
+                   self.conversation_field: session_id}
         if self.mcp_key:
             payload["mcp_key"] = self.mcp_key
-        if session_id:
-            payload["session_id"] = session_id
         if context:
             # What the operator is looking at, so "this camera" and "here" mean
             # something. Plain text, no identifiers — see the route.
@@ -274,7 +344,8 @@ class FinBladeChat:
         self.asked += 1
         answer = _answer_text(body)
         return 200, {"answer": answer,
-                     "session_id": _first(body, ("session_id", "session", "chat_id")) or session_id,
+                     "session_id": _first(body, ("conversation_id", "session_id",
+                                                 "session", "chat_id")) or session_id,
                      "pending": not answer,
                      "raw_keys": sorted(body)[:12] if isinstance(body, dict) and not answer else None}
 

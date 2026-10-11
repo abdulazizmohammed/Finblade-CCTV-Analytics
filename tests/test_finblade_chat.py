@@ -287,12 +287,28 @@ class TestTheQuestion(unittest.TestCase):
         c.ask("who is in the lab?", session_id="s-1", context="branch RUH-HQ, camera CAM-01")
         _, kw = t.calls[-1]
         sent = kw["json"]
-        self.assertEqual("who is in the lab?", sent["message"])
+        self.assertTrue(sent["message"].startswith("who is in the lab?"))
         self.assertEqual("wareed-cctv", sent["mcp_key"], "names OUR MCP service")
         self.assertEqual("low", sent["reasoning_effort"])
         self.assertEqual("s-1", sent["conversation_id"], "the field FinBlade asked for by name")
-        self.assertEqual("branch RUH-HQ, camera CAM-01", sent["context"])
+        self.assertIn("branch RUH-HQ, camera CAM-01", sent["message"])
         self.assertNotIn(PASSWORD, repr(sent))
+
+    def test_how_the_context_travels_is_configurable(self):
+        old = dict(os.environ)
+        try:
+            for mode, in_message, in_field in (("message", True, False),
+                                               ("field", False, True),
+                                               ("both", True, True),
+                                               ("off", False, False)):
+                os.environ["FINBLADE_CHAT_CONTEXT_MODE"] = mode
+                t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"answer": "a"}))
+                client(t).ask("q", session_id="s", context="LIVE FIGURES")
+                sent = t.calls[-1][1]["json"]
+                self.assertEqual(in_message, "LIVE FIGURES" in sent["message"], mode)
+                self.assertEqual(in_field, "context" in sent, mode)
+        finally:
+            os.environ.clear(); os.environ.update(old)
 
     def test_counters_move(self):
         t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}),
@@ -375,9 +391,9 @@ class TestRoutes(unittest.TestCase):
                       Resp(200, {"answer": "a"}))
         appmod.chat = client(t)
         self.c.post("/api/v1/chat/ask", json={"question": "q", "context": "x" * 5000})
-        ctx = t.calls[-1][1]["json"]["context"]
-        self.assertEqual(500, ctx.count("x"), "the page's half is trimmed to 500")
-        self.assertIn("Operator is viewing:", ctx)
+        sent = t.calls[-1][1]["json"]["message"]
+        self.assertEqual(500, sent.count("x"), "the page's half is trimmed to 500")
+        self.assertIn("Operator is viewing:", sent)
 
     def test_the_live_figures_ride_along_with_every_question(self):
         """'How many people are in the building?' came back as "I need an
@@ -392,14 +408,21 @@ class TestRoutes(unittest.TestCase):
                         json={"question": "how many people are in the building?",
                               "context": "branch RUH-HQ"})
         self.assertEqual(200, r.status_code, r.text)
-        ctx = t.calls[-1][1]["json"]["context"]
-        self.assertIn("Cameras:", ctx)
-        self.assertIn("Zones:", ctx)
-        self.assertIn("Open alerts:", ctx)
-        self.assertIn("Operator is viewing: branch RUH-HQ", ctx)
-        # It must say what each figure IS, not just its value.
-        self.assertTrue("counted at the doors" in ctx or "no door zones" in ctx)
-        self.assertIn("may double count", ctx)
+        # In the MESSAGE, not a field of our own invention: `context` is a name
+        # this project made up and a serialiser that does not know it drops it
+        # silently, which is exactly how this failed three times.
+        sent = t.calls[-1][1]["json"]["message"]
+        self.assertTrue(sent.startswith("how many people are in the building?"),
+                        "the operator's question stays first")
+        self.assertIn("Cameras:", sent)
+        self.assertIn("Zones:", sent)
+        self.assertIn("Open alerts:", sent)
+        self.assertIn("Operator is viewing: branch RUH-HQ", sent)
+        # It must say what each figure IS, not just its value...
+        self.assertTrue("counted at the doors" in sent or "no door zones" in sent)
+        self.assertIn("may double count", sent)
+        # ...and head off the answer it kept giving.
+        self.assertIn("no image, video feed or upload is needed", sent)
 
     def test_the_chat_needs_the_full_key_when_auth_is_on(self):
         """It reaches everything the MCP does, including appearance search."""

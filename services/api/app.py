@@ -1451,10 +1451,16 @@ def _chat_live_state() -> str:
         pass
     if not bits:
         return ""
-    return ("Live figures from this CCTV system, correct as of now — use them "
-            "directly for questions about current occupancy, cameras, zones or "
-            "alerts, and call the MCP tools for anything else:\n- "
-            + "\n- ".join(bits))
+    # Written at a model that has already answered "how many people are in the
+    # building?" with "I can't determine that without an image or occupancy
+    # data" three times. It needs to be told, in the words of the question,
+    # that the answer is right here and no image is involved.
+    return ("These are live readings from the CCTV system that asked the "
+            "question. They ARE the occupancy data — no image, video feed or "
+            "upload is needed, and you should answer questions about how many "
+            "people are in the building, how many cameras are online, how busy "
+            "the zones are and what alerts are open directly from them. Use the "
+            "MCP tools for anything they do not cover.\n- " + "\n- ".join(bits))
 
 
 @app.get("/api/v1/chat/status")
@@ -1507,6 +1513,10 @@ async def chat_ask(request: Request):
     if code == 200:
         log.info("FinBlade chat: answered (%d chars) for %s",
                  len(out.get("answer") or ""), _search_actor(request))
+    # What we actually sent, on request. During a demo "did it get the
+    # figures?" has to be answerable without reading a log on the host.
+    if body.get("debug") and isinstance(out, dict):
+        out["sent_context"] = ctx
     return JSONResponse(status_code=code, content=out)
 
 

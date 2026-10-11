@@ -94,6 +94,16 @@ class FinBladeChat:
         self.auth_scheme = auth_scheme or env("FINBLADE_CHAT_AUTH_SCHEME", "Token")
         # What the chat endpoint calls the conversation it wants.
         self.conversation_field = env("FINBLADE_CHAT_CONVERSATION_FIELD", "conversation_id")
+        # How the live figures reach the model.
+        #
+        # "message" by default, and that is not a stylistic choice: `context`
+        # is a field name this project invented, and a serialiser that does
+        # not know it silently drops it — which is what happened here. "How
+        # many people are in the building?" came back as "I can't determine
+        # that without an image or occupancy data" three times with the
+        # figures supposedly attached. `message` is the one field the model
+        # certainly sees.
+        self.context_mode = env("FINBLADE_CHAT_CONTEXT_MODE", "message").strip().lower()
         # Exact body for opening a conversation, as JSON. Set it once the
         # deployment's required fields are known and the guessing stops.
         self.session_body = None
@@ -308,13 +318,18 @@ class FinBladeChat:
                 return 502, {"error": "could not open a FinBlade conversation",
                              "detail": why}
 
-        payload = {"message": question, "reasoning_effort": self.reasoning_effort,
+        message = question
+        if context and self.context_mode in ("message", "both"):
+            # Question first so it reads as the operator's, then the figures
+            # under a rule, so a model that quotes them attributes them to the
+            # system rather than to the person asking.
+            message = (f"{question}\n\n"
+                       f"--- system state, supplied by the CCTV server ---\n{context}")
+        payload = {"message": message, "reasoning_effort": self.reasoning_effort,
                    self.conversation_field: session_id}
         if self.mcp_key:
             payload["mcp_key"] = self.mcp_key
-        if context:
-            # What the operator is looking at, so "this camera" and "here" mean
-            # something. Plain text, no identifiers — see the route.
+        if context and self.context_mode in ("field", "both"):
             payload["context"] = context
 
         post, _ = self._session()

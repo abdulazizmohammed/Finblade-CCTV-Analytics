@@ -346,6 +346,7 @@ above 0 means this file does not cover the cameras actually running.
 | `FINBLADE_CHAT_PATH` / `_LOGIN_PATH` / `_AUTH_SCHEME` | `/microservices/agent/chat/`, `/api/v1/token/login/`, `Token` | only if FinBlade's API differs from the shipped integrations |
 | `FINBLADE_CHAT_SESSIONS_PATH` | tries `/sessions/` then `/api/v1/sessions/` | where a conversation is opened. Every question needs one ("conversation_id is required"); the working path is discovered and remembered, so set this only to skip the discovery |
 | `FINBLADE_CHAT_CONVERSATION_FIELD` | `conversation_id` | what the chat endpoint calls that id in its request body |
+| `FINBLADE_CHAT_CONTEXT_MODE` | `message` | how the live figures reach the model: `message` appends them to the question (the only field certain to be read), `field` sends a separate `context` key, `both`, or `off` |
 | `FINBLADE_CHAT_SESSION_BODY` | a few shapes are tried | exact JSON for opening a conversation, e.g. `{"title":"FinBlade CCTV","type":"chat"}`. `scripts/finblade_chat_probe.py` finds the required fields and allowed values from the API's own metadata; set this and the guessing stops |
 | `FB_LOG_LEVEL` | `INFO` | |
 

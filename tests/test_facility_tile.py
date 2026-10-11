@@ -19,19 +19,42 @@ import subprocess
 import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DASHBOARD = os.path.join(REPO, "web", "dashboard.html")
+WEB = os.path.join(REPO, "web")
+TILE_JS = os.path.join(WEB, "facility-tile.js")
+DASHBOARD = os.path.join(WEB, "dashboard.html")
+# Every page that shows the tile. Both must obey the brand rules and neither
+# may carry its own copy of the subtitle logic.
+PAGES = ("dashboard.html", "ops.html")
 
 node = pytest.mark.skipif(shutil.which("node") is None,
                           reason="node not installed")
 
 
 def subtitle_source():
-    """The subtitle block, verbatim from the dashboard."""
-    with open(DASHBOARD, encoding="utf-8") as fh:
-        src = fh.read()
-    start = src.index("function facilityWindow(")
-    end = src.index("function renderFacility(")
-    return src[start:end]
+    """The shipped module, verbatim. Both pages load this same file."""
+    with open(TILE_JS, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def inview_source():
+    """inViewTotal, verbatim from the dashboard — it is the wall display's own
+    fallback (it reads LAST_CAMS) and is not part of the shared module."""
+    src = _dashboard()
+    start = src.index("function inViewTotal(")
+    return src[start:src.index("function renderFacility(")]
+
+
+def test_every_page_with_the_tile_loads_the_shared_module():
+    """The point of the extraction: no page may carry its own copy.
+
+    A second definition would pass these tests while the page on screen ran
+    different text — which is how the caveats in that subtitle quietly rot.
+    """
+    for page in PAGES:
+        with open(os.path.join(WEB, page), encoding="utf-8") as fh:
+            src = fh.read()
+        assert 'src="facility-tile.js"' in src, f"{page} does not load the shared tile module"
+        assert "function facilitySub(" not in src, f"{page} has its own copy of facilitySub"
 
 
 def sub_for(state, tmp_path):
@@ -161,34 +184,41 @@ def _dashboard():
         return fh.read()
 
 
-def test_drift_is_amber_and_never_critical():
+def _page(name):
+    with open(os.path.join(WEB, name), encoding="utf-8") as fh:
+        return fh.read()
+
+
+@pytest.mark.parametrize("page", PAGES)
+def test_drift_is_amber_and_never_critical(page):
     """CLAUDE.md: red solid means something is wrong right now. Roster drift is
     a data-quality caveat, so it must not borrow the incident colour."""
-    src = _dashboard()
+    src = _page(page)
     rule = src[src.index(".kpi .drift{"):]
     rule = rule[:rule.index("}")]
     assert "--fb-warning" in rule
     assert "--fb-critical" not in rule
 
 
-def test_the_tile_does_not_wear_the_corner_bracket_motif():
+@pytest.mark.parametrize("page", PAGES)
+def test_the_tile_does_not_wear_the_corner_bracket_motif(page):
     """The brackets echo framing marks on a monitored feed and belong to zone
     cards and video frames only — on a KPI tile they would mean nothing."""
-    src = _dashboard()
+    src = _page(page)
     tile = src[src.index('<p class="eyebrow">In facility</p>'):]
     tile = tile[:tile.index("</div>")]
     assert "fb-bracket" not in tile
 
 
-def test_the_headline_figure_uses_tabular_numerals():
+@pytest.mark.parametrize("page", PAGES)
+def test_the_headline_figure_uses_tabular_numerals(page):
     """It updates every few seconds; without tnum the strip twitches."""
-    src = _dashboard()
-    assert 'class="val fb-num" id="kFac"' in src
+    assert 'class="val fb-num" id="kFac"' in _page(page)
 
 
 def test_a_site_with_no_doors_is_told_it_cannot_be_counted():
     """Guards the honest empty state against being replaced with a bare 0."""
-    assert "no door zones configured — cannot be counted" in _dashboard()
+    assert "no door zones configured — cannot be counted" in subtitle_source()
 
 
 def test_the_no_door_fallback_is_labelled_as_a_different_measure():
@@ -235,7 +265,7 @@ def test_in_view_total_counts_only_online_cameras(tmp_path):
     long as the camera stayed down, which is the exact failure being fixed."""
     script = tmp_path / "iv.js"
     script.write_text(
-        subtitle_source()
+        inview_source()
         + "\nconst cams=JSON.parse(process.argv[2]);"
           "console.log(String(inViewTotal(cams)));\n",
         encoding="utf-8")
@@ -256,7 +286,7 @@ def test_in_view_total_survives_a_camera_that_reports_nothing(tmp_path):
     headline strip."""
     script = tmp_path / "iv2.js"
     script.write_text(
-        subtitle_source()
+        inview_source()
         + "\nconst cams=JSON.parse(process.argv[2]);"
           "console.log(String(inViewTotal(cams)));\n",
         encoding="utf-8")

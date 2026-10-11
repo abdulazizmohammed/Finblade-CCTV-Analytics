@@ -44,7 +44,7 @@ body{background:var(--fb-void);min-height:100vh;}
 .nav a.fb-btn{padding:6px 10px;font-size:12px;}
 
 /* KPI strip */
-.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;padding:12px 18px 0;}
+.kpis{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;padding:12px 18px 0;}
 .kpi{background:linear-gradient(180deg,var(--fb-surface-2),var(--fb-surface));border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);padding:10px 14px;position:relative;overflow:hidden;}
 .kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--fb-teal);opacity:.35;}
 .kpi.alert::after{background:var(--fb-critical);opacity:.9;}
@@ -56,6 +56,10 @@ body{background:var(--fb-void);min-height:100vh;}
 
 /* three columns */
 .cols{display:grid;grid-template-columns:290px 1fr 340px;gap:12px;padding:12px 18px 30px;min-height:calc(100vh - 150px);}
+/* Roster drift — entries nobody has seen for a while. Amber, never red: red is
+   for something wrong now, and this is a figure to check, not an incident. */
+.kpi .drift{color:var(--fb-warning);}
+@media(max-width:1400px){.kpis{grid-template-columns:repeat(4,1fr);}}
 @media(max-width:1200px){.cols{grid-template-columns:250px 1fr;} .attn{grid-column:1/-1;} .kpis{grid-template-columns:repeat(3,1fr);}}
 @media(max-width:800px){.cols{grid-template-columns:1fr;} .kpis{grid-template-columns:repeat(2,1fr);}}
 .col{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:var(--fb-r-lg);display:flex;flex-direction:column;min-height:0;}
@@ -242,6 +246,12 @@ table.zt td.muted{color:var(--fb-text-faint);}
 
   <div class="kpis">
     <div class="kpi"><p class="eyebrow">Occupancy</p><div class="val fb-num" id="kOcc">0<span class="u">people</span></div><div class="sub" id="kOccSub">—</div></div>
+    <!-- Next to zone occupancy on purpose, as on the wall dashboard: they are
+         different measures and an operator reads one against the other. Zone
+         occupancy is who is inside a polygon this frame; this is who came
+         through a door and has not been seen to leave, so it survives someone
+         walking into a corridor no camera watches. -->
+    <div class="kpi" title="People counted through door crossings and not yet seen to leave — unlike zone occupancy, this survives someone walking out of every camera's view."><p class="eyebrow">In facility</p><div class="val fb-num" id="kFac">0<span class="u">people</span></div><div class="sub" id="kFacSub">counted at doors</div></div>
     <div class="kpi"><p class="eyebrow">In view</p><div class="val fb-num" id="kView">0<span class="u">people</span></div><div class="sub" id="kViewSub">—</div></div>
     <div class="kpi" id="kAlertTile"><p class="eyebrow">Active alerts</p><div class="val fb-num" id="kAlerts">0</div><div class="sub" id="kAlertsSub">—</div></div>
     <div class="kpi" id="kZoneTile"><p class="eyebrow">Zones not normal</p><div class="val fb-num" id="kZones">0<span class="u" id="kZonesOf">/ 0</span></div><div class="sub" id="kZonesSub">—</div></div>
@@ -282,6 +292,11 @@ table.zt td.muted{color:var(--fb-text-faint);}
           <label><input type="checkbox" data-ovl="ids" checked> IDs</label>
           <label><input type="checkbox" data-ovl="feet" checked> Foot points</label>
           <label><input type="checkbox" data-ovl="dwell" checked> Dwell</label>
+          <!-- Live holds an MJPEG connection open for as long as the camera is
+               on screen. Unticked, the frame refreshes about once a second from
+               snapshots instead — the same picture, a fraction of the
+               bandwidth, which matters on a branch link or a tablet on 4G. -->
+          <label title="Live video holds a connection open to the camera. Unticked, the frame refreshes about once a second from snapshots — much less bandwidth, slightly less smooth."><input type="checkbox" id="liveToggle" checked> Live</label>
         </div>
         <div class="tabs">
           <button class="tab on" data-tab="cam" id="tabCam">This camera's zones</button>
@@ -315,6 +330,7 @@ table.zt td.muted{color:var(--fb-text-faint);}
   </div>
 
 <script src="apikey.js"></script>
+<script src="facility-tile.js"></script>
 <script>
 const API=location.origin;
 const WS=`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
@@ -468,6 +484,25 @@ $('q').addEventListener('input',e=>{Q=e.target.value.trim().toLowerCase();render
 // ---- focus: the ONE live stream ---------------------------------------------------------
 function overlayParams(){return Object.keys(OVL).filter(k=>!OVL[k]).map(k=>`${k}=0`);}
 function feedUrl(cid){const b=`${API}/api/v1/cameras/${encodeURIComponent(cid)}/stream`;const off=overlayParams();return withKey(off.length?b+'?'+off.join('&')+'&_='+Date.now():b);}
+// One still frame. The cache-buster is mandatory: without it the browser
+// serves the first frame back for ever and the panel looks frozen.
+function snapUrl(cid){const b=`${API}/api/v1/cameras/${encodeURIComponent(cid)}/snapshot`;const off=overlayParams();return withKey(b+'?'+(off.length?off.join('&')+'&':'')+'_='+Date.now());}
+
+// Live MJPEG (default) or ~1 fps snapshots. Snapshots exist for the branch on a
+// thin link: one held connection per viewer is the expensive part, not the
+// pixels.
+let LIVE_VIDEO=true, snapTimer=null;
+const SNAP_MS=1000;
+function feedSrc(cid){return LIVE_VIDEO?feedUrl(cid):snapUrl(cid);}
+function stopSnapshots(){if(snapTimer){clearInterval(snapTimer);snapTimer=null;}}
+function startSnapshots(){
+  stopSnapshots();
+  snapTimer=setInterval(()=>{
+    // A hidden tab should not keep pulling frames nobody is looking at.
+    if(document.visibilityState!=='visible'||!SEL)return;
+    const img=$('feed'); if(img&&!img.hidden) img.src=snapUrl(SEL);
+  },SNAP_MS);
+}
 async function select(cid,zone){
   const changed=cid!==SEL;
   SEL=cid; HL=zone||(changed?null:HL);
@@ -479,7 +514,7 @@ async function select(cid,zone){
     // Release the previous MJPEG connection FIRST: assigning a new src is
     // what aborts the open multipart response.
     img.src=''; img.hidden=true; $('ph').hidden=false;
-    if(isOn(c)){ $('ph').textContent='connecting…'; img.onload=()=>{img.hidden=false;$('ph').hidden=true;$('liveTag').hidden=false;}; img.onerror=()=>{$('ph').textContent='stream unavailable';}; img.src=feedUrl(cid); }
+    if(isOn(c)){ $('ph').textContent='connecting…'; img.onload=()=>{img.hidden=false;$('ph').hidden=true;$('liveTag').hidden=false;}; img.onerror=()=>{$('ph').textContent='stream unavailable';}; img.src=feedSrc(cid); if(!LIVE_VIDEO) startSnapshots(); }
     else { $('ph').textContent=`no signal · ${String(c.effective_state||'offline').toLowerCase()}`; $('liveTag').hidden=true; }
     await loadPolygons(cid);
   }
@@ -497,7 +532,16 @@ function renderFocusHead(c){
   $('aCams').href=`cameras.html${c.site_id?'?branch='+encodeURIComponent(c.site_id):''}`;
   $('aHist').href=`history.html?camera_id=${encodeURIComponent(c.camera_id)}`;
 }
-document.querySelectorAll('#ovlbar input[data-ovl]').forEach(cb=>cb.addEventListener('change',()=>{OVL[cb.dataset.ovl]=cb.checked;if(SEL){const c=CAMS.find(x=>x.camera_id===SEL);if(c&&isOn(c))$('feed').src=feedUrl(SEL);}}));
+document.querySelectorAll('#ovlbar input[data-ovl]').forEach(cb=>cb.addEventListener('change',()=>{OVL[cb.dataset.ovl]=cb.checked;if(SEL){const c=CAMS.find(x=>x.camera_id===SEL);if(c&&isOn(c))$('feed').src=feedSrc(SEL);}}));
+$('liveToggle').addEventListener('change',e=>{
+  LIVE_VIDEO=e.target.checked;
+  const c=SEL&&CAMS.find(x=>x.camera_id===SEL);
+  // Assigning a new src is what aborts an open MJPEG response and hands the
+  // connection back; clearing the timer alone would leave a socket held.
+  if(c&&isOn(c)) $('feed').src=feedSrc(SEL);
+  if(LIVE_VIDEO) stopSnapshots(); else startSnapshots();
+  const tag=$('liveTag'); if(tag) tag.lastChild.textContent=LIVE_VIDEO?' Live':' 1 fps';
+});
 
 // Zone polygons for the highlight overlay. The stream already draws every
 // zone; this only draws the ONE the operator was sent to, on top, so it is
@@ -722,6 +766,28 @@ setInterval(()=>{if(document.visibilityState!=='visible')return;if(!ws||ws.ready
 function wakeUp(){if(document.visibilityState!=='visible')return;if(wsRetry){clearTimeout(wsRetry);wsRetry=null;}if(!wsLive())connect();poll();}
 document.addEventListener('visibilitychange',wakeUp);window.addEventListener('online',wakeUp);window.addEventListener('pageshow',wakeUp);
 setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);
+
+// --- facility occupancy ------------------------------------------------------
+// Its own timer, not the socket: this number moves on door crossings — minutes
+// apart on most sites — while /ws pushes twice a second, and the REST fallback
+// carries zones and alerts only. Painting directly means the tile works even on
+// a site with no zone or alert traffic at all.
+//
+// NOT scoped by Region/City/Branch: the roster is process-wide and not
+// site-keyed, so a scoped figure would be the same number with a misleading
+// label. The dashboard leaves it alone for the same reason.
+const FACILITY_MS=3000;
+function renderFacility(f){
+  if(!f)return;
+  const doors=(f.policy&&f.policy.doors)||[];
+  $('kFac').innerHTML=`${doors.length?(+f.occupancy||0):'—'}<span class="u">people</span>`;
+  $('kFacSub').innerHTML=facilitySub(f);
+}
+async function pollFacility(){
+  try{ renderFacility(await fetch(`${API}/api/v1/facility/occupancy`).then(r=>r.json())); }
+  catch(e){}
+}
+pollFacility(); setInterval(pollFacility,FACILITY_MS);
 
 async function loadOrg(){
   try{ORG=await fetch(`${API}/api/v1/org/index`).then(r=>r.json());}catch(e){ORG=null;}

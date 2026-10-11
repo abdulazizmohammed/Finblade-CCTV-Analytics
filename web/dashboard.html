@@ -285,6 +285,7 @@ body{
   </div>
 
 <script src="apikey.js"></script>
+<script src="facility-tile.js"></script>
 <script>
 // Same origin as the page — see the note in cameras.html. The WebSocket scheme
 // must follow suit: a page served over https cannot open a ws:// socket, so
@@ -852,37 +853,9 @@ async function pollCounts(){
 // the tile does not depend on there being any zone or alert traffic at all.
 const FACILITY_MS=3000;
 
-function facilityWindow(s){
-  const v=+s||0;
-  return v>=3600?`${Math.round(v/3600)}h`:`${Math.round(v/60)}m`;
-}
-
-// The subtitle, composed from whatever the roster can honestly say. Kept pure so
-// each branch is testable under node (tests/test_facility_tile.py).
-function facilitySub(f){
-  const policyDoors=(f&&f.policy&&f.policy.doors)||[];
-  // No door zones means the count can never be anything but a declared baseline.
-  // A confident "0 people" would read as "the building is empty" when in fact
-  // nothing is being counted — the same trap the zone KPI avoids below.
-  if(!policyDoors.length) return 'no door zones configured — cannot be counted';
-  const doors=(f&&f.doors)||[];
-  const ein=doors.reduce((s,d)=>s+(+d.entry_rate_per_min||0),0);
-  const eout=doors.reduce((s,d)=>s+(+d.exit_rate_per_min||0),0);
-  // Site totals only. Which door is busy is a detail-view question and would
-  // crowd out the headline here.
-  const parts=[`↑${ein.toFixed(1)} ↓${eout.toFixed(1)} /min`];
-  // The decomposition, only when there is a baseline to decompose. At zero it
-  // says nothing and costs a line.
-  const base=+f.baseline||0;
-  if(base>0) parts.push(`${+f.observed||0} observed · ${base} declared`);
-  // Drift: roster entries nobody has seen. Either a person in an unmonitored
-  // space or a missed exit, and nothing here can tell which — so it is surfaced
-  // for a human rather than acted on.
-  const stale=+f.stale||0;
-  if(stale>0) parts.push(
-    `<span class="drift">${stale} unseen &gt;${facilityWindow(f.stale_after_s)}</span>`);
-  return parts.join(' · ');
-}
+// facilityWindow() and facilitySub() live in web/facility-tile.js — the ops
+// console shows the same tile, and the caveats in that subtitle are not worth
+// maintaining twice.
 
 // People in view right now, summed over the cameras that are actually ONLINE.
 //

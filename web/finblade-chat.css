@@ -45,6 +45,15 @@
   color:var(--fb-text); align-self:flex-start; white-space:pre-wrap;}
 .fbc-pending{color:var(--fb-text-muted); font-style:italic;}
 
+/* An incident frame or a person's crop, rendered in the thread. Click opens
+   it full size. Capped so a tall crop cannot push the conversation away. */
+.fbc-shot{display:block; margin-top:8px; border:1px solid var(--fb-line);
+  border-radius:var(--fb-r); overflow:hidden; line-height:0;}
+.fbc-shot img{width:100%; max-height:260px; object-fit:contain;
+  background:var(--fb-void); display:block;}
+.fbc-shot:focus-visible{outline:2px solid var(--fb-teal); outline-offset:2px;}
+.fbc-gone{margin-top:8px !important; color:var(--fb-text-muted); font-size:11px;}
+
 .fbc-ex{display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 10px;}
 .fbc-eg{font-family:var(--fb-font-data); font-size:10px; color:var(--fb-text-muted);
   background:transparent; border:1px solid var(--fb-line); border-radius:999px;

@@ -1399,6 +1399,64 @@ async def sighting_correct(request: Request, sighting_id: str):
     return JSONResponse(status_code=code, content=out)
 
 
+def _chat_live_state() -> str:
+    """The handful of figures the chat is asked for most, composed HERE.
+
+    The E-Approval portal attaches each approver's pending POs to their
+    question for the same reason: an agent that has to go and fetch the
+    obvious number sometimes does not, and on this deployment "how many
+    people are in the building" came back as "I need an image or a specified
+    building" twice while facility_occupancy sat unused. Attaching the answer
+    makes the common questions correct by construction; everything else still
+    goes through the MCP tools.
+
+    Compact and plain. It is read by a model, so it says what each figure IS
+    rather than assuming the name carries it.
+    """
+    bits = []
+    try:
+        f = svc.facility_state(time.time())
+        doors = ((f.get("policy") or {}).get("doors")) or []
+        if doors:
+            line = f"People in the building now: {f.get('occupancy', 0)} (counted at the doors)"
+            stale = int(f.get("stale") or 0)
+            if stale:
+                line += (f" — {stale} of them unseen for over an hour, so the true "
+                         "figure may be lower")
+            bits.append(line)
+        else:
+            bits.append("People in the building: not countable — no door zones are configured")
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        cams = svc.cameras()
+        online = [c for c in cams if c.get("effective_state") == "ONLINE"]
+        bits.append(f"Cameras: {len(online)} of {len(cams)} online")
+        in_view = sum(int(c.get("people_in_view") or 0) for c in online)
+        bits.append(f"People visible on camera right now: {in_view} "
+                    "(a sum across cameras, so it may double count)")
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        zones = svc.zone_states()
+        busy = [z for z in zones if str(z.get("status") or "NORMAL").upper() != "NORMAL"]
+        bits.append(f"Zones: {len(zones)} monitored, {len(busy)} not normal")
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        al = svc.list_alerts()
+        crit = [a for a in al if str(a.get("severity") or "").upper() == "CRITICAL"]
+        bits.append(f"Open alerts: {len(al)} ({len(crit)} critical)")
+    except Exception:                                   # noqa: BLE001
+        pass
+    if not bits:
+        return ""
+    return ("Live figures from this CCTV system, correct as of now — use them "
+            "directly for questions about current occupancy, cameras, zones or "
+            "alerts, and call the MCP tools for anything else:\n- "
+            + "\n- ".join(bits))
+
+
 @app.get("/api/v1/chat/status")
 async def chat_status(request: Request):
     """Is the FinBlade chat configured, and does the sign-in actually work?
@@ -1436,12 +1494,16 @@ async def chat_ask(request: Request):
         body = {}
     if not isinstance(body, dict):
         body = {}
-    # `context` is what the operator is looking at (scope, selected camera), so
-    # "this camera" and "here" mean something. The UI composes it; it carries
-    # no person identifiers, and it is capped so it cannot become a payload.
-    ctx = str(body.get("context") or "")[:500] or None
+    # Two kinds of context, and the server owns the authoritative half.
+    # The UI's half is what the operator is looking at (scope, selected
+    # camera), capped so it cannot become a payload; ours is the live figures,
+    # so the questions asked most are answered from fact rather than from
+    # whether the agent chose to call a tool.
+    ui_ctx = str(body.get("context") or "")[:500]
+    live = await asyncio.to_thread(_chat_live_state)
+    ctx = "\n".join(x for x in (live, ("Operator is viewing: " + ui_ctx) if ui_ctx else "") if x)
     code, out = await asyncio.to_thread(
-        chat.ask, str(body.get("question") or ""), body.get("session_id"), ctx)
+        chat.ask, str(body.get("question") or ""), body.get("session_id"), ctx or None)
     if code == 200:
         log.info("FinBlade chat: answered (%d chars) for %s",
                  len(out.get("answer") or ""), _search_actor(request))

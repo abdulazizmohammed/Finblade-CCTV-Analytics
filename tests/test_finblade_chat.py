@@ -368,12 +368,38 @@ class TestRoutes(unittest.TestCase):
         self.assertEqual("Four people are in the building.", r.json()["answer"])
         self.assertEqual(422, self.c.post("/api/v1/chat/ask", json={}).status_code)
 
-    def test_the_context_is_capped_so_it_cannot_become_a_payload(self):
+    def test_the_browsers_half_of_the_context_is_capped(self):
+        """The server's live figures are ours and bounded; whatever the page
+        sends is not, and must not be able to become a payload."""
         t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}),
                       Resp(200, {"answer": "a"}))
         appmod.chat = client(t)
         self.c.post("/api/v1/chat/ask", json={"question": "q", "context": "x" * 5000})
-        self.assertEqual(500, len(t.calls[-1][1]["json"]["context"]))
+        ctx = t.calls[-1][1]["json"]["context"]
+        self.assertEqual(500, ctx.count("x"), "the page's half is trimmed to 500")
+        self.assertIn("Operator is viewing:", ctx)
+
+    def test_the_live_figures_ride_along_with_every_question(self):
+        """'How many people are in the building?' came back as "I need an
+        image or a specified building" while facility_occupancy sat unused.
+        The portal attaches the answer, as the E-Approval one attaches each
+        approver's pending POs, so the common questions cannot be got wrong
+        by an agent declining to call a tool."""
+        t = Transport(Resp(200, {"auth_token": "T"}), Resp(200, {"id": "c1"}),
+                      Resp(200, {"answer": "a"}))
+        appmod.chat = client(t)
+        r = self.c.post("/api/v1/chat/ask",
+                        json={"question": "how many people are in the building?",
+                              "context": "branch RUH-HQ"})
+        self.assertEqual(200, r.status_code, r.text)
+        ctx = t.calls[-1][1]["json"]["context"]
+        self.assertIn("Cameras:", ctx)
+        self.assertIn("Zones:", ctx)
+        self.assertIn("Open alerts:", ctx)
+        self.assertIn("Operator is viewing: branch RUH-HQ", ctx)
+        # It must say what each figure IS, not just its value.
+        self.assertTrue("counted at the doors" in ctx or "no door zones" in ctx)
+        self.assertIn("may double count", ctx)
 
     def test_the_chat_needs_the_full_key_when_auth_is_on(self):
         """It reaches everything the MCP does, including appearance search."""

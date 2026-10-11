@@ -26,17 +26,64 @@
     });
   }
 
+  // Image links in an answer, rendered as pictures.
+  //
+  // ONLY OUR OWN, and only the two routes that serve one frame: an answer
+  // arrives through a third party, and <img src> pointing anywhere it liked
+  // would be a way to make this page fetch from an arbitrary host. Same
+  // origin as the API, and a path we recognise, or it stays a link.
+  //
+  // The agent sometimes prefixes a link with "MEDIA:" to mark it as something
+  // to display; that marker is stripped and the link rendered.
+  var IMG_PATH = /\/api\/v1\/(incidents\/[^/\s]+\/frame|search\/sightings\/[^/\s]+\/crop)(\?|$)/;
+
+  function imageUrls(text) {
+    var out = [];
+    String(text || '').replace(/(?:MEDIA:)?(https?:\/\/[^\s<>"')\]]+)/gi, function (_, url) {
+      // A sentence ends after the link often enough to matter.
+      url = url.replace(/[.,;:!?]+$/, '');
+      try {
+        var u = new URL(url);
+        if (u.origin === new URL(window.API_BASE).origin && IMG_PATH.test(u.pathname + u.search)) {
+          out.push(url);
+        }
+      } catch (e) { /* not a URL we can parse: leave it as text */ }
+      return url;
+    });
+    return out;
+  }
+
   // The answer is plain text from an LLM. It is INSERTED AS TEXT, never as
   // HTML: it passes through FinBlade and is not ours to trust, and a chat
   // bubble is not worth a script-injection hole. Only the paragraph breaks
-  // are turned into markup.
+  // and our own image links become markup.
   function bubble(role, text, pending) {
     var wrap = document.createElement('div');
     wrap.className = 'fbc-msg fbc-' + role + (pending ? ' fbc-pending' : '');
-    String(text || '').split(/\n{2,}/).forEach(function (para) {
+    var imgs = role === 'ai' ? imageUrls(text) : [];
+    // "MEDIA:" is a marker for the renderer, not something to read.
+    var shown = String(text || '').replace(/\bMEDIA:(?=https?:\/\/)/gi, '');
+    shown.split(/\n{2,}/).forEach(function (para) {
+      if (!para.trim()) return;
       var p = document.createElement('p');
       p.textContent = para;
       wrap.appendChild(p);
+    });
+    imgs.forEach(function (url) {
+      var a = document.createElement('a');
+      a.href = url; a.target = '_blank'; a.rel = 'noreferrer noopener';
+      a.className = 'fbc-shot';
+      var img = document.createElement('img');
+      img.src = url; img.alt = 'Incident frame'; img.loading = 'lazy';
+      // A link that has expired must say so rather than showing a broken icon.
+      img.addEventListener('error', function () {
+        a.replaceWith(Object.assign(document.createElement('p'), {
+          className: 'fbc-gone',
+          textContent: 'That image link has expired — ask again for a fresh one.'
+        }));
+      });
+      a.appendChild(img);
+      wrap.appendChild(a);
     });
     el('fbcLog').appendChild(wrap);
     el('fbcLog').scrollTop = el('fbcLog').scrollHeight;

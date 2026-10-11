@@ -330,6 +330,7 @@ table.zt td.muted{color:var(--fb-text-faint);}
   </div>
 
 <script src="apikey.js"></script>
+<script src="sitetime.js"></script>
 <script src="facility-tile.js"></script>
 <script>
 const API=location.origin;
@@ -637,7 +638,7 @@ async function runFind(){
   const nearN=r.count-(r.exact||0);
   const nearNote=anyAttr&&nearN>0?` (${r.exact||0} exact, ${nearN} near — a look-alike colour, e.g. white tagged as grey)`:'';
   $('findmeta').textContent=`${r.count} ${r.count===1?'person':'people'} ${anyAttr?'matching':'tagged'}${nearNote} · ${r.sightings} sighting${r.sightings===1?'':'s'} · last ${$('fa_hours').value} h · ${SCOPE.sites?'in scope':'whole network'}. Candidates only — confirm from the crop.`;
-  const fmt=ts=>new Date(ts*1000).toLocaleTimeString('en-GB');
+  const fmt=ts=>fbTime(ts);
   $('hits').innerHTML=r.people.length?r.people.map(p=>{
     const s0=p.sightings[p.sightings.length-1]||{};
     const crop=s0.frame?`<img src="${esc(withKey(API+s0.frame))}" alt="" loading="lazy">`:`<div class="nocrop">no crop saved</div>`;
@@ -680,7 +681,7 @@ function renderTable(){
 }
 
 // ---- attention --------------------------------------------------------------------------
-function fmtT(ts){return ts?new Date(ts*1000).toLocaleTimeString('en-GB'):'';}
+function fmtT(ts){return ts?fbTime(ts):'';}
 function renderAttention(cams,zones,alerts){
   const ah=$('alerts');
   $('alertCount').textContent=alerts.length||'';
@@ -765,7 +766,10 @@ function connect(){
 setInterval(()=>{if(document.visibilityState!=='visible')return;if(!ws||ws.readyState!==WebSocket.OPEN)return;if(Date.now()-wsLastMsg<15000)return;try{ws.close();}catch(e){}},5000);
 function wakeUp(){if(document.visibilityState!=='visible')return;if(wsRetry){clearTimeout(wsRetry);wsRetry=null;}if(!wsLive())connect();poll();}
 document.addEventListener('visibilitychange',wakeUp);window.addEventListener('online',wakeUp);window.addEventListener('pageshow',wakeUp);
-setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);
+// Site time, with the offset shown: an operator abroad must not read their own
+// clock against a Riyadh incident.
+const paintClock=()=>{$('clock').textContent=`${fbTime(Date.now()/1000)} ${fbTzLabel()}`;};
+paintClock(); setInterval(paintClock,1000);
 
 // --- facility occupancy ------------------------------------------------------
 // Its own timer, not the socket: this number moves on door crossings — minutes
@@ -790,7 +794,7 @@ async function pollFacility(){
 pollFacility(); setInterval(pollFacility,FACILITY_MS);
 
 async function loadOrg(){
-  try{ORG=await fetch(`${API}/api/v1/org/index`).then(r=>r.json());}catch(e){ORG=null;}
+  try{ORG=await fetch(`${API}/api/v1/org/index`).then(r=>r.json());setSiteTz(ORG&&ORG.timezone);}catch(e){ORG=null;}
   const q=new URL(location.href).searchParams;
   setScope(q.get('region')||SCOPE.region,q.get('city')||SCOPE.city,q.get('branch')||SCOPE.branch);
 }

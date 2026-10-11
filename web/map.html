@@ -169,6 +169,7 @@ details.settings summary{cursor:pointer;font-family:var(--fb-font-data);font-siz
   </div>
 
 <script src="apikey.js"></script>
+<script src="sitetime.js"></script>
 <script src="vendor/leaflet/leaflet.js"></script>
 <script>
 const API=location.origin;
@@ -224,10 +225,9 @@ let SEL={kind:null,id:null};
 // `when` is 'live' (last hour), 'today', or a YYYY-MM-DD site-local date.
 // `live` says whether new fixes may be appended: a past day is fixed history.
 let TRAIL={id:null,points:[],when:'live',live:true,label:''};
-// The SITE's timezone, as the API reports it — "today" and the day list must
-// agree with the site, not with the browser's locale. Replaced on first load.
-let SITE_TZ='Asia/Riyadh';
-const siteToday=()=>new Date().toLocaleDateString('en-CA',{timeZone:SITE_TZ});
+// Site time comes from sitetime.js: "today" and the day list must agree with
+// the site, not with the browser's locale.
+const siteToday=()=>fbToday();
 let PICK=null;
 const layers={pins:L.layerGroup().addTo(map), fences:L.layerGroup().addTo(map), veh:L.layerGroup().addTo(map), trail:L.layerGroup().addTo(map)};
 
@@ -317,7 +317,7 @@ function rollHtml(r){return `<div class="roll">${chip('cams',r.cameras)}${chip('
 function camPill(c){const st=String(c.effective_state||'OFFLINE').toUpperCase();const cls=(st==='OFFLINE'||st==='DISABLED')?'off':(st==='ONLINE'?'':'deg');
   return `<a class="cam" href="cameras.html?branch=${encodeURIComponent(c.site_id||'')}" title="${esc(st)}"><span class="d ${cls}"></span>${esc(c.camera_id)}${c.name?' · '+esc(c.name):''}</a>`;}
 function ago(s){if(s==null)return '—';if(s<60)return `${Math.round(s)}s ago`;if(s<3600)return `${Math.round(s/60)} min ago`;return `${(s/3600).toFixed(1)} h ago`;}
-function fmtAt(ts){return ts?new Date(ts*1000).toLocaleTimeString('en-GB'):'—';}
+function fmtAt(ts){return fbTime(ts);}
 
 function panelNetwork(){
   if(!ORG){$('panel').innerHTML='<p class="eyebrow">Network</p><div class="empty">Loading…</div>';return;}
@@ -432,7 +432,7 @@ async function fillTrailDays(t){
   sel.innerHTML=opts.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
   try{
     const j=await fetch(`${API}/api/v1/trackers/${encodeURIComponent(t.tracker_id)}/days?limit=60`).then(r=>r.json());
-    if(j.timezone) SITE_TZ=j.timezone;
+    setSiteTz(j.timezone);
     const today=siteToday();
     (j.days||[]).filter(d=>d.date!==today).forEach(d=>{
       const span=`${fmtAt(d.first_ts)}–${fmtAt(d.last_ts)}`;

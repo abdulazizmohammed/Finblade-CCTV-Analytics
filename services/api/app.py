@@ -1211,8 +1211,14 @@ async def org_tree(request: Request):
 @app.get("/api/v1/org/index")
 async def org_index():
     """The raw rows (regions, cities, branches) and tenant meta, no counts.
-    What the editors and the seed script read."""
-    return svc.org_index()
+    What the editors and the seed script read.
+
+    Carries the SITE's timezone, because every page that shows a clock needs
+    it and this is the payload they already load. Without it each page
+    rendered in the viewer's zone, so the same incident read 14:02 in Riyadh
+    and 11:02 in London with nothing on screen to say which.
+    """
+    return dict(svc.org_index(), timezone=BUSINESS_TZ)
 
 
 @app.post("/api/v1/org/import")

@@ -128,15 +128,16 @@ table.dl .st.SENT{color:var(--fb-ok);} table.dl .st.FAILED{color:var(--fb-critic
   </div>
 
 <script src="apikey.js"></script>
+<script src="sitetime.js"></script>
 <script>
 const API=location.origin;
 const $=id=>document.getElementById(id);
 const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
 let ORG=null, FILTER=null;
-const fmtT=ts=>ts?new Date(ts*1000).toLocaleString('en-GB'):'—';
+const fmtT=ts=>fbDateTime(ts);
 
 async function loadOrg(){
-  try{ORG=await fetch(`${API}/api/v1/org/index`).then(r=>r.json());}catch(e){ORG=null;return;}
+  try{ORG=await fetch(`${API}/api/v1/org/index`).then(r=>r.json());setSiteTz(ORG&&ORG.timezone);}catch(e){ORG=null;return;}
   const r=$('f_region'),c=$('f_city'),b=$('f_branch');
   r.innerHTML='<option value="">whole network</option>'+ORG.regions.map(x=>`<option value="${esc(x.region_id)}">${esc(x.name)}</option>`).join('');
   const fill=()=>{

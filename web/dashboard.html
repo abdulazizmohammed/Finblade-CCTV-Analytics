@@ -285,6 +285,7 @@ body{
   </div>
 
 <script src="apikey.js"></script>
+<script src="sitetime.js"></script>
 <script src="facility-tile.js"></script>
 <script>
 // Same origin as the page — see the note in cameras.html. The WebSocket scheme
@@ -392,6 +393,7 @@ function setScope(region,city,branch){
 async function loadScopeIndex(){
   try{
     SCOPE.index=await fetch(`${API}/api/v1/org/index`).then(r=>r.json());
+    setSiteTz(SCOPE.index&&SCOPE.index.timezone);
   }catch(e){ SCOPE.index=null; }
   const q=new URL(location.href).searchParams;
   setScope(q.get('region')||SCOPE.region, q.get('city')||SCOPE.city, q.get('branch')||SCOPE.branch);
@@ -1054,7 +1056,9 @@ window.addEventListener('online',wakeUp);
 window.addEventListener('pageshow',wakeUp);
 
 setInterval(()=>{
-  $('clock').textContent=new Date().toLocaleTimeString('en-GB');
+  // Site time with its offset — a wall screen is read by people who may not
+  // be in the site's timezone, and an unlabelled clock invites the wrong one.
+  $('clock').textContent=`${fbTime(Date.now()/1000)} ${fbTzLabel()}`;
   const s=Math.floor((Date.now()-t0)/1000);
   const tc=`00:${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
   document.querySelectorAll('[data-tc]').forEach(el=>el.textContent=tc);

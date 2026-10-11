@@ -117,6 +117,7 @@ tr.single td,td.single{color:var(--fb-text-faint);}
   </div>
 
 <script src="apikey.js"></script>
+<script src="sitetime.js"></script>
 <script>
 const API=location.origin;   // same origin as the page — see cameras.html
 const $=id=>document.getElementById(id);
@@ -128,15 +129,14 @@ const EVENT_TYPES=['ZONE_ENTRY','ZONE_EXIT','ZONE_TRANSITION','DENSITY_UPDATE',
   'CAPACITY_WARNING','RESTRICTED_ZONE_ENTRY','RESTRICTED_ZONE_EXIT',
   'LOITERING_START','LOITERING_END','CAMERA_ONLINE','CAMERA_OFFLINE','CAMERA_RECOVERED'];
 
-function iso(ts){ // epoch seconds -> local YYYY-MM-DD HH:MM:SS
-  const d=new Date(ts*1000);
-  const p=n=>String(n).padStart(2,'0');
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
+function iso(ts){ return fbDateTime(ts); }   // SITE time, see sitetime.js
+// The picker says "2026-10-11"; that means midnight to midnight AT THE SITE.
+// It used the viewer's midnight, so the same query run from another timezone
+// covered a window shifted by hours and quietly returned the wrong records.
 function dayBounds(){
   const f=$('from').value, t=$('to').value;
-  const from = f ? new Date(f+'T00:00:00').getTime()/1000 : 0;
-  const to   = t ? new Date(t+'T23:59:59').getTime()/1000 : Date.now()/1000+86400;
+  const from = f ? fbDayStart(f) : 0;
+  const to   = t ? fbDayEnd(t)   : Date.now()/1000+86400;
   return {from,to};
 }
 
@@ -400,8 +400,8 @@ $('modal').addEventListener('click', e=>{ if(e.target===$('modal')) closeFrame()
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeFrame(); });
 
 // init: default range = today
-const today=new Date().toISOString().slice(0,10);
-$('from').value=today; $('to').value=today;
+// The site's today, not the viewer's — and only once the site's zone is known.
+fbWhenTzReady(()=>{ const t=fbToday(); $('from').value=t; $('to').value=t; });
 for(const b of $('seg').children) b.addEventListener('click', ()=>setMode(b.dataset.mode));
 $('refresh').addEventListener('click', load);
 // Default the range to YESTERDAY rather than leaving it blank. Blank meant
@@ -412,9 +412,7 @@ $('refresh').addEventListener('click', load);
 // widen it deliberately.
 function defaultRange(){
   if($('from').value) return;
-  const d=new Date(Date.now()-86400000);
-  const p=n=>String(n).padStart(2,'0');
-  $('from').value=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  $('from').value=fbDate(Date.now()/1000-86400);   // yesterday at the site
 }
 defaultRange();
 $('type').addEventListener('change', load);

@@ -97,19 +97,21 @@ td.num{font-family:var(--fb-font-data);font-variant-numeric:tabular-nums;}
   </div>
 
 <script src="apikey.js"></script>
+<script src="sitetime.js"></script>
 <script>
 const API=location.origin;   // same origin as the page — see cameras.html
 const $=id=>document.getElementById(id);
 const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;};
 
+// Site-local midnight to midnight — a report is read against the site's day,
+// and the viewer's midnight would shift the window by their offset.
 function bounds(){
   const f=$('from').value, t=$('to').value;
-  const from = f ? new Date(f+'T00:00:00').getTime()/1000 : 0;
-  const to   = t ? new Date(t+'T23:59:59').getTime()/1000 : Date.now()/1000+86400;
+  const from = f ? fbDayStart(f) : 0;
+  const to   = t ? fbDayEnd(t)   : Date.now()/1000+86400;
   return {from,to};
 }
-function fmt(ts){const d=new Date(ts*1000);const p=n=>String(n).padStart(2,'0');
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;}
+function fmt(ts){return fbDateTime(ts,false);}
 
 async function loadFilters(){
   try{
@@ -258,8 +260,8 @@ async function loadRecent(){
 }
 
 // init
-const today=new Date().toISOString().slice(0,10);
-$('from').value=today; $('to').value=today;
+// The site's today, not the viewer's — and only once the site's zone is known.
+fbWhenTzReady(()=>{ const t=fbToday(); $('from').value=t; $('to').value=t; });
 $('gen').addEventListener('click', generate);
 $('csv').addEventListener('click', exportCsv);
 $('save').addEventListener('click', saveReport);

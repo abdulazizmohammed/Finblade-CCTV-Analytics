@@ -63,6 +63,22 @@
      status. */
   --fb-compliance:  #7b6ef0;   /* violet — person-based policy */
 
+  /* A VEHICLE IS NOT A STATUS. Every colour above answers "how bad is this":
+     amber and red are a measurement crossing a threshold, magenta is a policy
+     about a place, violet a policy about a person. A tracked van is a kind of
+     OBJECT, and on the map it has to be told apart from zones and people
+     rather than ranked against them — so it gets its own hue, and keeps it
+     whether moving or parked. The shape carries the state (arrow / diamond),
+     which also means the distinction survives a colour-blind viewer and a
+     washed-out projector.
+
+     Blue was the only hue left: teal is chrome and must never read as status,
+     and the four above are spoken for. Deep enough to look deliberate against
+     the near-black basemap, bright enough to survive the pale arterial roads
+     in the OSM tiles once it has its dark casing (see .veh in map.html). */
+  --fb-vehicle:     #2b6fdd;   /* blue — tracked asset, any state */
+  --fb-vehicle-ghost: rgba(43, 111, 221, 0.16);
+
   --fb-warning-ghost:    rgba(240, 160, 41, 0.14);
   --fb-critical-ghost:   rgba(239, 75, 75, 0.14);
   --fb-restricted-ghost: rgba(224, 71, 158, 0.12);

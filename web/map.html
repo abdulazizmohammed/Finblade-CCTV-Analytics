@@ -68,13 +68,31 @@ body{background:var(--fb-void);min-height:100vh;}
 .pin.cluster .halo{left:-18px;top:-18px;width:36px;height:36px;}
 /* vehicles: an arrow when moving, a diamond when not */
 .veh{position:relative;width:0;height:0;}
-.veh .shape{position:absolute;left:-9px;top:-9px;width:18px;height:18px;background:var(--fb-text);clip-path:polygon(50% 0,85% 100%,50% 75%,15% 100%);}
-.veh[data-state="STOPPED"] .shape{background:var(--fb-text-muted);clip-path:polygon(50% 10%,90% 50%,50% 90%,10% 50%);}
-.veh[data-state="OFFLINE"] .shape{background:var(--fb-text-faint);clip-path:polygon(50% 10%,90% 50%,50% 90%,10% 50%);}
+/* Blue in every live state, because the colour says "vehicle" and the SHAPE
+   says what it is doing — an arrow pointing along the heading when moving, a
+   diamond when parked. Colour doing one job each is what keeps both readable
+   at a glance, and on a projector or to a colour-blind operator the shape is
+   the half that survives.
+   The dark casing is not decoration: the OSM tiles run pale arterial roads
+   through the dark blocks, and a mid-tone marker crossing one loses its edge
+   without it. Same reason the trail has one. */
+.veh .shape{position:absolute;left:-9px;top:-9px;width:18px;height:18px;
+  background:var(--fb-vehicle);clip-path:polygon(50% 0,85% 100%,50% 75%,15% 100%);
+  filter:drop-shadow(0 0 1.5px var(--fb-void)) drop-shadow(0 0 7px rgba(43,111,221,.85));}
+.veh[data-state="STOPPED"] .shape{background:var(--fb-vehicle);clip-path:polygon(50% 10%,90% 50%,50% 90%,10% 50%);}
+/* OFFLINE stays grey: it is the one state that is NOT a working vehicle, and
+   it keeps the red ring. Painting it blue would say "asset, fine" about a
+   tracker that stopped reporting two days ago. */
+.veh[data-state="OFFLINE"] .shape{background:var(--fb-text-faint);
+  clip-path:polygon(50% 10%,90% 50%,50% 90%,10% 50%);filter:none;}
 .veh .ring{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid var(--fb-critical);box-sizing:border-box;display:none;}
 .veh[data-state="OFFLINE"] .ring{display:block;}
 .veh .halo{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid var(--fb-teal);box-sizing:border-box;display:none;}
 .veh.sel .halo{display:block;}
+/* A latched control. Teal because it is chrome — this says "this button is
+   engaged", not "something is wrong". */
+.fb-btn.on{color:var(--fb-void);background:var(--fb-teal);border-color:var(--fb-teal);}
+.fb-btn.on:hover{background:var(--fb-teal-bright);border-color:var(--fb-teal-bright);}
 .veh .lbl{position:absolute;left:12px;top:-16px;white-space:nowrap;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text);text-shadow:0 0 3px var(--fb-void),0 0 3px var(--fb-void),0 0 5px var(--fb-void);}
 .ctl{position:absolute;right:12px;top:12px;z-index:800;display:flex;flex-direction:column;gap:6px;}
 .ctl .fb-btn{padding:6px 10px;font-family:var(--fb-font-data);font-size:11px;}
@@ -82,7 +100,7 @@ body{background:var(--fb-void);min-height:100vh;}
 .legend span{display:inline-flex;align-items:center;gap:5px;}
 .legend i{width:9px;height:9px;border-radius:50%;background:var(--fb-ok);display:inline-block;}
 .legend i.w{background:var(--fb-warning);} .legend i.c{background:var(--fb-critical);}
-.legend i.v{border-radius:0;background:var(--fb-text);clip-path:polygon(50% 0,100% 100%,50% 75%,0 100%);}
+.legend i.v{border-radius:0;background:var(--fb-vehicle);clip-path:polygon(50% 0,100% 100%,50% 75%,0 100%);}
 .note{position:absolute;left:12px;top:12px;z-index:800;font-family:var(--fb-font-data);font-size:10px;color:var(--fb-text-faint);letter-spacing:.06em;background:rgba(8,19,26,.6);padding:3px 6px;border-radius:2px;}
 .pickhint{position:absolute;left:50%;top:12px;z-index:800;transform:translateX(-50%);background:var(--fb-teal-ghost);border:1px solid var(--fb-teal);color:var(--fb-teal-bright);font-family:var(--fb-font-data);font-size:11px;padding:6px 12px;border-radius:var(--fb-r);}
 
@@ -409,12 +427,19 @@ function panelVehicle(t){
     </div>
     <div class="doors">
       <button class="fb-btn fb-btn--primary" id="v_trail">${TRAIL.id===t.tracker_id?'Hide trail':'Show trail'}</button>
-      <button class="fb-btn" id="v_follow">Centre on it</button>
+      <button class="fb-btn${FOLLOW===t.tracker_id?' on':''}" id="v_follow" title="Keep this vehicle on screen as it moves. Dragging the map lets go.">${FOLLOW===t.tracker_id?'Following':'Follow'}</button>
       <a class="fb-btn" href="trackers.html">Trackers</a>
       <a class="fb-btn" href="history.html?camera_id=${encodeURIComponent(t.tracker_id)}">Arrivals</a>
     </div>`;
   $('back').addEventListener('click',e=>{e.preventDefault();select(null);});
-  $('v_follow').addEventListener('click',()=>{if(p.lat!=null)map.setView([p.lat,p.lon],Math.max(map.getZoom(),14));});
+  $('v_follow').addEventListener('click',()=>{
+    if(FOLLOW===t.tracker_id){ FOLLOW=null; panelVehicle(t); return; }
+    FOLLOW=t.tracker_id;
+    // Centre once, and close in if the operator is looking at the whole
+    // country — following at national zoom shows nothing moving.
+    if(p.lat!=null) map.setView([p.lat,p.lon],Math.max(map.getZoom(),15));
+    panelVehicle(t);
+  });
   fillTrailDays(t);
   $('v_when').addEventListener('change',()=>{ if(TRAIL.id===t.tracker_id) loadTrail(t); });
   $('v_trail').addEventListener('click',async()=>{
@@ -477,6 +502,10 @@ function renderPanel(force){
   else panelNetwork();
 }
 function select(kind,id){
+  // Stop following when the operator looks at something else: the map would
+  // otherwise keep drifting after a vehicle whose panel is no longer on
+  // screen, with nothing to explain why.
+  if(FOLLOW && !(kind==='vehicle' && id===FOLLOW)) FOLLOW=null;
   SEL={kind,id};
   const u=new URL(location.href);
   if(kind==='branch') u.searchParams.set('branch',id); else u.searchParams.delete('branch');
@@ -509,9 +538,34 @@ async function loadOrg(){
   }catch(e){ ORG=null; }
   renderAll(); renderPanel();
 }
+// Keeping a moving vehicle on screen.
+//
+// FOLLOW holds the tracker id being followed, and the map pans to each new
+// fix. Two rules make it tolerable rather than infuriating:
+//
+//   * it pans, never zooms — an operator who chose a zoom level keeps it;
+//   * ANY drag of the map lets go. Leaflet fires `dragstart` only for a real
+//     user drag, not for panTo, so this needs no flag: touch the map and you
+//     have taken control back, which is what you meant by touching it.
+//
+// It also only moves the map when the vehicle is actually near the edge; a
+// pan on every 10-second fix makes the whole map twitch while a van crawls
+// across a car park.
+let FOLLOW=null;
+function followTick(){
+  if(!FOLLOW) return;
+  const t=TRACKERS.find(x=>x.tracker_id===FOLLOW);
+  if(!t||!t.position||t.position.lat==null) return;
+  const ll=L.latLng(t.position.lat,t.position.lon);
+  const b=map.getBounds().pad(-0.25);          // the comfortable middle
+  if(!b.contains(ll)) map.panTo(ll,{animate:true,duration:.6});
+}
+map.on('dragstart',()=>{ if(FOLLOW){ FOLLOW=null; renderPanel(); } });
+
 function applyTrackers(list){
   TRACKERS=list||[];
   renderVehicles();
+  followTick();
   if(SEL.kind==='vehicle'||SEL.kind===null) renderPanel();
   // Live trails grow as fixes arrive; a past day is history and stays as read.
   if(TRAIL.id&&TRAIL.live){const t=TRACKERS.find(x=>x.tracker_id===TRAIL.id); if(t&&t.position){const last=TRAIL.points[TRAIL.points.length-1]; if(!last||last.ts!==t.position.ts){TRAIL.points.push(t.position);renderTrail();}}}
